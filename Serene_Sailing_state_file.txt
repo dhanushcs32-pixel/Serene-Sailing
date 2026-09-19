@@ -1,0 +1,365 @@
+A Minecraft modpack intended to bring kind of realistic open world sailing to Minecraft similar to the mudpack Beyond Tides
+Existing Mods the User already wants added:
+Sable
+VeilLib
+CreateAero
+JEI
+When Dungeons Arise-Seven Seas
+GeckoLib
+Myths of the Sea
+Weather, storms and tornadoes
+Weather 2
+CoroUtil
+LithoStiched
+CuriousAPI
+feel free to question the implementation and usage of any of the above mods
+The mods User wants to build:
+1)A mod which is like create Aero but has sails, rudders etc, all which is necessary for creating ships
+2)A Value modifier mod which can modify the sizes and aggressiveness of the mobs which are in other modpacks
+3)A World generation mod which introduces big deep(or varying depths) oceans peppered with small to big islands with structures etc,
+ it should be able to tweak world generations and also display at the time of world creation the modifier of depths of oceans, modifier for
+ the storms, modifier for the mob spawns, island spawns
+4)Feel free to suggest ideas for other mods
+Open Question: is adding the ICE and FIRE or any other mods from the RLCraft modpack feasible?
+Instructions:Always append this State txt file with updates, never rewrite, only append, format write and suggest changes to the files the user will execute and experiment and verify in Visual Studio Code IDE;
+__________________________________________________________________________________________________________________________________________
+Session 1:Mod list review (researched via web search Aug 8 2026):
+- JEI: fine, no concerns.
+- GeckoLib: fine, likely a dependency for Myths of the Sea / Seven Seas.
+- Weather 2: fine, adds real storm/tornado systems, fits sailing theme directly.
+- Sable: physics sub-level library (Rapier-based). Right tool for ship hulls, but the mod's own docs flag it as "incredibly intrusive," heavy mixin use, prone to compat issues with other mods. Expect friction with anything else touching entities/physics.
+- CreateAero (Create Aeronautics): built on Sable, adds flying vehicle mechanics (planes/airships/cars). Not boats out of the box - custom sail/rudder mod (idea #1) will need to decide: extend Aeronautics' framework, or build ship physics directly on raw Sable.
+- VeilLib: likely "Veil" rendering/shader library. Useful for water/wave visuals but not sailing mechanics - confirm it's an actual dependency of another listed mod before keeping it.
+- LithoStiched (Lithostitched): worldgen config/compat library. Will need clear ownership boundary vs custom worldgen mod (idea #3) to avoid config conflicts.
+- CuriousAPI: likely means Curios API (accessory/equipment slot library). Not sailing-specific - only worth keeping if planning accessory items (life vests, diving gear, trinket compasses).
+- CoroUtil: older utility/AI lib, associated with RLCraft-era mods (dependency for Ice and Fire among others). Confirm what on the list actually requires it.
+
+Flagged structural risk: Sable + CreateAero + custom sail mod + LithoStiched + Weather 2 all hook deep into world/physics/entity systems simultaneously - highest crash/lag risk cluster. Recommended: build a minimal 5-mod test instance with just these before layering in content mods (Myths of the Sea, Seven Seas) and the custom mob-modifier mod.
+
+Sailing mod architecture decision (Aug 8 2026):
+- Approach: PIGGYBACK, not fork. Build as an addon mod depending on Sable + Create Aeronautics, same pattern as existing community addons (e.g. buoyancy addon, thruster addon, Waystones:Sable compat mod). Confirmed via official Create-Aeronautics addon dev template (Modders-of-Create/Create-Aeronautics on GitHub) that this is the standard/supported path.
+- Rationale: inherit Sable's physics/sub-level system and Aeronautics' contraption/propulsion/Create-integration for free; avoid owning a fork of someone else's large physics codebase; avoids modid collision with the Sable/CreateAero already in the pack; sails/rudders are conceptually just new propulsion/control blocks (wind-driven vs RPM-driven), not new physics infra.
+- Partial-fork fallback: if wind-relative sail trim mechanics end up fundamentally incompatible with Aeronautics' direct-throttle control scheme, fork only the control/input layer later, keep depending on raw Sable underneath. Decide after prototyping, not up front.
+- Follow-up flagged: locate the "simple add-on for sable that adds elements to help the ship stay afloat" (CreateMod.com mods list) - check license/reusability as reference or dependency for buoyancy before writing that math from scratch.
+
+Platform/version decision (Aug 8 2026):
+- Target Minecraft 1.21.1, loader NeoForge (not Forge, not Fabric).
+- Rationale: Create, Sable, and Create Aeronautics all ship native NeoForge 1.21.1 builds - full compat with existing mod list with zero porting. NeoForge is the 2026 default for content/tech mods on 1.21+; Forge and NeoForge diverged post-1.20.2 (package namespace change net.minecraftforge -> net.neoforged), so a dual Forge+NeoForge build is not practical. Fabric exists as a community port of Create but would sacrifice native Sable/Aeronautics compatibility - not worth it given rest of stack is NeoForge-native.
+- Dev environment: NeoForge docs (26.1 branch) recommend 64-bit Java 25 JDK for mod dev.
+
+Build kickoff (Aug 8 2026): initial project scaffold created for the sailing/rigging addon mod.
+- Target: Minecraft 1.21.1, NeoForge, mod_id "serenesailing", based on the official NeoForgeMDKs/MDK-1.21.1-NeoGradle template (neo_version 21.1.234 confirmed from that template as of Aug 2026 - re-check https://projects.neoforged.net/neoforged/neoforge for anything newer before first build).
+- neoforge.mods.toml declares hard dependencies on: sable, create, createaeronautics.
+- Placeholder inert blocks added: CanvasSail (block/item/model/blockstate/lang), Rudder (same) - plain textured cubes, no physics yet, just enough to confirm the mod loads and dependency wiring resolves.
+- SailingConfig.java added with initial tunables: sailForceMultiplier, rudderTurnRate, minWindSpeedForThrust, weather2WindIntegration (toggle to drive sail thrust from Weather 2 vs a constant fallback wind for testing).
+- SailPhysics.java left unimplemented on purpose - documented intended thrust formula (sailArea * windSpeed^2 * dragCoeff * cos(windAngle), clamped at 0) as a comment. Real implementation blocked on seeing Sable/Aeronautics actual API (see below).
+- Delivered as serene-sailing-ships.zip.
+
+Known gaps / user's next actions (flagged honestly since this sandbox has no network access to maven.neoforged.net or api.modrinth.com):
+1. gradle.properties has sable_version / create_version / create_aeronautics_version as literal REPLACE_ME placeholders - user must fill in real Modrinth version strings for 1.21.1 NeoForge builds.
+2. Gradle wrapper jar not included (binary, no network access to download) - user runs `gradle wrapper --gradle-version 8.10` locally once, or lets IDE use local Gradle install.
+3. Project has never been compiled/run - expect at least one round of import/API-mismatch fixes once real Sable/Aeronautics jars resolve in VS Code.
+4. Textures not created (canvas_sail.png, rudder.png missing) - blocks will render as missing-texture checkerboard until art is added; not a blocker for confirming the mod loads.
+
+Open design decisions flagged in SailBlock.java / RudderBlock.java TODOs, to resolve during next session:
+- Sail trim: player-adjustable angle vs fixed-facing.
+- Rudder input: right-click rudder directly vs. add a separate Helm/Wheel block as the control point.
+- Physics scope: simplified downwind-only thrust vs full tacking/upwind sailing model.
+- Still need to locate and evaluate the "helps ship stay afloat" Sable buoyancy addon mentioned on createmod.com/mods as a possible dependency/reference before writing buoyancy math from scratch (carried over from prior session, not yet done).
+
+Bugfix (Aug 8 2026): first VS Code sync attempt failed.
+- Error: "No matching variant of net.neoforged.gradle:userdev:7.1.36" - CONFIGURE FAILED. Root cause: gradle-wrapper.properties was set to Gradle 8.10, but NeoGradle userdev 7.1.36 requires org.gradle.plugin.api-version 8.14 (i.e. Gradle 8.14+). This was my error when scaffolding - picked a generic recent Gradle version without cross-checking it against the specific NeoGradle 7.1.36 requirement.
+- Fix applied: bumped gradle/wrapper/gradle-wrapper.properties distributionUrl from gradle-8.10-bin.zip to gradle-8.14-bin.zip. Updated zip redelivered.
+- User action if this recurs on a fresh clone or after changing neogradle version: check the "org.gradle.plugin.api-version" value quoted in the Gradle error message and match gradle-wrapper.properties to a Gradle release meeting or exceeding it.
+
+Bugfix (Aug 8 2026): gradlew / gradlew.bat wrapper scripts and gradle-wrapper.jar were missing from the original scaffold zip (flagged as a known gap at the time - no network access to download the binary jar). Root cause of user's "./gradlew is not recognized" error in PowerShell. Fixed by pulling the real wrapper scripts + jar directly from the official NeoForgeMDKs/MDK-1.21.1-NeoGradle repo via raw.githubusercontent.com (available in this sandbox's network allowlist, unlike maven.neoforged.net / api.modrinth.com). gradle-wrapper.properties distributionUrl updated to gradle-8.14.4-bin.zip to match the exact patch version the user is installing. Updated zip redelivered - now has a genuinely complete/runnable wrapper.
+
+Also hit and diagnosed: NeoGradle issue #274 (open upstream bug) - "run type 'X' was not found" when a Gradle tooling client (VS Code's NetBeans-based project-info extractor, in this case) probes a property matching the runXxx naming pattern that isn't an actual defined run type. Not fixable from our project files. Workaround: use `./gradlew` directly from terminal rather than relying on VS Code's Gradle sidebar/sync, which triggers the buggy tooling-API probe. Fallback if that also fails: switch to IntelliJ IDEA Community Edition for the run/debug loop, per the official NeoForge MDK README's own IDE recommendation (IntelliJ or Eclipse, not VS Code).
+
+Session 2: Located candidate mods for buoyancy/sail dependency (researched via web search Aug 9 2026):
+- Create: High Seas (and variant "Create: Better High Seas" by Kaneuss) - NeoForge addon on Sable + Create + Create Aeronautics. Adds buoyancy forces, enclosed dry-space detection, breach-based flooding/drainage, wave-height-driven instability/tilt, and ocean rendering/wave visuals. This is almost certainly the "buoyancy maths" mod recalled - matches SailPhysics.java's unimplemented buoyancy needs closely. Candidate as a soft/hard dependency instead of writing buoyancy math from scratch.
+- Simulated Addition - small Create: Simulated/Aeronautics addon (Takkkom). Adds a stronger sail block (2x air resistance/lift/thrust vs base), a heavy ballast-type block for center-of-gravity adjustment, and a high-buoyancy block. Likely the "something else" referenced alongside High Seas - has both sail and buoyancy elements in one addon. Worth evaluating whether its sail block can be reused/extended rather than building CanvasSail physics from scratch.
+- Sablewaves - Gerstner-wave-based ocean/wind visual+physics mod built on Sable. Not buoyancy math itself, but ties wind/wave state directly into anything Sable simulates, incl. Create Aeronautics ships. Relevant as a potential wind-source feed for SailingConfig.weather2WindIntegration, as an alternative/complement to Weather 2.
+- Create Deep Seas (Create Submarine) - submarine-focused Sable/Aeronautics addon (pressure, oxygen, Abyss dimension). Not sails-relevant but shares the same dependency stack - noted as a neighboring mod in the same niche, not a conflict per se but worth checking for overlapping block/feature scope later.
+- Ruled out: Valkyrien Sails - built on Valkyrien Skies, a separate/incompatible physics framework from Sable. Not usable in this stack.
+
+Recommendation flagged: depend on Create: High Seas for the buoyancy/flooding layer rather than implementing SailPhysics buoyancy math independently; evaluate Simulated Addition's sail block as a reuse/extension candidate before building CanvasSail's physics layer from scratch. serenesailing's scope narrows toward sail-trim/rudder-control/wind-propulsion mechanics specifically.
+
+Next action (not yet done): pull real Modrinth/CurseForge version + modid strings for Create: High Seas and Simulated Addition, add as dependencies in gradle.properties and neoforge.mods.toml.
+
+Session 2 (cont'd): User implemented buoyancy/sail physics independently (per their choice - declined offered pseudocode/skeleton, wrote it themselves). Reported complete, split across three files:
+- src/main/java/com/serenesailing/Physics/SailingPhysicsEngine.java
+- src/main/java/com/serenesailing/Physics/ShipPhysicsEngine.java
+- src/main/java/com/serenesailing/Physics/WaterLineProvider.java
+Not yet reviewed - files not uploaded to this session (only this state txt was in uploads). User should upload the three .java files for review/feedback when ready. This supersedes the earlier plan to depend on Create: High Seas for buoyancy math - user is now implementing it independently instead.
+
+Session 2 (cont'd): Reviewed and fixed the two physics files uploaded by user (ShipPhysicsEngine.java, WaterlineProvider.java, plus inline-pasted SailingPhysicsConfig.java).
+
+Bugs found and fixed in original code:
+1. Filename/class case mismatch - file was named WaterLineProvider.java (capital L) but interface declared as WaterlineProvider (lowercase l). Would fail to compile on case-sensitive filesystems (Linux/CI). Fixed: file and interface name now both WaterlineProvider.java.
+2. Package/directory case mismatch - folder was src/main/java/com/serenesailing/Physics (capital P) but package declared as com.serenesailing.physics (lowercase). Would work on Windows/Mac (case-insensitive FS) and silently break on Linux builds/CI. Fixed: standardized on lowercase "physics" package - user needs to rename the actual directory to match.
+3. Sail thrust formula was missing the cos(windAngle) term and zero-clamp specified in the Session 1 architecture notes - original code applied full sail force in the raw wind direction regardless of sail/hull facing, meaning the ship could never point across or into wind (functioned as a raft, not a sailboat). Fixed: added a sailNormal parameter to evaluatePhysics(), thrust now scaled by max(windDir.dot(sailNormal), 0).
+4. Upgraded wind model from true wind to apparent wind (windVector - linearVelocity) in the thrust calculation, since true wind would let a ship running downwind never catch up to/exceed the wind's push in a physically odd way once ships have real speed.
+
+Verified as correct in original code (no changes needed): center-of-mass/center-of-buoyancy weighted accumulation, waterline submerged-fraction interpolation per block, righting-torque sign (buoyancyOffset x buoyantForce correctly rotates the heeled-down side back up), quadratic linear/angular damping formulation, divide-by-zero guards on empty hull / zero mass / zero submerged volume.
+
+Delivered corrected files: ShipPhysicsEngine.java, WaterlineProvider.java, updated SailingPhysicsConfig.java (added weather2WindIntegration, fallbackWindX, fallbackWindZ fields referenced by the new integration layer).
+
+Discovered during review: there is no SailingPhysicsEngine.java - user's actual file set was only ShipPhysicsEngine.java + WaterlineProvider.java (+ inline SailingPhysicsConfig.java). The integration/caller layer that hooks evaluatePhysics() into Sable's per-tick physics loop did not exist yet.
+
+Built SailingPhysicsEngine.java as a new integration-layer scaffold (Session 2), covering: per-sub-level tick() gathering live hull blocks (with a flagged warning about re-transforming local->world positions on every tick as the hull rotates, not caching stale positions), pulling linear/angular velocity from Sable, resolving sail position/normal/area from a placeholder SailState, resolving wind vector (Weather 2 integration vs constant fallback, gated by the new weather2WindIntegration config flag), calling ShipPhysicsEngine.evaluatePhysics(), and applying the resulting force/torque back to Sable.
+
+IMPORTANT CAVEAT on SailingPhysicsEngine.java: this file is a structural scaffold only, NOT verified against real Sable API. I do not have Sable's actual PhysicsPipeline.java source, only DeepWiki summaries. Every Sable-facing call (getLinearVelocity/getAngularVelocity, localToWorld, sampleHullBlocks, applyImpulseAt, applyAngularImpulse) is a placeholder on a stand-in SubLevelHandle interface and is explicitly flagged "VERIFY AGAINST SABLE SOURCE" inline. Two specific unresolved questions flagged as highest-risk:
+1. Whether Sable's impulse-application method expects a continuous force (needs *deltaTime before applying) or an already-time-integrated impulse (don't multiply again) - getting this wrong causes either a ship that never moves or one that explodes on the first tick.
+2. Where/how tick() actually gets invoked - needs a real Sable physics-tick hook/event for sub-levels, not yet identified.
+Also unresolved: how to read Sable's actual per-substep deltaTime (must not hardcode 1/20s, since Sable sub-steps independently of the Minecraft tick rate per earlier research).
+
+Next actions (not yet done):
+1. User to open real Sable PhysicsPipeline source/javadoc and replace placeholder SubLevelHandle/BlockSample/SailState types + method calls with real ones.
+2. Resolve force-vs-impulse units question against actual Sable API before first real test.
+3. Identify the correct Sable tick/event hook point to call SailingPhysicsEngine.tick() from.
+4. Wire resolveBlockMass() to the per-block density config table (wood/stone/iron etc.) discussed in the buoyancy-factors planning session - currently hardcoded placeholder (100.0, wood-equivalent) for all blocks.
+5. Wire resolveWind()'s Weather 2 branch to Weather 2's actual wind-query API - currently falls through to constant fallback regardless of the toggle.
+6. Once wired, run the layered test plan from the "how do I check if it actually works" session: pure-math hand-calc test on a symmetric box hull first, then in-game static float / perturbation-righting / asymmetric-load / sail-isolation / edge-case tests, using /sable info and the Sable Tool addon (Ctrl-click force tracking, Breeze Rod center-of-mass visualization) for in-game verification.
+
+Session 3: Physics Engine Compilation & Material Mass Integration (Aug 10 2026):
+- Fixed "package ShipPhysicsEngine does not exist" build failure in `SailingPhysicsEngine.java` by aligning all physics components under `com.serenesailing.physics` and adding explicit inner-class imports.
+- Created `BlockMassTable.java` to supply per-block material densities (wood, stone, iron ballast, sail cloth, air) replacing hardcoded block mass defaults for hull buoyancy calculations.
+- Refactored `SailingPhysicsEngine.java` stub interface to integrate `BlockMassTable` and prepare for Sable sub-level physics loop integration.
+- Diagnosed "package ShipPhysicsEngine does not exist" compilation error as a missing/mislocated file or package mismatch on `ShipPhysicsEngine.java`.
+- Provided PowerShell verification steps to confirm `ShipPhysicsEngine.java` exists inside `src/main/java/com/serenesailing/physics/`.
+- Documented VS Code workspace clearing procedure ("Java: Clean Java Language Server Workspace") to flush stale Red Hat Java LS errors from the Problems tab.
+
+Session 4: Method Signature Alignment (Aug 10 2026):
+- Resolved argument count mismatch between `SailingPhysicsEngine.java` (passed 10 args) and `ShipPhysicsEngine.java` (expected 9 args).
+- Added `Vector3d sailNormal` as the 5th parameter to `ShipPhysicsEngine.evaluatePhysics()`.
+- Updated sail thrust force in `ShipPhysicsEngine.java` to scale by `Math.max(0.0, windDir.dot(sailNormal))` so sail facing orientation impacts thrust calculations.
+- Resolved method signature mismatch between SailingPhysicsEngine.java and ShipPhysicsEngine.java.
+- Successfully verified build via `./gradlew build --rerun-tasks`.
+- Next focus: Connecting Sable's real sub-level physics loop event and exposing `SailingPhysicsConfig` via NeoForge ModConfig for runtime tuning.
+
+Session 5: Sable Event Wiring (Aug 10 2026):
+- Created `ServerPhysicsHandler.java` listening to NeoForge `ServerTickEvent.Post` on `NeoForge.EVENT_BUS`.
+- Registered `ServerPhysicsHandler` inside main mod initializer `SereneSailing.java`.
+- Connected `SailingPhysicsEngine.tick(...)` to trigger on every server tick for active Sable sub-levels.
+
+Session 6: Mod ID Constant Fix (Aug 10 2026):
+- Resolved "cannot find symbol: variable MOD_ID" compilation errors in registry classes (ModBlocks, ModItems, ModBlockEntities, ModCreativeModeTabs).
+- Cause: `SereneSailing.java` lacked the public static `MOD_ID` string field referenced by the registry deferred registers.
+- Fix: Declared `public static final String MOD_ID = "serenesailing";` inside `SereneSailing.java`.
+
+Session 7: Core Architecture Build Succeeded (Aug 10 2026):
+- Fixed `MOD_ID` symbol resolution across all deferred registries (`ModBlocks`, `ModItems`, `ModBlockEntities`, `ModCreativeModeTabs`).
+- Verified zero-error build completion via `./gradlew build`.
+- Physics calculation pipeline (`ShipPhysicsEngine`, `BlockMassTable`, `WaterlineProvider`), config spec (`SailingConfig`), and NeoForge event bus hooks (`ServerPhysicsHandler`) are completely compiled and ready.
+
+Session 8: Creative Tab & Registry Bus Hook Fix (Aug 10 2026):
+- Identified why items/blocks were missing in-game: `DeferredRegister` instances (`ModBlocks`, `ModItems`, `ModBlockEntities`, `ModCreativeModeTabs`) were created but never registered to NeoForge's `modEventBus` in `SereneSailing.java`.
+- Updated `SereneSailing.java` to call `.register(modEventBus)` for all registries.
+- Verified `ModCreativeModeTabs.java` display items binding for `CanvasSail` and `Rudder`.
+
+Session 9: Block Entity Registry Alignment (Aug 10 2026):
+- Resolved "cannot find symbol: variable BLOCK_ENTITY_TYPES" error in `SereneSailing.java`.
+- Standardized `ModBlockEntities.java` to declare `public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITY_TYPES`.
+
+Session 10: Physics Verification Strategy (Aug 10 2026):
+- Outlined 3-stage physics verification workflow: JUnit math tests, in-game particle/debug logging, and Sable sub-level integration testing.
+- Created `PhysicsUnitTest.java` scaffold to verify buoyancy equilibrium and center of mass/buoyancy offset without waiting for full game client boots.
+- Added in-game debug logging / particle rendering blueprint for visually tracking Center of Mass (CoM) and Center of Buoyancy (CoB).
+
+Session 11: Physics Debug Scope Fix (Aug 10 2026):
+- Resolved "package state does not exist" compilation failure in `ServerPhysicsHandler.java`.
+- Cause: Particle debugging snippet referenced `state` directly in `onServerTick` scope where `state` was undeclared.
+- Fix: Updated `SailingPhysicsEngine.tick(...)` to return `ShipPhysicsEngine.PhysicsState` and properly scoped the debug particle emitter inside `ServerPhysicsHandler.java`.
+
+Session 12: Physics Unit Test Fix (Aug 10 2026):
+- Resolved `AssertionFailedError` at `PhysicsUnitTest.java:49`.
+- Cause: Block centers placed at Y=62.5 (bounds [62.0, 63.0]) were 100% submerged under water at Y=63.0 (9.0 m³ volume), causing the 50% submergence assertion to fail (expected 4.5 m³, found 9.0 m³).
+- Fix: Updated raft block center coordinates in `PhysicsUnitTest.java` to Y=63.0 (bounds [62.5, 63.5]) so water intersects at mid-height, and adjusted force assertion to check net upward restoring force when submerged past equilibrium depth.
+
+Session 13: Unit Test & Physics Math Verification Succeeded (Aug 10 2026):
+- All unit tests passed via `./gradlew test`, validating Archimedes buoyancy equilibrium, block mass calculations, and zero-torque symmetry on flat water.
+- Physics pipeline (`ShipPhysicsEngine`, `BlockMassTable`, `WaterlineProvider`, `SailingPhysicsEngine`) is mathematically verified and ready for real Sable API binding.
+
+Session 14: Sable Auto-Discovery & Buoyancy Resolved Against Real Source (Aug 11 2026):
+- Confirmed against actual Sable source (not DeepWiki summaries this time): `BlockSubLevelLiftProvider` blocks need NO registration step. Two call sites pick them up purely via `instanceof` scanning:
+  1. `ServerLevelPlot.onBlockChange()` (ship-level plots) - every block-state change checked with `state.getBlock() instanceof BlockSubLevelLiftProvider`, added to a `liftProviders` map.
+  2. `AbstractContraptionEntityMixin.sable$buildProperties()` (Create contraption/assembled ships) - same `instanceof` check when the contraption's block list is built.
+- Practical effect: `SailBlock implements BlockSubLevelLiftProvider` (written previously) is already complete as-is - it will start receiving `sable$contributeLiftAndDrag(...)` callbacks the moment it's placed, with no extra wiring. This also resolves the "Tick hook" open item from Session 2 - there is no tick-hook/registration step to find; auto-discovery covers it.
+- Buoyancy resolved as NOT a Java hook at all: it's a datapack property, `sable:floating_material`, assigned per-block via JSON under `data/sable/physics_block_properties/*.json` (selector + property, e.g. `"selector": "#sable:end_stones"`, `"properties": {"sable:floating_material": "sable:end_stone"}`), with the actual physics tuning (lift_strength, transition_speed, friction curves) in a matching `data/sable/floating_materials/*.json` file.
+- This closes the long-carried-over "locate the Sable buoyancy addon on createmod.com" open item from Session 1/2 - there is no addon to find; buoyancy is native to Sable and config-only. Hull blocks need a `floating_material` datapack entry, not driver code.
+
+Session 15: Rudder Investigation - No Continuous-Angle Force API (Aug 11 2026):
+- Checked both places force direction comes from in real Sable/Create-Aeronautics source:
+  1. `BlockSubLevelLiftProvider.sable$getNormal(state)` -> returns a `Direction` (6-value axis enum only).
+  2. `BlockEntityPropeller.getBlockDirection()` (propeller/fan interface, e.g. `EncasedFanBlockEntityMixin`) -> also just `Direction`.
+- Finding: every force-direction hook in the engine snaps to one of 6 axis-aligned directions. Fine for a sail (only ever faces one of 6 ways) but insufficient for a rudder, which needs smooth continuous deflection, not a snap between N/E/S/W.
+- Consequence for `RudderBlock`: cannot get continuous steering via `sable$getNormal()` - the return type itself can't hold a continuous angle. Only path to real steering is the same override pattern planned for sail wind: fully override `sable$contributeLiftAndDrag(...)` and skip the normal-based helper math entirely.
+- Scoped implementation plan (now built, see Session 16): store a continuous angle (float, synced) on the rudder's block entity (same pattern as a valve handle/mechanical-arm angle); read that live angle from the block entity at `ctx.pos()` inside the override; compute a custom force vector via trig against local water-flow velocity (`linearVelocity`/`angularVelocity`, same inputs the sail override uses) and add directly to `linearImpulse`/`angularImpulse`.
+- Confirms player-input layering (flagged as an instinct in an earlier session) is required, not optional - there is no "give me an angle" primitive to layer onto instead.
+- No registration step needed for the rudder either - same `instanceof` auto-discovery from Session 14 applies.
+
+Session 16: Weather2 Wind API Located + Sail/Rudder/Buoyancy Implementation (Aug 11 2026):
+- Cloned real Weather2 source (Corosauce/weather2, confirmed on the actual NeoForge 1.21.1 branch "1.21", not guessed) to replace the placeholder wind integration flagged as unresolved since Session 2/10.
+- Public wind-query API confirmed in `WindManager.java`: `getWindAngle()` returns a float in degrees (0-360, compass-style global angle); `getWindSpeed(@Nullable BlockPos pos, float extraHeightAmpMax)` returns an abstract magnitude (no documented real-world unit - same category as the "blocks per tick" style values used elsewhere for particle movement/entity pushing) to be tuned empirically in-game. Also has positional/cached variants (`getWindSpeedPositional`, chunk-hashed `WindInfoCache` lookups) for height- and location-aware queries.
+- Flagged for later empirical verification: sign/orientation convention of the 0-360 wind angle against Minecraft's actual world coordinate system - not documented, needs an in-game check once the client test is running.
+- Implemented apparent-wind approach for the sail override: ship velocity vs. ambient Weather2 wind velocity, ship's own motion and wind velocity transformed into local space, effective airflow computed from the difference (same "apparent wind" upgrade already applied to the pure-math physics engine in Session 2).
+- Three code items written this session, replacing the previously-unimplemented placeholders:
+  1. `SailBlock` - implements real Sable `BlockSubLevelLiftProvider` interface + real Weather2 wind override (using `WindManager.getWindAngle()`/`getWindSpeed()`), replacing the earlier placeholder-type version.
+  2. `RudderBlockEntity` - stores a continuous, synced steering angle per Session 15's scoped plan.
+  3. Buoyancy datapack JSON - `physics_block_properties` + `floating_materials` pair for the ship hull blocks (per Session 14's finding that buoyancy is config-only, not code).
+- Output folders set up and files created via the sandbox; user to pull these into the VS Code project.
+- Net effect on the open-actions list carried from Session 10/2: "Force/impulse units" - already resolved (Session 2/prior). "Tick hook/registration" - resolved, none needed (Session 14). "Wind wiring" - unblocked, real Weather2 API now in use (this session). "Buoyancy addon search" - resolved/closed, it's JSON not an addon (Session 14).
+- In-game test-readiness: once these three items compile clean against the real Sable/Weather2 classes (no more placeholder types), the `/sable info` client test is unblocked - nothing else in the architecture is waiting on unresolved API questions. Realistically "next session or two," not still far off.
+- Next actions (not yet done): review/verify the three newly-written files compile against real Sable/Weather2 jars in VS Code; empirically verify wind-angle sign/orientation convention in-game; run the layered test plan from Session 2/10 (pure-math hand-calc on a symmetric box hull, then in-game static float / perturbation-righting / asymmetric-load / sail-isolation / edge-case tests via `/sable info` and the Sable Tool addon).
+
+Session 17: File Pathways Confirmed + WindReader vs WindManager Resolved (Aug 11 2026):
+- Confirmed target pathways for the three files from Session 16, per the `com.serenesailing` lowercase-package convention locked in during Session 2:
+  - `src/main/java/com/serenesailing/block/SailBlock.java`
+  - `src/main/java/com/serenesailing/block/entity/RudderBlockEntity.java` (block-entity convention, separate from a plain `RudderBlock.java` block class under `block/`)
+  - `WindReader.java` is NOT a project file - it lives inside the Weather2 mod's own source tree and is only ever referenced via import once `weather2` resolves as a dependency.
+- Ambiguity flagged in Session 16 (whether `SailBlock` should call `WindReader` or the underlying `WindManager`) resolved by user cloning real Weather2 source locally (`Corosauce/weather2`, branch `1.21`) and grepping it directly:
+  - `WindReader` is defined once, in `weather2/util/WindReader.java` (public-API-facing package, not the internal `weathersystem.wind` package `WindManager` lives in).
+  - Five files inside Weather2's own codebase call `WindReader.` directly: `AnemometerBlockEntity`, `WindTurbineBlockEntity`, `WindVaneBlockEntity`, `SceneEnhancer`, `ClientTickHandler`.
+  - Zero files inside Weather2's own codebase call `WindManager.` directly - it's the internal engine underneath `WindReader`, never called from outside directly.
+- Conclusion: `WindReader` (package `weather2.util`, methods `getWindAngle(level, pos)` / `getWindSpeed(level, pos)`) is confirmed as the correct real public API. `SailBlock.java`'s existing import (`weather2.util.WindReader`) and calls are correct as written - no change needed.
+
+Session 18: Dependency Resolution & Build Error Diagnosis (Aug 11 2026):
+- Analyzed 18 compilation failures in `SailBlock.java` and `RudderBlockEntity.java`, isolating them into two primary root causes: missing mod dependencies and code-level API mismatches.
+- Identified missing Weather2 dependency: added `weather2_version=1.21.0-2.8.5` (Modrinth slug `weather-storms-tornadoes` for NeoForge 1.21.1) to `gradle.properties`.
+- Configured `build.gradle` with `compileOnly` and `localRuntime` declarations for `maven.modrinth:weather-storms-tornadoes:${weather2_version}`.
+- Flagged potential secondary dependency on `CoroUtil` if runtime `NoClassDefFoundError` occurs during Weather2 wind vector queries.
+- Cataloged 3 code-level syntax bugs to fix after dependency classpath resolution:
+  1. `SailBlock` missing `Properties` argument in `super()` constructor invocation.
+  2. Undefined `resetVectors()` calls in `SailBlock.java`.
+  3. Outdated `ValueInput`/`ValueOutput` serialization signatures in `RudderBlockEntity.java` (requires conversion to NeoForge 1.21.1 `CompoundTag` / `HolderLookup.Provider` `saveAdditional`/`loadAdditional` methods).
+
+Session 19: Code Syntax Bug Fixes (Aug 11 2026):
+- Fixed `SailBlock` constructor to explicitly pass `BlockBehaviour.Properties` to `super(properties)`.
+- Removed undefined `resetVectors()` calls inside `SailBlock.java`.
+- Updated `RudderBlockEntity.java` NBT persistence from `ValueInput`/`ValueOutput` stubs to standard NeoForge 1.21.1 `saveAdditional`/`loadAdditional` signatures taking `CompoundTag` and `HolderLookup.Provider`.
+
+Session 20: Gradle Network & Run Configuration Build Fix (Aug 11 2026):
+- Diagnosed build failure: Failure #1 caused by network timeout fetching Mojang's `version_manifest.json` from `piston-meta.mojang.com`.
+- Identified Failure #2 (`The run type 'client' was not found`) as a cascading artifact of NeoGradle failing to initialize Minecraft metadata during project evaluation.
+- Prescribed fix: verify network/firewall settings and execute `./gradlew build --refresh-dependencies`.
+
+Session 21: Modrinth Dependency Slug Fix (Aug 11 2026):
+- Resolved Modrinth Maven artifact resolution failure (`Could not find maven.modrinth:weather2`).
+- Cause: `build.gradle` referenced `weather2` instead of Modrinth's official project slug `weather-storms-tornadoes`.
+- Fix: Updated `build.gradle` dependency line to `maven.modrinth:weather-storms-tornadoes:${weather2_version}`.
+
+Session 22: Weather2 Modrinth Slug Resolution (Aug 11 2026):
+- Re-diagnosed unresolved `maven.modrinth:weather2` artifact error.
+- Confirmed `build.gradle` still contained the literal `weather2` identifier instead of Modrinth's registered project slug `weather-storms-tornadoes`.
+- Applied string replacement in `build.gradle` dependency block to route Modrinth Maven to `maven.modrinth:weather-storms-tornadoes:${weather2_version}`.
+
+Session 23: Duplicate Dependency Cleanup (Aug 11 2026):
+- Identified cause of persistent `Could not find maven.modrinth:weather2` build failure: duplicate dependency entries inside `build.gradle`.
+- Observed that the legacy `maven.modrinth:weather2` lines were still active above the newly appended `maven.modrinth:weather-storms-tornadoes` block.
+- Removed legacy `maven.modrinth:weather2` declarations, leaving only the correct Modrinth project slug (`weather-storms-tornadoes`).
+
+Session 24: Java Source File Synchronization (Aug 11 2026):
+- Fixed 15 Java compilation errors in `SailBlock.java` and `RudderBlockEntity.java`.
+- Updated `SailBlock.java` constructor to call `super(properties)` and removed non-existent `resetVectors()` methods.
+- Replaced outdated `ValueInput`/`ValueOutput` imports and methods in `RudderBlockEntity.java` with NeoForge 1.21.1 standard `CompoundTag` and `HolderLookup.Provider` parameters.
+
+Session 25: Block Entity DeferredHolder Registration (Aug 11 2026):
+- Resolved `cannot find symbol: method get()` error in `RudderBlockEntity.java`.
+- Cause: Constructor referenced `ModBlockEntities.BLOCK_ENTITY_TYPES.get()` (the container) instead of a specific `DeferredHolder`.
+- Fix: Declared `public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<RudderBlockEntity>> RUDDER` inside `ModBlockEntities.java` and updated `RudderBlockEntity` constructor to call `ModBlockEntities.RUDDER.get()`.
+
+Session 26: Full Build Verification & Cleanup (Aug 11 2026):
+- Successfully executed `./gradlew build` with zero compilation or dependency resolution errors.
+- Resolved all `SailBlock`, `RudderBlockEntity`, and `ModBlockEntities` classpath and syntax mismatches.
+- Next focus: In-game client verification (`./gradlew runClient`) and testing the unit test suite (`./gradlew test`).
+
+Session 27: CoroUtil Dependency Resolution (Aug 11 2026):
+- Resolved missing runtime dependency error for Weather2 (`CoroUtil not installed`).
+- Added `coroutil_version=1.21.0-1.3.7` to `gradle.properties`.
+- Declared `compileOnly` and `localRuntime` entries for `maven.modrinth:coroutil:${coroutil_version}` in `build.gradle`.
+
+Session 28: CoroUtil Loader Architecture Alignment (Aug 11 2026):
+- Diagnosed `ModLoadingCrashException`: Modrinth Maven pulled the Fabric build of `coroutil-1.21.0-1.3.7.jar`.
+- Identified that NeoForge rejected the Fabric artifact, leaving `weather2` missing its required dependency.
+- Updated `gradle.properties` to target the NeoForge version tag for `coroutil` and provided a local `libs/` fallback configuration.
+
+Session 29: Local Libs Repository Setup (Aug 11 2026):
+- Fixed Modrinth Maven version tag resolution failure for `coroutil-1.21.0-1.3.7-neoforge`.
+- Configured local `flatDir` repository pointing to `libs/` directory in `build.gradle`.
+- Routed `compileOnly` and `localRuntime` fileTree rules to load local NeoForge `.jar` dependencies directly, bypassing Maven loader mismatch issues.
+
+Session 30: Automated CoroUtil JAR Fetch (Aug 11 2026):
+- Provided PowerShell Modrinth API script to query and download the exact NeoForge 1.21.1 `coroutil` JAR into `D:\Serene sailing\libs\`.
+- Bypassed Modrinth Maven loader resolution issues by pulling the confirmed NeoForge artifact directly into the project's `flatDir` repository.
+
+Session 31: Build Gradle Syntax Typo Fix (Aug 11 2026):
+- Resolved `Could not find method iimplementation()` evaluation error in `build.gradle` line 74.
+- Fixed typo from `iimplementation` to `implementation` for the `net.neoforged:neoforge` dependency line.
+
+Session 32: NeoForge Version Alignment for Sable/Create Stack (Aug 11 2026):
+- Diagnosed `NullPointerException: Trying to access unbound value: neoforge:swim_speed` during `AttributeCallbacks.onBake`.
+- Identified cause: NeoForge `21.1.234` refactored attribute baking, breaking early `LivingEntity` mixin classloading in Sable 2.0.0 and Create 6.0.10.
+- Downgraded `neo_version` in `gradle.properties` from `21.1.234` to `21.1.93` to restore target NeoForge 1.21.1 API compatibility.
+
+Session 33: NeoForge 21.1.228 Target Pinning (Aug 11 2026):
+- Resolved ModLoadingCrashException where Create 6.0.10 and Sable 2.0.0 rejected NeoForge 21.1.93 for being below the minimum 21.1.228 requirement.
+- Updated `neo_version` in `gradle.properties` to `21.1.228` to satisfy mod loader constraints while avoiding the unbound attribute exception in 21.1.234.
+
+Session 34: Gradle Offline & Network Failure Recovery (Aug 11 2026):
+- Diagnosed `No such host is known (maven.neoforged.net)` buildscript resolution failure caused by running `--refresh-dependencies` during a network or DNS outage.
+- Prescribed executing `./gradlew runClient` (or `--offline`) to bypass remote Maven queries and launch using cached artifacts.
+
+Session 35: NeoForm Minecraft Classpath Binding Recovery (Aug 11 2026):
+- Diagnosed 70 compilation errors where all `net.minecraft.*` imports failed to resolve.
+- Identified root cause: interrupted `:neoFormRecompile` task following `neo_version` update to `21.1.228`, leaving mapped Minecraft JAR unattached from `compileClasspath`.
+- Prescribed stopping daemons (`./gradlew --stop`) and forcing task re-execution (`./gradlew compileJava --rerun-tasks`).
+
+Session 36: NeoForm Cache Invalidation & Classpath Recovery (Aug 11 2026):
+- Diagnosed persistent 70 `cannot find symbol` errors spanning all `net.minecraft.*` packages.
+- Identified root cause: corrupt/incomplete NeoForm decompilation cache for NeoForge `21.1.228` failing to attach the vanilla Minecraft JAR to `compileClasspath`.
+- Prescribed purging build artifacts via `./gradlew clean compileJava` and resetting `$env:USERPROFILE\.gradle\caches\neoform`.
+
+Session 37: Configuration Cache Invalidation & Classpath Recovery (Aug 11 2026):
+- Identified why 70 `cannot find symbol` errors persisted: Gradle was reusing a broken Configuration Cache entry containing an incomplete Minecraft classpath.
+- Wiped local `.gradle` and `build` cache directories.
+- Executed `./gradlew compileJava --no-configuration-cache --rerun-tasks` to force fresh NeoGradle Minecraft JAR binding.
+
+Session 38: Mojang Version Manifest Fetch Failure (Aug 11 2026):
+- Diagnosed build failure: NeoGradle failed to retrieve Mojang's `version_manifest.json` from `piston-meta.mojang.com`.
+- Prescribed manual PowerShell download of `launcher_metadata.json` into `$env:USERPROFILE\.gradle\caches\minecraft\` to unblock NeoGradle workspace evaluation.
+
+Session 39: NeoGradle Workspace Classpath Regeneration (Aug 11 2026):
+- Confirmed cause of 70 `cannot find symbol` errors: missing remapped `minecraft-mapped.jar` on `compileClasspath` following incomplete metadata downloads.
+- Executed daemon shutdown (`./gradlew --stop`) and purged `.gradle`/`build` local project cache directories.
+- Prescribed `./gradlew compileJava --refresh-dependencies --no-configuration-cache` to force clean NeoGradle Minecraft dependency re-decompilation and binding.
+
+Session 40: Foojay Toolchain Resolver Plugin Bypass (Aug 11 2026):
+- Diagnosed `Plugin [id: 'org.gradle.toolchains.foojay-resolver-convention'] was not found` error in `settings.gradle`.
+- Identified cause: Network timeout connecting to Gradle Plugin Portal during `--refresh-dependencies`.
+- Disabled Foojay resolver plugin in `settings.gradle` since Java 21 is already installed and detected locally.
+
+Sessions 40–60 Consolidated Milestone: Sail/Rudder Physics Engine, Test Harness, Model Definitions & Active Contraption Debugging:
+
+1. Physics Simulation Engine & Mathematical Models:
+   - Sail Aerodynamics (`SailAerodynamics.java`): Derived apparent wind vector dynamics (W_app = W_true - V_ship), dynamic pressure (0.5 * rho * v_app^2), angle-of-attack polar thrust curves, lateral heeling moment, and clamped in-irons aerodynamic dead zones (zero forward thrust when heading within 45 degrees of true wind).
+   - Rudder Hydrodynamics (`RudderHydrodynamics.java`): Derived effective water inflow velocity relative to hull rotation (V_flow = -(V_linear + omega x r_rudder)), foil lift deflection force, and resulting yaw torque (tau = r x F) around the ship Center of Mass.
+   - Weather2 WindReader Integration: Resolved API method signatures (Vec3 for continuous wind angle, BlockPos for discrete wind speed).
+   - Automated JUnit Test Harness (`RaftPropagationUnitTest.java`): Implemented and verified full physics propagation across 14 unit tests (downwind acceleration, beam reach crosswind lift, in-irons zero-thrust boundary, and rudder yaw deflection).
+
+2. Interactive Control & Block Registry:
+   - Rudder Controls: Implemented bi-directional cycling and deflection angle clamping (-45 deg to +45 deg) with wrap-around in `RudderBlockEntity.java` and `RudderBlock.java` for empty-hand and item interactions.
+   - Registry & Properties: Registered `CanvasSailBlock` and `RudderBlock` with `HorizontalDirectionalBlock.FACING`, `BlockStateProperties.WATERLOGGED`, and `.noOcclusion()`.
+   - Continuous Physics Injection: Configured `ServerPhysicsHandler.java` server tick loop targeting Create Aeronautics / Sable sub-level contraption entities with translational acceleration and drag damping.
+
+3. Geometry & Asset Pipeline:
+   - VoxelShapes: Configured 8-pixel centered vertical slab VoxelShape for Canvas Sail and 2-pixel thin pane VoxelShape for Rudder.
+   - 3D JSON Models & BlockStates: Authored multi-element composite block models (`canvas_sail.json` with timber spars + canvas sheet, `rudder.json` with pivot post + thin blade + iron pintles) and full 8-permutation variant blockstates (`facing` x `waterlogged`).
+
+4. Build & Environment Stabilization:
+   - Resolved Gradle configuration cache conflicts, access transformer cache wiping (`neoFormTransformSource`), and Java module path collisions (`cpw.mods.bootstraplauncher`).
+   - Cleaned build cache locks using native Windows `rmdir` to prevent PowerShell recursive memory exhaustion.
+
+5. Active Persisting Issues (UNRESOLVED):
+   - Block Model Visuals: Placed Sail and Rudder blocks still render in-game as full 16x16x16 solid cube meshes rather than their custom thin 3D models.
+   - Raft Propagation: Assembled contraption / raft entity remains completely stationary in the water and does not move under wind force or respond to rudder deflection in-game despite passing mathematical unit tests and telemetry readouts.

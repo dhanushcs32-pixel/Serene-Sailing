@@ -1,0 +1,36 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "serenesailing:block/helm",
+    "helm": "serenesailing:block/helm",
+    "wood": "minecraft:block/oak_planks"
+  },
+  "elements": [
+    {
+      "__comment": "Pedestal stand",
+      "from": [5, 0, 6],
+      "to": [11, 12, 10],
+      "faces": {
+        "north": { "uv": [5, 4, 11, 16],  "texture": "#wood" },
+        "south": { "uv": [5, 4, 11, 16],  "texture": "#wood" },
+        "west":  { "uv": [6, 4, 10, 16],  "texture": "#wood" },
+        "east":  { "uv": [6, 4, 10, 16],  "texture": "#wood" },
+        "up":    { "uv": [5, 6, 11, 10],  "texture": "#wood" },
+        "down":  { "uv": [5, 6, 11, 10],  "texture": "#wood", "cullface": "down" }
+      }
+    },
+    {
+      "__comment": "Center hub & spoke wheel (extends above the block cell)",
+      "from": [1, 6, 4],
+      "to": [15, 20, 6],
+      "faces": {
+        "north": { "uv": [1, 0, 15, 14], "texture": "#helm" },
+        "south": { "uv": [1, 0, 15, 14], "texture": "#helm" },
+        "west":  { "uv": [0, 2, 2, 16],  "texture": "#helm" },
+        "east":  { "uv": [14, 2, 16, 16],"texture": "#helm" },
+        "up":    { "uv": [1, 4, 15, 6],  "texture": "#helm" },
+        "down":  { "uv": [1, 4, 15, 6],  "texture": "#helm" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "serenesailing:block/rudder", "y": 0,   "uvlock": true },
+    "facing=east":  { "model": "serenesailing:block/rudder", "y": 90,  "uvlock": true },
+    "facing=south": { "model": "serenesailing:block/rudder", "y": 180, "uvlock": true },
+    "facing=west":  { "model": "serenesailing:block/rudder", "y": 270, "uvlock": true }
+  }
+}

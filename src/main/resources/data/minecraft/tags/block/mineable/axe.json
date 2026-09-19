@@ -1,0 +1,10 @@
+{
+  "replace": false,
+  "values": [
+    "serenesailing:canvas_sail",
+    "serenesailing:helm",
+    "serenesailing:rudder",
+    "serenesailing:capstan",
+    "serenesailing:taffrail_log"
+  ]
+}

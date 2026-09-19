@@ -1,0 +1,50 @@
+{
+  "sail_rustle": {
+    "category": "player",
+    "sounds": [
+      {
+        "name": "item.armor.equip_leather",
+        "type": "event"
+      },
+      {
+        "name": "block.wool.place",
+        "type": "event"
+      }
+    ]
+  },
+  "ship_creak": {
+    "category": "ambient",
+    "sounds": [
+      {
+        "name": "entity.boat.paddle_water",
+        "type": "event"
+      },
+      {
+        "name": "block.wood.step",
+        "type": "event"
+      }
+    ]
+  },
+  "wind_billow": {
+    "category": "ambient",
+    "sounds": [
+      {
+        "name": "item.elytra.flying",
+        "type": "event"
+      }
+    ]
+  },
+  "capstan_crank": {
+    "category": "block",
+    "sounds": [
+      {
+        "name": "block.chain.step",
+        "type": "event"
+      },
+      {
+        "name": "block.iron_door.close",
+        "type": "event"
+      }
+    ]
+  }
+}

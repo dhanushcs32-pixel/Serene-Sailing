@@ -1,0 +1,26 @@
+# Minecraft & Forge/NeoForge runtime directories
+run/
+logs/
+
+# Build & compilation outputs
+build/
+bin/
+out/
+
+# Gradle caches
+.gradle/
+.gradle-home/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Editor buffer & temporary caches
+.freebuff/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

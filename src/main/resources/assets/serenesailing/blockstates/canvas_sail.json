@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "facing=north,sail_state=0": { "model": "serenesailing:block/canvas_sail_furled", "y": 0,   "uvlock": true },
+    "facing=north,sail_state=1": { "model": "serenesailing:block/canvas_sail_reefed", "y": 0,   "uvlock": true },
+    "facing=north,sail_state=2": { "model": "serenesailing:block/canvas_sail",        "y": 0,   "uvlock": true },
+    "facing=east,sail_state=0":  { "model": "serenesailing:block/canvas_sail_furled", "y": 90,  "uvlock": true },
+    "facing=east,sail_state=1":  { "model": "serenesailing:block/canvas_sail_reefed", "y": 90,  "uvlock": true },
+    "facing=east,sail_state=2":  { "model": "serenesailing:block/canvas_sail",        "y": 90,  "uvlock": true },
+    "facing=south,sail_state=0": { "model": "serenesailing:block/canvas_sail_furled", "y": 180, "uvlock": true },
+    "facing=south,sail_state=1": { "model": "serenesailing:block/canvas_sail_reefed", "y": 180, "uvlock": true },
+    "facing=south,sail_state=2": { "model": "serenesailing:block/canvas_sail",        "y": 180, "uvlock": true },
+    "facing=west,sail_state=0":  { "model": "serenesailing:block/canvas_sail_furled", "y": 270, "uvlock": true },
+    "facing=west,sail_state=1":  { "model": "serenesailing:block/canvas_sail_reefed", "y": 270, "uvlock": true },
+    "facing=west,sail_state=2":  { "model": "serenesailing:block/canvas_sail",        "y": 270, "uvlock": true }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.serenesailing.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ChunkGeneratorMixin",
+    "NoiseBasedChunkGeneratorMixin"
+  ],
+  "client": [],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
