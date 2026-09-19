@@ -1,0 +1,12 @@
+{
+  "variants": {
+    "anchored=false,facing=north": { "model": "serenesailing:block/capstan_weighed",  "y": 0,   "uvlock": true },
+    "anchored=false,facing=east":  { "model": "serenesailing:block/capstan_weighed",  "y": 90,  "uvlock": true },
+    "anchored=false,facing=south": { "model": "serenesailing:block/capstan_weighed",  "y": 180, "uvlock": true },
+    "anchored=false,facing=west":  { "model": "serenesailing:block/capstan_weighed",  "y": 270, "uvlock": true },
+    "anchored=true,facing=north":  { "model": "serenesailing:block/capstan_anchored", "y": 0,   "uvlock": true },
+    "anchored=true,facing=east":   { "model": "serenesailing:block/capstan_anchored", "y": 90,  "uvlock": true },
+    "anchored=true,facing=south":  { "model": "serenesailing:block/capstan_anchored", "y": 180, "uvlock": true },
+    "anchored=true,facing=west":   { "model": "serenesailing:block/capstan_anchored", "y": 270, "uvlock": true }
+  }
+}

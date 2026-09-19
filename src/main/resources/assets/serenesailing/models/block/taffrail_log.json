@@ -1,0 +1,44 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "minecraft:block/oak_planks",
+    "wood": "minecraft:block/oak_planks",
+    "iron": "minecraft:block/iron_block",
+    "brass": "minecraft:block/copper_block"
+  },
+  "elements": [
+    {
+      "__comment": "Horizontal rotor housing log",
+      "from": [0, 6, 6],
+      "to": [16, 10, 10],
+      "faces": {
+        "north": { "uv": [0, 6, 16, 10], "texture": "#wood" },
+        "south": { "uv": [0, 6, 16, 10], "texture": "#wood" },
+        "up":    { "uv": [0, 6, 16, 10], "texture": "#wood" },
+        "down":  { "uv": [0, 6, 16, 10], "texture": "#wood" }
+      }
+    },
+    {
+      "__comment": "Iron sensor rotor mount (aft end)",
+      "from": [0, 7, 7],
+      "to": [3, 9, 9],
+      "faces": {
+        "north": { "uv": [13, 7, 16, 9], "texture": "#iron" },
+        "south": { "uv": [13, 7, 16, 9], "texture": "#iron" },
+        "west":  { "uv": [7, 7, 9, 9],   "texture": "#iron" },
+        "up":    { "uv": [0, 7, 3, 9],   "texture": "#iron" },
+        "down":  { "uv": [0, 7, 3, 9],   "texture": "#iron" }
+      }
+    },
+    {
+      "__comment": "Brast stern mount bracket",
+      "from": [12, 5, 7],
+      "to": [14, 11, 9],
+      "faces": {
+        "north": { "uv": [12, 5, 14, 11], "texture": "#brass" },
+        "south": { "uv": [12, 5, 14, 11], "texture": "#brass" },
+        "east":  { "uv": [7, 5, 9, 11],   "texture": "#brass" }
+      }
+    }
+  ]
+}

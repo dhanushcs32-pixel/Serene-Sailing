@@ -1,0 +1,48 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "minecraft:block/oak_planks",
+    "wood": "minecraft:block/oak_planks",
+    "log": "minecraft:block/stripped_oak_log",
+    "iron": "minecraft:block/iron_block",
+    "chain": "minecraft:block/chain"
+  },
+  "elements": [
+    {
+      "__comment": "Wooden drum body",
+      "from": [3, 2, 3],
+      "to": [13, 9, 13],
+      "faces": {
+        "north": { "uv": [3, 7, 13, 14], "texture": "#wood" },
+        "south": { "uv": [3, 7, 13, 14], "texture": "#wood" },
+        "west":  { "uv": [3, 7, 13, 14], "texture": "#log" },
+        "east":  { "uv": [3, 7, 13, 14], "texture": "#log" },
+        "up":    { "uv": [3, 3, 13, 13], "texture": "#wood" },
+        "down":  { "uv": [3, 3, 13, 13], "texture": "#wood", "cullface": "down" }
+      }
+    },
+    {
+      "__comment": "Iron crank axle",
+      "from": [6, 9, 6],
+      "to": [10, 12, 10],
+      "faces": {
+        "north": { "uv": [6, 4, 10, 7],  "texture": "#iron" },
+        "south": { "uv": [6, 4, 10, 7],  "texture": "#iron" },
+        "west":  { "uv": [6, 4, 10, 7],  "texture": "#iron" },
+        "east":  { "uv": [6, 4, 10, 7],  "texture": "#iron" },
+        "up":    { "uv": [6, 6, 10, 10], "texture": "#iron" }
+      }
+    },
+    {
+      "__comment": "Mooring chain (weighed - stowed)",
+      "from": [11, 0, 7],
+      "to": [13, 4, 9],
+      "faces": {
+        "north": { "uv": [1, 12, 3, 16], "texture": "#chain" },
+        "south": { "uv": [1, 12, 3, 16], "texture": "#chain" },
+        "east":  { "uv": [1, 12, 3, 16], "texture": "#chain" },
+        "west":  { "uv": [1, 12, 3, 16], "texture": "#chain" }
+      }
+    }
+  ]
+}

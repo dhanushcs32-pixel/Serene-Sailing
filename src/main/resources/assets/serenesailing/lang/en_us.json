@@ -1,0 +1,18 @@
+{
+  "itemGroup.serenesailing": "Serene Sailing",
+  "creativetab.serenesailing.sailing_tab": "Serene Sailing",
+  "block.serenesailing.canvas_sail": "Canvas Sail",
+  "block.serenesailing.rudder": "Rudder",
+  "block.serenesailing.helm": "Ship's Wheel",
+  "block.serenesailing.wind_vane": "Masthead Wind Vane",
+  "block.serenesailing.capstan": "Capstan",
+  "serenesailing.actionbar.helm_angle": "Helm: %s",
+  "serenesailing.actionbar.rudder_angle": "Rudder: %s",
+  "serenesailing.actionbar.sail_state": "Sail: %s",
+  "serenesailing.actionbar.wind_vane": "Wind: %.1f m/s | Point of Sail:",
+  "serenesailing.point_of_sail.in_irons": "In Irons",
+  "serenesailing.point_of_sail.close_hauled": "Close-Hauled",
+  "serenesailing.point_of_sail.beam_reach": "Beam Reach",
+  "serenesailing.point_of_sail.broad_reach": "Broad Reach",
+  "serenesailing.point_of_sail.running": "Running / Dead Downwind"
+}

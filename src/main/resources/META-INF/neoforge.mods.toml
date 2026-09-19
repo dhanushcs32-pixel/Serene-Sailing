@@ -1,0 +1,58 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "${mod_license}"
+issueTrackerURL = ""
+
+
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+description = '''
+Adds sails, rudders, and wind-driven propulsion for ship-building on top of
+Sable's physics sub-levels and Create Aeronautics' contraption framework.
+Part of the Serene Sailing modpack project.
+'''
+
+# Mixins: suppress vanilla structure generation on Sable sub-level plot
+# chunks at extreme negative coordinates (prevents NoiseBasedAquifer crash).
+[[mixins]]
+    config = "serenesailing.mixins.json"
+
+[[dependencies.'${mod_id}']]
+    modId = "neoforge"
+    type = "required"
+    versionRange = "${loader_version_range}"
+    ordering = "NONE"
+    side = "BOTH"
+
+[[dependencies.'${mod_id}']]
+    modId = "minecraft"
+    type = "required"
+    versionRange = "${minecraft_version_range}"
+    ordering = "NONE"
+    side = "BOTH"
+
+# Hard dependency: Sable sub-level physics drives Aeronautics vessels.
+[[dependencies.'${mod_id}']]
+    modId = "sable"
+    type = "required"
+    versionRange = "[2.0.0,)"
+    ordering = "AFTER"
+    side = "BOTH"
+
+# Hard dependency: base Create.
+[[dependencies.'${mod_id}']]
+    modId = "create"
+    type = "required"
+    versionRange = "[6.0.0,)"
+    ordering = "AFTER"
+    side = "BOTH"
+
+# Hard dependency: Aeronautics Physics Assembler assembles our ships.
+[[dependencies.'${mod_id}']]
+    modId = "aeronautics"
+    type = "required"
+    versionRange = "[1.0.0,)"
+    ordering = "AFTER"
+    side = "BOTH"
