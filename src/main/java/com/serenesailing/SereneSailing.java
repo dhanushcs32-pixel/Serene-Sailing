@@ -1,6 +1,5 @@
 package com.serenesailing;
 
-import com.serenesailing.block.CapstanBlock;
 import com.serenesailing.config.SailingConfig;
 import com.serenesailing.registry.ModBlockEntities;
 import com.serenesailing.registry.ModBlocks;

@@ -1,8 +1,7 @@
 package com.serenesailing.block;
 
-import com.serenesailing.client.gui.HelmScreen;
+import com.serenesailing.client.gui.HelmScreenOpener;
 import com.serenesailing.entity.HelmBlockEntity;
-import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -78,7 +77,7 @@ public class HelmBlock extends Block implements EntityBlock, SimpleWaterloggedBl
     protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hitResult) {
         if (level.isClientSide
                 && level.getBlockEntity(pos) instanceof HelmBlockEntity helm) {
-            Minecraft.getInstance().setScreen(new HelmScreen(pos, helm.getSteeringAngle()));
+            HelmScreenOpener.open(pos, helm.getSteeringAngle());
         }
         return InteractionResult.SUCCESS;
     }
@@ -87,7 +86,7 @@ public class HelmBlock extends Block implements EntityBlock, SimpleWaterloggedBl
     protected ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos, Player player, InteractionHand hand, BlockHitResult hitResult) {
         if (level.isClientSide
                 && level.getBlockEntity(pos) instanceof HelmBlockEntity helm) {
-            Minecraft.getInstance().setScreen(new HelmScreen(pos, helm.getSteeringAngle()));
+            HelmScreenOpener.open(pos, helm.getSteeringAngle());
         }
         return ItemInteractionResult.sidedSuccess(level.isClientSide);
     }
