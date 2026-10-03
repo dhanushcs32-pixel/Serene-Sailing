@@ -59,7 +59,7 @@ public class RudderBlock extends Block implements EntityBlock, SimpleWaterlogged
     @Nullable
     @Override
     public BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
-        return new RudderBlockEntity(pos, state);
+        return com.serenesailing.registry.ModBlockEntities.RUDDER.get().create(pos, state);
     }
 
     private InteractionResult handleSteeringClick(Level level, BlockPos pos, Player player) {
@@ -82,7 +82,7 @@ public class RudderBlock extends Block implements EntityBlock, SimpleWaterlogged
                 if (after != before) {
                     // Creak pitch rises as the blade swings from hard port to hard starboard.
                     level.playSound(null, pos, SoundEvents.WOOD_HIT, SoundSource.BLOCKS,
-                            0.7f, 0.8f + (after + 30.0f) / 60.0f * 0.4f);
+                            0.7f, 0.8f + (after + 45.0f) / 90.0f * 0.4f);
                 }
 
                 player.displayClientMessage(Component.literal(
@@ -96,10 +96,13 @@ public class RudderBlock extends Block implements EntityBlock, SimpleWaterlogged
         return InteractionResult.sidedSuccess(level.isClientSide);
     }
 
-    /** Human-readable name for the five discrete rudder helm states. */
+    /** Human-readable name for the discrete rudder helm states. */
     private static String describeAngle(float angle) {
+        if (angle <= -37.5f) {
+            return "Hard Port (-45\u00B0)";
+        }
         if (angle <= -22.5f) {
-            return "Hard Port (-30\u00B0)";
+            return "Port (-30\u00B0)";
         }
         if (angle <= -7.5f) {
             return "Port (-15\u00B0)";
@@ -110,7 +113,10 @@ public class RudderBlock extends Block implements EntityBlock, SimpleWaterlogged
         if (angle < 22.5f) {
             return "Starboard (+15\u00B0)";
         }
-        return "Hard Starboard (+30\u00B0)";
+        if (angle < 37.5f) {
+            return "Starboard (+30\u00B0)";
+        }
+        return "Hard Starboard (+45\u00B0)";
     }
 
     @Override
