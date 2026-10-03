@@ -2,13 +2,19 @@ package com.serenesailing.block;
 
 import com.serenesailing.entity.TaffrailLogBlockEntity;
 import com.serenesailing.registry.ModBlockEntities;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
@@ -77,10 +83,27 @@ public class TaffrailLogBlock extends Block implements EntityBlock {
 
     @Override
     protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hitResult) {
-        if (!level.isClientSide && level.getBlockEntity(pos) instanceof TaffrailLogBlockEntity log) {
-            player.displayClientMessage(Component.literal(String.format(
-                    "\u00A7bShip Speed: %.1f knots (%.1f m/s)",
-                    log.getSpeedKnots(), log.getSpeedMs())), true);
+        if (!level.isClientSide) {
+            TaffrailLogBlockEntity log = null;
+            if (level.getBlockEntity(pos) instanceof TaffrailLogBlockEntity be) {
+                log = be;
+            } else if (level instanceof ServerLevel serverLevel) {
+                SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+                if (container instanceof ServerSubLevelContainer serverContainer) {
+                    LevelPlot plot = serverContainer.getPlot(new ChunkPos(pos));
+                    if (plot != null) {
+                        for (PlotChunkHolder holder : plot.getLoadedChunks()) {
+                            if (holder.getChunk() != null && holder.getChunk().getBlockEntity(pos) instanceof TaffrailLogBlockEntity be) {
+                                log = be;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (log != null) {
+                player.displayClientMessage(Component.literal(log.getActionBarDisplay()), true);
+            }
         }
         return InteractionResult.sidedSuccess(level.isClientSide);
     }
