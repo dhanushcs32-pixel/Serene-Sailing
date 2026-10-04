@@ -48,10 +48,6 @@ public class WindVaneRenderer implements BlockEntityRenderer<WindVaneBlockEntity
     public void render(WindVaneBlockEntity be, float partialTick, PoseStack poseStack,
                        MultiBufferSource bufferSource, int light, int overlay) {
         float angleDeg = be.getInterpolatedWindAngle(partialTick);
-        if (Mth.abs(angleDeg) < 0.01f) {
-            // Dead calm - pennant hangs still; nothing dynamic to draw.
-            return;
-        }
 
         poseStack.pushPose();
         // Pivot on the bronze spindle at the centre of the block.
