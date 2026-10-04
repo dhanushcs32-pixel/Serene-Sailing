@@ -12,18 +12,18 @@ import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Ship's Wheel slider GUI. Replaces the old +/-15 degree click steering: the
- * player drags the wheel slider continuously between Hard Port (-30 deg) and
- * Hard Starboard (+30 deg); every change is sent to the server via
- * {@link SetHelmAnglePayload}, which applies it to the authoritative
- * {@code HelmBlockEntity}.
+ * player drags the wheel slider continuously between Hard Port (-45 deg) and
+ * Hard Starboard (+45 deg); network dispatch is throttled to >= 1.0 deg delta
+ * or on mouse release via {@link SetHelmAnglePayload}.
  */
 public class HelmScreen extends Screen {
 
-    private static final float MIN_ANGLE = -30.0f;
-    private static final float MAX_ANGLE = 30.0f;
+    private static final float MIN_ANGLE = -45.0f;
+    private static final float MAX_ANGLE = 45.0f;
 
     private final BlockPos pos;
     private float angle;
+    private float lastSentAngle = Float.NaN;
 
     public HelmScreen(BlockPos pos, float angle) {
         super(Component.literal("Ship's Wheel"));
@@ -56,10 +56,19 @@ public class HelmScreen extends Screen {
         return false;
     }
 
-    /** Applies a new angle and sends it to the authoritative server. */
-    private void setAngle(float newAngle) {
+    @Override
+    public void onClose() {
+        setAngle(this.angle, true);
+        super.onClose();
+    }
+
+    /** Applies a new angle and sends it to the authoritative server with throttling. */
+    private void setAngle(float newAngle, boolean forceSend) {
         this.angle = Mth.clamp(newAngle, MIN_ANGLE, MAX_ANGLE);
-        PacketDistributor.sendToServer(new SetHelmAnglePayload(this.pos, this.angle));
+        if (forceSend || Float.isNaN(this.lastSentAngle) || Math.abs(this.angle - this.lastSentAngle) >= 1.0f) {
+            this.lastSentAngle = this.angle;
+            PacketDistributor.sendToServer(new SetHelmAnglePayload(this.pos, this.angle));
+        }
     }
 
     /** Action-bar style readout matching the old click-steering feedback. */
@@ -82,7 +91,7 @@ public class HelmScreen extends Screen {
         return (float) (sliderValue * (MAX_ANGLE - MIN_ANGLE) + MIN_ANGLE);
     }
 
-    /** The wheel slider: -30 deg (left) to +30 deg (right), continuous. */
+    /** The wheel slider: -45 deg (left) to +45 deg (right), continuous. */
     private class HelmSlider extends AbstractSliderButton {
 
         HelmSlider(int x, int y, int width, int height) {
@@ -96,16 +105,20 @@ public class HelmScreen extends Screen {
 
         @Override
         protected void applyValue() {
-            // Fires continuously while dragging AND on release - the server
-            // handler is idempotent and throttled by packet rate.
-            setAngle(fromSlider(this.value));
+            setAngle(fromSlider(this.value), false);
+        }
+
+        @Override
+        public void onRelease(double mouseX, double mouseY) {
+            super.onRelease(mouseX, mouseY);
+            setAngle(fromSlider(this.value), true);
         }
 
         /** Quick-reset hook used by the [ Center (0 deg) ] button. */
         void snapTo(float newAngle) {
             this.value = toSlider(newAngle);
             updateMessage();
-            applyValue();
+            setAngle(newAngle, true);
         }
     }
 }
