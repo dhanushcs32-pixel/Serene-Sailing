@@ -1,15 +1,26 @@
 package com.serenesailing.entity;
 
+import com.serenesailing.SereneSailing;
 import com.serenesailing.block.CapstanBlock;
+import com.serenesailing.event.ServerPhysicsHandler;
 import com.serenesailing.registry.ModBlockEntities;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Winch station for the anchor. Toggled by interacting with the block; while
@@ -73,6 +84,14 @@ public class CapstanBlockEntity extends BlockEntity {
         return this.anchored;
     }
 
+    public float getSeabedDepth() {
+        return this.seabedDepth;
+    }
+
+    public float getCurrentChainLength() {
+        return this.chainLength;
+    }
+
     /**
      * Per-tick chain simulation (both sides, via the block's ticker):
      * advances {@link #chainLength} toward its target at the winch speed.
@@ -86,8 +105,23 @@ public class CapstanBlockEntity extends BlockEntity {
             return;
         }
 
+        double overworldY = this.worldPosition.getY();
         if (!level.isClientSide && this.anchored) {
             this.seabedDepth = findSeabedDepth();
+            if (level instanceof ServerLevel serverLevel) {
+                ServerSubLevel subLevel = resolveSubLevel(serverLevel);
+                if (subLevel != null) {
+                    Pose3dc pose = subLevel.logicalPose();
+                    Vec3 localCenter = Vec3.atCenterOf(this.worldPosition);
+                    Vec3 worldCenter = pose.transformPosition(localCenter);
+                    overworldY = worldCenter.y;
+                }
+            }
+
+            if (this.syncCounter % 20 == 0) {
+                SereneSailing.LOGGER.info("[ANCHOR-DIAG] Dimension: {} | LocalPos: {} | OverworldY: {} | SeabedDepth: {} | ChainLength: {}",
+                        level.dimension().location(), this.worldPosition, overworldY, this.seabedDepth, this.chainLength);
+            }
         }
         float target = this.anchored ? this.seabedDepth : 0.0f;
         float diff = target - this.chainLength;
@@ -106,32 +140,86 @@ public class CapstanBlockEntity extends BlockEntity {
     }
 
     /**
-     * Straight-down scan: depth to the first solid ground block below the
-     * capstan. Air, fluids (water) and non-solid blocks are ignored; a block
-     * qualifies when it blocks motion or its UP face is sturdy. The returned
-     * depth targets the block's TOP surface (with a small inset) so the anchor
-     * fluke rests neatly on the seabed instead of phasing into it.
+     * Resolves the {@link ServerSubLevel} containing this capstan if assembled on a vessel.
      */
-    private float findSeabedDepth() {
-        BlockPos.MutableBlockPos checkPos = this.worldPosition.mutable();
-        float foundDepth = (float) MAX_SEABED_SEARCH;
-
-        for (int d = 1; d <= MAX_SEABED_SEARCH; d++) {
-            checkPos.setY(this.worldPosition.getY() - d);
-            BlockState state = this.level.getBlockState(checkPos);
-
-            // Ignore air, fluids/water, and non-solid blocks
-            if (!state.isAir() && state.getFluidState().isEmpty()
-                    && (state.blocksMotion()
-                        || state.isFaceSturdy(this.level, checkPos, Direction.UP))) {
-                // The top surface of pos.below(d) is (d - 1.0f) blocks below
-                // the capstan base; small offset so the anchor sits neatly
-                // on top of the block.
-                foundDepth = (float) d - 0.15f;
-                break;
+    private ServerSubLevel resolveSubLevel(ServerLevel serverLevel) {
+        SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+        if (container instanceof ServerSubLevelContainer serverContainer) {
+            LevelPlot plot = serverContainer.getPlot(new ChunkPos(this.worldPosition));
+            if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                return ssl;
+            } else {
+                for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
+                    LevelPlot subPlot = ssl.getPlot();
+                    if (subPlot != null && subPlot.contains(new ChunkPos(this.worldPosition))) {
+                        return ssl;
+                    }
+                }
             }
         }
-        return foundDepth;
+        return null;
+    }
+
+    /**
+     * Straight-down scan: continuous depth from the capstan's Overworld Y
+     * to the top surface of the first solid seabed block below it.
+     *
+     * <p>Uses the vessel's exact floating-point world Y (including draft
+     * fraction) so the returned payout length places the anchor flush on
+     * the seabed regardless of how high the hull bobs above the block grid.</p>
+     */
+    private float findSeabedDepth() {
+        if (this.level == null) return 0.0f;
+
+        // --- Resolve Overworld level & continuous capstan world position ---
+        Level overworldLevel = this.level;
+        double capstanWorldY;
+        int overworldX, overworldZ;
+
+        if (this.level instanceof ServerLevel serverLevel) {
+            ServerSubLevel subLevel = resolveSubLevel(serverLevel);
+            if (subLevel != null) {
+                ServerLevel parentLevel = ServerPhysicsHandler.resolveWeatherQueryLevel(serverLevel);
+                if (parentLevel != null) {
+                    overworldLevel = parentLevel;
+                }
+                Pose3dc pose = subLevel.logicalPose();
+                Vec3 localCenter = Vec3.atCenterOf(this.worldPosition);
+                Vec3 worldCenter = pose.transformPosition(localCenter);
+                capstanWorldY = worldCenter.y;
+                overworldX = (int) Math.floor(worldCenter.x);
+                overworldZ = (int) Math.floor(worldCenter.z);
+            } else {
+                capstanWorldY = this.worldPosition.getY() + 0.5;
+                overworldX = this.worldPosition.getX();
+                overworldZ = this.worldPosition.getZ();
+            }
+        } else {
+            return 0.0f;
+        }
+
+        // Start scanning 1 block below the capstan to clear ship hull/deck
+        int scanStartY = (int) Math.floor(capstanWorldY) - 1;
+
+        BlockPos.MutableBlockPos scanPos = new BlockPos.MutableBlockPos();
+
+        for (int d = 0; d <= MAX_SEABED_SEARCH; d++) {
+            scanPos.set(overworldX, scanStartY - d, overworldZ);
+            BlockState state = overworldLevel.getBlockState(scanPos);
+            FluidState fluid = overworldLevel.getFluidState(scanPos);
+
+            if (!state.isAir() && fluid.isEmpty() && state.blocksMotion()) {
+                // Top surface of the solid seabed block is at scanPos.getY() + 1.0.
+                // Measure true continuous distance from the capstan drum down:
+                double seabedTopY = (double) scanPos.getY() + 1.0;
+                double trueDistance = capstanWorldY - seabedTopY;
+
+                // Small buffer (0.02) so the crossbar bottom rests flush
+                return (float) Math.max(0.0, trueDistance - 0.02);
+            }
+        }
+
+        return (float) MAX_SEABED_SEARCH; // Open deep sea / Abyss
     }
 
     /** @return chain length interpolated between ticks for smooth rendering. */
