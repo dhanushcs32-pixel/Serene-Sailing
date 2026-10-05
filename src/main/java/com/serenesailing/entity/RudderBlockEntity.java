@@ -10,7 +10,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 public class RudderBlockEntity extends BlockEntity {
 
-    private float steeringAngle = 0.0f; // [-30.0, +30.0] degrees, 15-degree steps
+    private float steeringAngle = 0.0f; // [-45.0, +45.0] degrees
 
     public RudderBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.RUDDER.get(), pos, state);
@@ -21,11 +21,8 @@ public class RudderBlockEntity extends BlockEntity {
     }
 
     public void setSteeringAngle(float angle) {
-        // Clamp to the physical stop. The helm has five discrete states:
-        // -30 (Hard Port), -15 (Port), 0 (Centered), +15 (Starboard), +30 (Hard Starboard).
-        // The old wrap-around (-45 -> +45) made turns unpredictable: one click
-        // past center could jump the rudder to full opposite deflection.
-        this.steeringAngle = Math.max(-30.0f, Math.min(30.0f, angle));
+        // Clamp to the physical stop [-45, +45]
+        this.steeringAngle = Math.max(-45.0f, Math.min(45.0f, angle));
         // Sync contract (prevents client/server angle desync & visual stutter):
         // 1. setChanged() marks the BE dirty so it saves and re-ticks.
         // 2. sendBlockUpdated(..., 3) triggers getUpdatePacket()/getUpdateTag()
