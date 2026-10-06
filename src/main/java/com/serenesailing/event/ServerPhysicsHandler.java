@@ -8,6 +8,7 @@ import com.serenesailing.config.SailingConfig;
 import com.serenesailing.entity.CapstanBlockEntity;
 import com.serenesailing.entity.HelmBlockEntity;
 import com.serenesailing.entity.RudderBlockEntity;
+import com.serenesailing.entity.TaffrailLogBlockEntity;
 import com.serenesailing.entity.WindVaneBlockEntity;
 import com.serenesailing.physics.SailAerodynamics;
 import com.serenesailing.registry.ModBlocks;
@@ -69,9 +70,9 @@ public class ServerPhysicsHandler {
     private static final double PITCH_STABILIZE_COEFF = 600.0;
     /** Anchor lock exponential rate (keep = e^(-rate*dt)). */
     private static final double ANCHOR_DAMPING_RATE = 20.0;
-    /** Buoyancy ride-height bias [blocks]: equilibrium puts the hull bottom
-     *  this far ABOVE the water surface so open cockpits stay dry. */
-    private static final double RIDE_HEIGHT_BIAS = 0.7;
+    /** Target hull draft depth [blocks]: equilibrium sits the hull bottom
+     *  this far below the water surface so planks are naturally submerged. */
+    private static final float TARGET_HULL_DRAFT = 0.40f;
     /** Ride-height spring response [1/s^2 per block of submerged depth]. */
     private static final double RIDE_SPRING = 10.0;
     /** Minimum steering speed magnitude [m/s]: rudder water flow baseline so
@@ -87,10 +88,11 @@ public class ServerPhysicsHandler {
     /** Cached rudder: live block entity, application point, and facing. */
     private record RudderInfo(RudderBlockEntity blockEntity, Vector3d localPoint, Direction facing) {}
 
-    /** Per-sub-level steering scan: rudders, helm stations, vanes, capstans, sails. */
+    /** Per-sub-level steering scan: rudders, helm stations, vanes, capstans, taffrails, sails. */
     private record SteeringCache(List<RudderInfo> rudders, List<HelmBlockEntity> helms,
                                  List<WindVaneBlockEntity> vanes,
                                  List<CapstanBlockEntity> capstans,
+                                 List<TaffrailLogBlockEntity> taffrails,
                                  boolean anchorState,
                                  double sailAreaEfficiency) {}
 
@@ -99,6 +101,29 @@ public class ServerPhysicsHandler {
     /** Per-sublevel cooldown stamp for hull creak sounds. */
     private static final Map<UUID, Long> CREAK_COOLDOWN = new ConcurrentHashMap<>();
     private static final long STEERING_RESCAN_STEPS = 100L;
+
+    /** Authoritative helm angle cached per sub-level UUID to bridge sleep/virtualized block entities. */
+    private static final Map<UUID, Float> HELM_ANGLE_CACHE = new ConcurrentHashMap<>();
+    /** Real-time world linear velocity vector cached per sub-level UUID for telemetry sensors. */
+    private static final Map<UUID, Vector3d> VESSEL_VELOCITY_CACHE = new ConcurrentHashMap<>();
+    /** Forward speed [m/s] along vessel heading cached per sub-level UUID. */
+    private static final Map<UUID, Double> FORWARD_SPEED_CACHE = new ConcurrentHashMap<>();
+
+    public static void setHelmAngle(UUID subLevelId, float angle) {
+        HELM_ANGLE_CACHE.put(subLevelId, angle);
+    }
+
+    public static float getHelmAngle(UUID subLevelId) {
+        return HELM_ANGLE_CACHE.getOrDefault(subLevelId, 0.0f);
+    }
+
+    public static Vector3d getVesselVelocity(UUID subLevelId) {
+        return VESSEL_VELOCITY_CACHE.getOrDefault(subLevelId, new Vector3d(0.0, 0.0, 0.0));
+    }
+
+    public static double getForwardSpeed(UUID subLevelId) {
+        return FORWARD_SPEED_CACHE.getOrDefault(subLevelId, 0.0);
+    }
 
     /**
      * Resolves the {@link ServerLevel} that actually holds Weather2 weather data
@@ -140,6 +165,9 @@ public class ServerPhysicsHandler {
                 STEERING_CACHE.remove(id);
                 STEERING_CACHE_STEP.remove(id);
                 CREAK_COOLDOWN.remove(id);
+                HELM_ANGLE_CACHE.remove(id);
+                VESSEL_VELOCITY_CACHE.remove(id);
+                FORWARD_SPEED_CACHE.remove(id);
                 continue;
             }
             try {
@@ -183,6 +211,14 @@ public class ServerPhysicsHandler {
         Vector3d starboardWorld = new Vector3d(forwardWorld).cross(0.0, 1.0, 0.0).normalize();
 
         SteeringCache steering = getSteeringCache(subLevel);
+
+        UUID subLevelId = subLevel.getUniqueId();
+        VESSEL_VELOCITY_CACHE.put(subLevelId, new Vector3d(shipVelWorld));
+        double fwdSpeed = Math.max(0.0, shipVelWorld.dot(forwardWorld));
+        FORWARD_SPEED_CACHE.put(subLevelId, fwdSpeed);
+        for (TaffrailLogBlockEntity taffrail : steering.taffrails()) {
+            taffrail.setSpeedTelemetry((float) fwdSpeed);
+        }
 
         // ---- Buoyancy / ride height -----------------------------------------
         // Vertical spring that lifts the hull so its resting waterline sits
@@ -260,13 +296,19 @@ public class ServerPhysicsHandler {
             body.addLinearAndAngularVelocity(planarDelta,
                     new Vector3d(0.0, -omegaY, 0.0));
         } else if (planarSpeed > 1.0e-9 || omegaWorld.lengthSquared() > 1.0e-12) {
+            // FIX: Pass the unified helm angle so zero-thrust yaw damping is
+            // suppressed when the rudder is deflected (otherwise it wipes out
+            // the steering torque applied immediately afterward).
+            float activeHelmAngle = !anchored
+                    ? getUnifiedSteeringAngle(subLevel, getRudders(subLevel)) : 0.0f;
             applyHydrodynamicForces(body, pose, shipVelWorld, omegaWorld, planarSpeed,
-                    thrustMag <= 1.0e-9, dt);
+                    thrustMag <= 1.0e-9, activeHelmAngle, dt);
         }
 
         // ---- Stabilized pure-yaw steering (tau_y = 0 while anchored) --------
         if (!anchored) {
-            applySteeringAndStabilization(subLevel, body, pose, level, shipVelWorld, omegaWorld, dt);
+            boolean sailsCatchingWind = thrustMag > 1.0e-9;
+            applySteeringAndStabilization(subLevel, body, pose, level, forwardWorld, shipVelWorld, omegaWorld, sailsCatchingWind, dt);
         }
 
         // ---- Nautical ambience: hull creaks under heavy stress ---------------
@@ -285,12 +327,16 @@ public class ServerPhysicsHandler {
         }
 
         // ---- Rest snapping -----------------------------------------------------
+        // FIX: Only damp planar linear velocity and roll/pitch angular velocity.
+        // Yaw (Y) must NOT be damped here — the rudder's yaw impulse was just
+        // applied and wiping it immediately produces zero turning.
         if (!anchored && thrustMag <= 1.0e-9 && planarSpeed < 0.05) {
             double keep = Math.exp(-12.0 * dt);
             body.addLinearAndAngularVelocity(
                     new Vector3d(shipVelWorld.x * (keep - 1.0), 0.0,
                             shipVelWorld.z * (keep - 1.0)),
-                    omegaWorld.mul(keep - 1.0, new Vector3d()));
+                    new Vector3d(omegaWorld.x * (keep - 1.0), 0.0,
+                            omegaWorld.z * (keep - 1.0)));
         }
 
         // ---- Wind vanes ----------------------------------------------------------
@@ -329,6 +375,7 @@ public class ServerPhysicsHandler {
                                                 Vector3d omegaWorld,
                                                 double planarSpeed,
                                                 boolean zeroThrust,
+                                                float activeHelmAngle,
                                                 double dt) {
         // Dual linear + quadratic planar drag opposing world-frame motion.
         if (planarSpeed > 1.0e-9) {
@@ -376,27 +423,32 @@ public class ServerPhysicsHandler {
             }
             body.addLinearAndAngularVelocity(planarDelta, new Vector3d());
 
-            // Rotational yaw damping: a stationary (or centered-helm) ship
-            // generates no rudder lift - there is no water flowing past the
-            // foil - so leftover yaw angular velocity is damped hard.
-            double omegaY = body.getAngularVelocity().y();
-            body.addLinearAndAngularVelocity(new Vector3d(),
-                    new Vector3d(0.0, -omegaY * (1.0 - Math.exp(-3.0 * dt)), 0.0));
+            // Rotational yaw damping: a stationary AND centered-helm ship
+            // generates no rudder lift — there is no water flowing past the
+            // foil — so leftover yaw angular velocity is damped hard.
+            // FIX: Skip this when the rudder is deflected, otherwise the
+            // damping wipes out the steering torque applied right after.
+            if (Math.abs(activeHelmAngle) < 0.5f) {
+                double omegaY = body.getAngularVelocity().y();
+                body.addLinearAndAngularVelocity(new Vector3d(),
+                        new Vector3d(0.0, -omegaY * (1.0 - Math.exp(-3.0 * dt)), 0.0));
+            }
         }
     }
 
     /**
-     * Aeronautics-style stabilized turning: pure local-frame yaw torque
-     * ({@code tau_y = -c_steer * v_fwd * sin(theta)}, scaled by submerged
-     * rudder count) plus active roll/pitch rate damping. No offset point
-     * forces, so no parasitic roll/pitch torques.
+     * Aeronautics-style stabilized turning: calls RudderHydrodynamics.calculateRudderForces()
+     * per submerged rudder, applying pure local-frame yaw torque plus active roll/pitch rate damping.
+     * Guarantees low-speed maneuvering flow velocity when underway or catching wind.
      */
     private static void applySteeringAndStabilization(ServerSubLevel subLevel,
                                                       RigidBodyHandle body,
                                                       Pose3dc pose,
                                                       ServerLevel level,
+                                                      Vector3d forwardWorld,
                                                       Vector3d shipVelWorld,
                                                       Vector3d omegaWorld,
+                                                      boolean sailsCatchingWind,
                                                       double dt) {
         List<RudderInfo> rudders = getRudders(subLevel);
 
@@ -408,47 +460,50 @@ public class ServerPhysicsHandler {
 
         double yawTorque = 0.0;
         float unifiedSteeringAngle = getUnifiedSteeringAngle(subLevel, rudders);
+        // Ensure all active contraption rudders are synchronized to the unified helm deflection angle
+        for (RudderInfo rudder : rudders) {
+            if (rudder.blockEntity().getSteeringAngle() != unifiedSteeringAngle) {
+                rudder.blockEntity().setSteeringAngle(unifiedSteeringAngle);
+                rudder.blockEntity().setChanged();
+                Level rLvl = rudder.blockEntity().getLevel() != null ? rudder.blockEntity().getLevel() : level;
+                rLvl.sendBlockUpdated(rudder.blockEntity().getBlockPos(), rudder.blockEntity().getBlockState(), rudder.blockEntity().getBlockState(), 3);
+            }
+        }
+        int submergedRudderCount = 0;
         if (!rudders.isEmpty() && Math.abs(unifiedSteeringAngle) >= 0.5f) {
             // Local Body Frame velocity extraction: getLinearVelocity() is in
-            // WORLD coordinates, so it must be rotated by the inverse pose
-            // orientation before the forward component is read. Local -Z is
-            // the bow, so v_fwd = -localVel.z stays positive no matter which
-            // world direction (N/S/E/W) the ship is currently facing.
+            // WORLD coordinates, so rotate into body frame to read forward speed.
             Vector3d localVel = pose.transformNormalInverse(shipVelWorld, new Vector3d());
             localVel.y = 0.0;
             double vFwd = -localVel.z;
 
-            // Effective steering speed: preserve the sign (sternway reverses
-            // the rudder's yaw torque naturally) but guarantee a 0.4 m/s
-            // baseline so a deflected helm retains turning authority even when
-            // the ship is stationary or stalled in irons. This lets players
-            // rotate the bow away from the wind and back out of a dead stop.
-            double vSteer = vFwd >= 0.0
-                    ? Math.max(vFwd, MIN_STEER_SPEED)
-                    : Math.min(vFwd, -MIN_STEER_SPEED);
+            // Effective steering speed: preserve sign (sternway reverses yaw
+            // torque naturally) but guarantee MIN_STEER_SPEED baseline so a
+            // deflected helm retains turning authority even when stationary.
+            double vSteer = Math.copySign(Math.max(Math.abs(vFwd), MIN_STEER_SPEED), vFwd);
 
-            int submergedCount = 0;
             double facingSignSum = 0.0;
             for (RudderInfo rudder : rudders) {
+                // FIX: Transform the rudder's local position to world space,
+                // then sample water at the block bottom (localPoint Y is the
+                // block bottom, not center — see scan fix below).
                 Vector3d rudderWorld = pose.transformPosition(
                         new Vector3d(rudder.localPoint()), new Vector3d());
                 if (!level.getFluidState(BlockPos.containing(
                         rudderWorld.x, rudderWorld.y, rudderWorld.z)).is(FluidTags.WATER)) {
                     continue;
                 }
-                submergedCount++;
-                // The rudder's facing is FIXED in the ship's local frame (it
-                // comes from the plot blockstate). Compare it against the
-                // constant local aft axis (0, 0, 1) so the mounting sign
-                // never changes. Comparing against the ship's rotating
-                // WORLD-frame aft flipped the torque sign at +/-90 degrees,
-                // locking vessels into quarter turns and preventing 180
-                // degree U-turns.
+                submergedRudderCount++;
+
                 Direction facing = rudder.facing();
                 facingSignSum += facing.getStepZ() >= 0 ? 1.0 : -1.0;
             }
 
-            if (submergedCount > 0 && facingSignSum != 0.0) {
+            if (submergedRudderCount > 0 && facingSignSum != 0.0) {
+                // FIX: Direct inline torque formula — STEER_TORQUE_COEFF is
+                // applied directly as tau = -coeff * v * sin(theta) * N_rudders.
+                // The old RudderHydrodynamics bridge divided by 800, zeroing
+                // the result. This formula is proven and well-scaled.
                 double thetaRad = Math.toRadians(unifiedSteeringAngle);
                 yawTorque = -SailingConfig.STEER_TORQUE_COEFF.get() * vSteer
                         * Math.sin(thetaRad) * facingSignSum;
@@ -459,22 +514,45 @@ public class ServerPhysicsHandler {
                 Math.min(MAX_YAW_IMPULSE_PER_SUBSTEP, yawTorque * dt));
         body.applyLinearAndAngularImpulse(new Vector3d(),
                 new Vector3d(rollImpulse, yawImpulse, pitchImpulse), true);
+
+        // ---- Diagnostic telemetry (throttled ~1 Hz) -------------------------
+        if (stepCounter % 20 == 0 && Math.abs(unifiedSteeringAngle) >= 0.5f) {
+            Vector3d angVelAfter = new Vector3d(body.getAngularVelocity());
+            SereneSailing.LOGGER.info(String.format(
+                    "[STEER-DIAG] SubLevel: %s | HelmAngle: %.1f deg | SubmergedRudders: %d | "
+                  + "ForwardSpeed: %.3f m/s | RawTorque: %.2f | YawImpulse: %.4f | "
+                  + "AngVelY: %.4f rad/s | sailsCatchingWind: %s",
+                    subLevel.getUniqueId(),
+                    unifiedSteeringAngle,
+                    submergedRudderCount,
+                    shipVelWorld.dot(forwardWorld),
+                    yawTorque,
+                    yawImpulse,
+                    angVelAfter.y,
+                    sailsCatchingWind));
+        }
     }
 
-    /** True when any capstan on this vessel has its anchor dropped. Checks the
-     *  live block entity flag AND the placed {@link CapstanBlock#ANCHORED}
-     *  blockstate, so a stale/desynced block entity cannot keep a moored ship
-     *  under sail. */
+    /**
+     * True when any capstan on this vessel is actively deployed and anchored.
+     * As soon as the anchor status changes to WEIGHED / RETRACTING, the hard
+     * mooring position lock is immediately released so the vessel can drift or sail.
+     */
     private static boolean isAnchored(SteeringCache steering) {
-        if (steering.anchorState()) {
-            return true;
-        }
-        for (CapstanBlockEntity capstan : steering.capstans()) {
-            if (capstan.isAnchored()) {
-                return true;
+        if (!steering.capstans().isEmpty()) {
+            for (CapstanBlockEntity capstan : steering.capstans()) {
+                if (capstan.isAnchored()) {
+                    return true;
+                }
             }
+            return false;
         }
         return false;
+    }
+
+    public static void invalidateSteeringCache(UUID subLevelId) {
+        STEERING_CACHE.remove(subLevelId);
+        STEERING_CACHE_STEP.remove(subLevelId);
     }
 
     /** Publishes live wind telemetry into every masthead wind vane. */
@@ -506,24 +584,31 @@ public class ServerPhysicsHandler {
         return getSteeringCache(subLevel).rudders();
     }
 
-    /** Helm angle if a wheel is present; otherwise the first rudder's own angle. */
+    /** Helm angle if cached or a wheel is present; otherwise the first rudder's own angle. */
     private static float getUnifiedSteeringAngle(ServerSubLevel subLevel, List<RudderInfo> rudders) {
+        Float cached = HELM_ANGLE_CACHE.get(subLevel.getUniqueId());
+        if (cached != null) {
+            return cached;
+        }
         List<HelmBlockEntity> helms = getSteeringCache(subLevel).helms();
         if (!helms.isEmpty()) {
-            return helms.get(0).getSteeringAngle();
+            float angle = helms.get(0).getSteeringAngle();
+            HELM_ANGLE_CACHE.put(subLevel.getUniqueId(), angle);
+            return angle;
         }
         return rudders.isEmpty() ? 0.0f : rudders.get(0).blockEntity().getSteeringAngle();
     }
 
     /**
      * Scans plot chunks for rudders (with facings), helm stations, wind vanes,
-     * capstans, and aggregates sail reefing efficiency.
+     * capstans, taffrail logs, and aggregates sail reefing efficiency.
      */
     private static SteeringCache scanSteering(ServerSubLevel subLevel) {
         List<RudderInfo> rudders = new ArrayList<>();
         List<HelmBlockEntity> helms = new ArrayList<>();
         List<WindVaneBlockEntity> vanes = new ArrayList<>();
         List<CapstanBlockEntity> capstans = new ArrayList<>();
+        List<TaffrailLogBlockEntity> taffrails = new ArrayList<>();
         boolean anchorState = false;
         double sailAreaEfficiency = 0.0;
         var plot = subLevel.getPlot();
@@ -540,8 +625,11 @@ public class ServerPhysicsHandler {
                         BlockState rs = entry.getValue().getBlockState();
                         Direction facing = rs.hasProperty(RudderBlock.FACING)
                                 ? rs.getValue(RudderBlock.FACING) : Direction.NORTH;
+                        // FIX: Use block BOTTOM Y (p.getY()) for the rudder's
+                        // local point so the submergence water check reliably
+                        // finds water even with shallow TARGET_HULL_DRAFT.
                         rudders.add(new RudderInfo(rudder,
-                                new Vector3d(p.getX() + 0.5, p.getY() + 0.5, p.getZ() + 0.5),
+                                new Vector3d(p.getX() + 0.5, p.getY(), p.getZ() + 0.5),
                                 facing));
                     } else if (entry.getValue() instanceof HelmBlockEntity helm) {
                         helms.add(helm);
@@ -558,6 +646,8 @@ public class ServerPhysicsHandler {
                                 && cs.getValue(CapstanBlock.ANCHORED)) {
                             anchorState = true;
                         }
+                    } else if (entry.getValue() instanceof TaffrailLogBlockEntity taffrail) {
+                        taffrails.add(taffrail);
                     }
                 }
 
@@ -579,7 +669,7 @@ public class ServerPhysicsHandler {
                 }
             }
         }
-        return new SteeringCache(rudders, helms, vanes, capstans, anchorState, sailAreaEfficiency);
+        return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState, sailAreaEfficiency);
     }
 
     /**
@@ -629,17 +719,19 @@ public class ServerPhysicsHandler {
 
     /**
      * Vertical spring lifting the hull to its ride-height equilibrium: the
-     * hull bottom settles ~{@link #RIDE_HEIGHT_BIAS} blocks above the water
-     * surface. Damped so it settles without porpoising; capped per step so a
-     * deep-dropped spawn does not catapult the ship.
+     * hull bottom settles at {@code targetBottomY = waterSurfaceY - TARGET_HULL_DRAFT},
+     * drafted ~0.4 blocks into the water. Damped so it settles without porpoising;
+     * capped per step so a deep-dropped spawn does not catapult the ship.
      */
     private static void applyRideHeightSpring(RigidBodyHandle body, double waterSurfaceY,
                                               double bottomY, double dt) {
-        double depth = (waterSurfaceY + RIDE_HEIGHT_BIAS) - bottomY;
-        if (depth <= 0.0) {
-            // Already riding at or above the equilibrium height.
+        float targetBottomY = (float) (waterSurfaceY - TARGET_HULL_DRAFT);
+        float currentBottomY = (float) bottomY;
+        if (currentBottomY >= targetBottomY) {
+            // Already riding at or above the equilibrium draft height.
             return;
         }
+        double depth = targetBottomY - currentBottomY;
         Vector3d vel = new Vector3d(body.getLinearVelocity());
         double liftDv = Math.min(depth, 3.0) * RIDE_SPRING * dt;
         // Damp the resulting vertical velocity so the spring settles.
