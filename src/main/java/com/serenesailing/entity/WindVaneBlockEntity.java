@@ -1,16 +1,33 @@
 package com.serenesailing.entity;
 
+import com.serenesailing.SereneSailing;
+import com.serenesailing.block.WindVaneBlock;
+import com.serenesailing.config.SailingConfig;
+import com.serenesailing.event.ServerPhysicsHandler;
 import com.serenesailing.registry.ModBlockEntities;
+import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Quaterniondc;
+import org.joml.Vector3d;
+import weather2.util.WindReader;
 
 /**
- * Masthead Wind Vane. {@code ServerPhysicsHandler} refreshes the live wind
- * telemetry every physics step; right-clicking the block reads it out.
+ * Masthead Wind Vane. {@code ServerPhysicsHandler} and internal tickers refresh the live wind
+ * telemetry; right-clicking the block reads it out.
  */
 public class WindVaneBlockEntity extends BlockEntity {
 
@@ -21,6 +38,7 @@ public class WindVaneBlockEntity extends BlockEntity {
     private String pointOfSail = "unknown";
     /** Server-side throttle counter for client telemetry sync (~5 Hz). */
     private int telemetryTick;
+    private int tickCount = 0;
 
     // Smooth angular interpolation state (degrees, world-Y rotation).
     /** Angle last tick, for partial-tick interpolation. */
@@ -122,12 +140,94 @@ public class WindVaneBlockEntity extends BlockEntity {
     }
 
     /**
-     * Per-tick interpolation bookkeeping (runs on both sides via the block's
-     * block-entity ticker): snapshots the current angle so the renderer can
-     * partial-tick lerp between the previous and current wind heading.
+     * Per-tick interpolation bookkeeping and authoritative wind telemetry resolution.
      */
     public void tick() {
         this.prevApparentWindAngle = this.apparentWindAngle;
+        if (this.level == null || this.level.isClientSide) {
+            return;
+        }
+
+        if (!(this.level instanceof ServerLevel serverLevel)) {
+            return;
+        }
+
+        ServerSubLevel subLevel = null;
+        SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+        if (container instanceof ServerSubLevelContainer serverContainer) {
+            LevelPlot plot = serverContainer.getPlot(new ChunkPos(this.worldPosition));
+            if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                subLevel = ssl;
+            } else {
+                for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
+                    LevelPlot subPlot = ssl.getPlot();
+                    if (subPlot != null && subPlot.contains(new ChunkPos(this.worldPosition))) {
+                        subLevel = ssl;
+                        break;
+                    }
+                }
+            }
+        }
+
+        Vec3 samplePos;
+        BlockPos queryPos;
+        if (subLevel != null) {
+            Pose3dc pose = subLevel.logicalPose();
+            samplePos = new Vec3(pose.position().x(), pose.position().y(), pose.position().z());
+            queryPos = BlockPos.containing(samplePos);
+        } else {
+            samplePos = Vec3.atCenterOf(this.worldPosition);
+            queryPos = this.worldPosition;
+        }
+
+        ServerLevel queryLevel = ServerPhysicsHandler.resolveWeatherQueryLevel(serverLevel);
+        if (queryLevel == null) {
+            queryLevel = serverLevel;
+        }
+
+        float trueSpeed = WindReader.getWindSpeed(queryLevel, queryPos);
+        float trueAngle = WindReader.getWindAngle(queryLevel, samplePos);
+
+        if (this.tickCount++ % 20 == 0) {
+            SereneSailing.LOGGER.info("[WINDVANE] True Wind: speed={}, angle={} | Pos: {} | Level: {}",
+                    trueSpeed, trueAngle, queryPos, queryLevel.dimension().location());
+        }
+
+        double effectiveWindSpeed = Math.max(SailingConfig.MIN_WIND_SPEED.get(), trueSpeed * 20.0);
+        double windRad = Math.toRadians(trueAngle);
+        Vector3d trueWindWorld = new Vector3d(-Math.sin(windRad), 0.0, Math.cos(windRad)).mul(effectiveWindSpeed);
+
+        Vector3d shipVelWorld;
+        Vector3d forwardWorld;
+        if (subLevel != null) {
+            RigidBodyHandle body = RigidBodyHandle.of(subLevel);
+            if (body != null && body.isValid()) {
+                shipVelWorld = new Vector3d(body.getLinearVelocity());
+            } else {
+                shipVelWorld = ServerPhysicsHandler.getVesselVelocity(subLevel.getUniqueId());
+            }
+            Quaterniondc orientation = subLevel.logicalPose().orientation();
+            forwardWorld = new Vector3d(0.0, 0.0, -1.0).rotate(orientation);
+            forwardWorld.y = 0.0;
+            if (forwardWorld.lengthSquared() > 1.0e-4) {
+                forwardWorld.normalize();
+            } else {
+                forwardWorld.set(0.0, 0.0, -1.0);
+            }
+        } else {
+            shipVelWorld = new Vector3d(0.0, 0.0, 0.0);
+            Direction facing = getBlockState().hasProperty(WindVaneBlock.FACING)
+                    ? getBlockState().getValue(WindVaneBlock.FACING)
+                    : Direction.NORTH;
+            forwardWorld = new Vector3d(facing.getStepX(), 0.0, facing.getStepZ());
+            if (forwardWorld.lengthSquared() > 1.0e-4) {
+                forwardWorld.normalize();
+            } else {
+                forwardWorld.set(0.0, 0.0, -1.0);
+            }
+        }
+
+        updateWindTelemetry(forwardWorld, trueWindWorld, shipVelWorld);
     }
 
     /**
