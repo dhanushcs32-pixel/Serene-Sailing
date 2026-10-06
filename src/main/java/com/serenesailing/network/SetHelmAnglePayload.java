@@ -2,6 +2,11 @@ package com.serenesailing.network;
 
 import com.serenesailing.SereneSailing;
 import com.serenesailing.entity.HelmBlockEntity;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
@@ -11,12 +16,15 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * Client -> server payload: sets the helm's unified steering angle from the
  * Ship's Wheel slider GUI. The server re-clamps the angle to the physical
- * stop [-30, +30] and syncs the change to all tracking clients through
+ * stop [-45, +45] and syncs the change to all tracking clients through
  * {@link HelmBlockEntity#setSteeringAngle(float)}.
  */
 public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPacketPayload {
@@ -32,7 +40,7 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
 
     /** Defence-in-depth clamp so a hacked client cannot exceed the rudder stop. */
     public SetHelmAnglePayload {
-        angle = Mth.clamp(angle, -30.0f, 30.0f);
+        angle = Math.max(-45.0f, Math.min(45.0f, angle));
     }
 
     @Override
@@ -44,11 +52,70 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
     public static void handle(final SetHelmAnglePayload payload, final IPayloadContext context) {
         context.enqueueWork(() -> {
             if (context.player() instanceof ServerPlayer serverPlayer
-                    && serverPlayer.level() instanceof ServerLevel serverLevel
-                    && serverLevel.getBlockEntity(payload.pos()) instanceof HelmBlockEntity helm) {
-                // setSteeringAngle clamps, marks changed, and pushes the block
-                // entity update packet to all tracking clients.
-                helm.setSteeringAngle(payload.angle());
+                    && serverPlayer.level() instanceof ServerLevel serverLevel) {
+                SereneSailing.LOGGER.info("[HELM-NET] Received angle: {} for pos: {}", payload.angle(), payload.pos());
+
+                HelmBlockEntity helm = null;
+                ServerSubLevel helmSubLevel = null;
+
+                BlockEntity directBe = serverLevel.getBlockEntity(payload.pos());
+                if (directBe instanceof HelmBlockEntity h) {
+                    helm = h;
+                }
+
+                SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+                if (container instanceof ServerSubLevelContainer serverContainer) {
+                    LevelPlot plot = serverContainer.getPlot(new ChunkPos(payload.pos()));
+                    if (plot != null) {
+                        if (plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                            helmSubLevel = ssl;
+                        }
+                        if (helm == null) {
+                            for (PlotChunkHolder holder : plot.getLoadedChunks()) {
+                                LevelChunk chunk = holder.getChunk();
+                                if (chunk != null) {
+                                    BlockEntity chunkBe = chunk.getBlockEntity(payload.pos());
+                                    if (chunkBe instanceof HelmBlockEntity h) {
+                                        helm = h;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (helm == null || helmSubLevel == null) {
+                        for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
+                            LevelPlot subPlot = ssl.getPlot();
+                            if (subPlot != null) {
+                                for (PlotChunkHolder holder : subPlot.getLoadedChunks()) {
+                                    LevelChunk chunk = holder.getChunk();
+                                    if (chunk != null) {
+                                        BlockEntity chunkBe = chunk.getBlockEntity(payload.pos());
+                                        if (chunkBe instanceof HelmBlockEntity h) {
+                                            helm = h;
+                                            helmSubLevel = ssl;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (helm != null) break;
+                            }
+                        }
+                    }
+                }
+
+                if (helm != null) {
+                    helm.setSteeringAngle(payload.angle());
+                }
+
+                if (helmSubLevel != null) {
+                    com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(helmSubLevel.getUniqueId(), payload.angle());
+                } else if (container instanceof ServerSubLevelContainer serverContainer) {
+                    for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
+                        com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(ssl.getUniqueId(), payload.angle());
+                    }
+                }
             }
         });
     }
