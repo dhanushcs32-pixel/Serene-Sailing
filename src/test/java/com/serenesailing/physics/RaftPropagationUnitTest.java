@@ -127,4 +127,24 @@ public class RaftPropagationUnitTest {
         System.out.printf("[JUnit Propagation] Rudder Yaw Torque: %.1f Nm | Heading Change: %.2f°%n",
                 result.torque().y, raftYawDegrees);
     }
+
+    @Test
+    @DisplayName("Test 5: Low-Speed Steerage Retains Turning Authority Without Deadband")
+    public void testLowSpeedSteerage() {
+        // Very low underway velocity (0.06 m/s North)
+        raftVelocity.set(0.0, 0.0, -0.06);
+        Vector3d rudderOffset = new Vector3d(0.0, 0.0, 2.5);
+        float rudderAngle = 15.0f;
+
+        RudderHydrodynamics.RudderForceResult result = RudderHydrodynamics.calculateRudderForces(
+                raftVelocity, new Vector3d(0, 0, 0), raftForward, rudderOffset, rudderAngle
+        );
+
+        Assertions.assertTrue(result.force().length() > 0.0,
+                "Rudder must retain non-zero lateral steerage at low speeds.");
+        Assertions.assertTrue(Math.abs(result.torque().y) > 0.0,
+                "Rudder must produce non-zero turning torque at low speeds via inflow floor.");
+        System.out.printf("[JUnit Propagation] Low-Speed Yaw Torque: %.2f Nm | Force: %.2f N%n",
+                result.torque().y, result.force().length());
+    }
 }
