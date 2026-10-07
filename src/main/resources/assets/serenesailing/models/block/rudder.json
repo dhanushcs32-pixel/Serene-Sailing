@@ -7,18 +7,6 @@
   },
   "elements": [
     {
-      "__comment": "Thin rudder blade element",
-      "from": [7, 0, 0],
-      "to": [9, 16, 12],
-      "faces": {
-        "west":  { "uv": [4, 0, 16, 16], "texture": "#rudder" },
-        "east":  { "uv": [4, 0, 16, 16], "texture": "#rudder" },
-        "up":    { "uv": [7, 0, 9, 12],  "texture": "#rudder" },
-        "down":  { "uv": [7, 0, 9, 12],  "texture": "#rudder" },
-        "north": { "uv": [7, 0, 9, 16],  "texture": "#rudder" }
-      }
-    },
-    {
       "__comment": "Pivot post (oak timber) crossing the blade near its aft edge",
       "from": [5, 0, 10],
       "to": [11, 16, 14],
