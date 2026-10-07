@@ -21,7 +21,7 @@ public final class SailAerodynamics {
             Vector3d trueWindWorld,
             Vector3d shipLinearVel,
             Vector3d shipForwardDir,
-            Vector3d sailNormal,
+            @SuppressWarnings("unused") Vector3d sailNormal,
             double sailEfficiency
     ) {
         // Apparent wind = True Wind - Ship Velocity
@@ -42,18 +42,23 @@ public final class SailAerodynamics {
 
         // IN IRONS: Pointing into apparent wind produces zero forward propulsion.
         if (alignment < -0.1) {
-            // Dead ahead (apparent wind within 30 degrees of the bow): apply a
-            // small backward aerodynamic drag along the apparent wind vector.
-            // This pushes the hull into sternway so the rudder's steering
-            // authority (which works in reverse too) can kick the bow out -
-            // breaking the classic "in irons" U-turn deadlock.
+            double dynamicPressure = 0.5 * AIR_DENSITY * apparentSpeed * apparentSpeed;
             if (alignment < -0.866) {
-                double dynamicPressure = 0.5 * AIR_DENSITY * apparentSpeed * apparentSpeed;
+                // Dead ahead (apparent wind within 30 degrees of the bow): apply
+                // backward aerodynamic drag along the apparent wind vector.
+                // This pushes the hull into sternway so the rudder's steering
+                // authority (which works in reverse too) can kick the bow out -
+                // breaking the classic "in irons" U-turn deadlock.
                 double pushMag = dynamicPressure * DEFAULT_SAIL_AREA * sailEfficiency
                         * IN_IRONS_PUSHBACK * SAIL_THRUST_MULTIPLIER;
                 return new Vector3d(apparentWindDir).mul(pushMag);
             }
-            return new Vector3d(0, 0, 0);
+            // Close-hauled headwind band: no forward drive, with continuous aerodynamic
+            // drag ramping smoothly toward sternway pushback so the vessel bleeds speed.
+            double headwindFactor = (-alignment - 0.1) / (0.866 - 0.1);
+            double dragMag = dynamicPressure * DEFAULT_SAIL_AREA * sailEfficiency
+                    * (headwindFactor * IN_IRONS_PUSHBACK) * SAIL_THRUST_MULTIPLIER;
+            return new Vector3d(apparentWindDir).mul(dragMag);
         }
 
         // Propulsion polar curve:
