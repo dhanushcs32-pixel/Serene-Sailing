@@ -1,16 +1,23 @@
 {
   "variants": {
-    "facing=north,sail_state=0": { "model": "serenesailing:block/canvas_sail_furled", "y": 0,   "uvlock": true },
-    "facing=north,sail_state=1": { "model": "serenesailing:block/canvas_sail_reefed", "y": 0,   "uvlock": true },
-    "facing=north,sail_state=2": { "model": "serenesailing:block/canvas_sail",        "y": 0,   "uvlock": true },
-    "facing=east,sail_state=0":  { "model": "serenesailing:block/canvas_sail_furled", "y": 90,  "uvlock": true },
-    "facing=east,sail_state=1":  { "model": "serenesailing:block/canvas_sail_reefed", "y": 90,  "uvlock": true },
-    "facing=east,sail_state=2":  { "model": "serenesailing:block/canvas_sail",        "y": 90,  "uvlock": true },
-    "facing=south,sail_state=0": { "model": "serenesailing:block/canvas_sail_furled", "y": 180, "uvlock": true },
-    "facing=south,sail_state=1": { "model": "serenesailing:block/canvas_sail_reefed", "y": 180, "uvlock": true },
-    "facing=south,sail_state=2": { "model": "serenesailing:block/canvas_sail",        "y": 180, "uvlock": true },
-    "facing=west,sail_state=0":  { "model": "serenesailing:block/canvas_sail_furled", "y": 270, "uvlock": true },
-    "facing=west,sail_state=1":  { "model": "serenesailing:block/canvas_sail_reefed", "y": 270, "uvlock": true },
-    "facing=west,sail_state=2":  { "model": "serenesailing:block/canvas_sail",        "y": 270, "uvlock": true }
+    "facing=north,canvas=full":   { "model": "serenesailing:block/canvas_sail_full",   "y": 0,   "uvlock": true },
+    "facing=north,canvas=half":   { "model": "serenesailing:block/canvas_sail_half",   "y": 0,   "uvlock": true },
+    "facing=north,canvas=rolled": { "model": "serenesailing:block/canvas_sail_rolled", "y": 0,   "uvlock": true },
+    "facing=north,canvas=empty":  { "model": "serenesailing:block/canvas_sail_empty",  "y": 0,   "uvlock": true },
+
+    "facing=east,canvas=full":    { "model": "serenesailing:block/canvas_sail_full",   "y": 90,  "uvlock": true },
+    "facing=east,canvas=half":    { "model": "serenesailing:block/canvas_sail_half",   "y": 90,  "uvlock": true },
+    "facing=east,canvas=rolled":  { "model": "serenesailing:block/canvas_sail_rolled", "y": 90,  "uvlock": true },
+    "facing=east,canvas=empty":   { "model": "serenesailing:block/canvas_sail_empty",  "y": 90,  "uvlock": true },
+
+    "facing=south,canvas=full":   { "model": "serenesailing:block/canvas_sail_full",   "y": 180, "uvlock": true },
+    "facing=south,canvas=half":   { "model": "serenesailing:block/canvas_sail_half",   "y": 180, "uvlock": true },
+    "facing=south,canvas=rolled": { "model": "serenesailing:block/canvas_sail_rolled", "y": 180, "uvlock": true },
+    "facing=south,canvas=empty":  { "model": "serenesailing:block/canvas_sail_empty",  "y": 180, "uvlock": true },
+
+    "facing=west,canvas=full":    { "model": "serenesailing:block/canvas_sail_full",   "y": 270, "uvlock": true },
+    "facing=west,canvas=half":    { "model": "serenesailing:block/canvas_sail_half",   "y": 270, "uvlock": true },
+    "facing=west,canvas=rolled":  { "model": "serenesailing:block/canvas_sail_rolled", "y": 270, "uvlock": true },
+    "facing=west,canvas=empty":   { "model": "serenesailing:block/canvas_sail_empty",  "y": 270, "uvlock": true }
   }
 }
