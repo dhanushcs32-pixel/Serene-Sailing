@@ -21,6 +21,7 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.block.state.properties.DirectionProperty;
+import net.minecraft.world.level.block.state.properties.EnumProperty;
 import net.minecraft.world.level.block.state.properties.IntegerProperty;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
@@ -34,8 +35,10 @@ import weather2.util.WindReader;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class SailBlock extends Block implements SimpleWaterloggedBlock {
@@ -47,22 +50,31 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
      * Effective area scales as {@code A_eff = A_base * (sail_state * 0.5)}.
      */
     public static final IntegerProperty SAIL_STATE = IntegerProperty.create("sail_state", 0, 2);
+    public static final EnumProperty<SailCanvas> CANVAS = EnumProperty.create("canvas", SailCanvas.class);
 
-    protected static final VoxelShape SHAPE_NORTH_SOUTH = Block.box(7.0, 0.0, 0.0, 9.0, 16.0, 16.0);
-    protected static final VoxelShape SHAPE_EAST_WEST   = Block.box(0.0, 0.0, 7.0, 16.0, 16.0, 9.0);
+    private static final Map<Direction, VoxelShape> SHAPES = new EnumMap<>(Direction.class);
+
+    static {
+        // When the sail renders on the back side of the block (0 to 4 px):
+        SHAPES.put(Direction.NORTH, Block.box(0.0, 0.0, 0.0, 16.0, 16.0, 4.0));
+        SHAPES.put(Direction.SOUTH, Block.box(0.0, 0.0, 12.0, 16.0, 16.0, 16.0));
+        SHAPES.put(Direction.WEST,  Block.box(0.0, 0.0, 0.0, 4.0, 16.0, 16.0));
+        SHAPES.put(Direction.EAST,  Block.box(12.0, 0.0, 0.0, 16.0, 16.0, 16.0));
+    }
 
     public SailBlock(BlockBehaviour.Properties properties) {
         super(properties);
         this.registerDefaultState(this.stateDefinition.any()
                 .setValue(FACING, Direction.NORTH)
                 .setValue(WATERLOGGED, false)
-                .setValue(SAIL_STATE, 2));
+                .setValue(SAIL_STATE, 2)
+                .setValue(CANVAS, SailCanvas.FULL));
     }
 
     @Override
     public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
-        Direction direction = state.getValue(FACING);
-        return (direction.getAxis() == Direction.Axis.X) ? SHAPE_EAST_WEST : SHAPE_NORTH_SOUTH;
+        Direction facing = state.getValue(FACING);
+        return SHAPES.getOrDefault(facing, SHAPES.get(Direction.NORTH));
     }
 
     /**
@@ -132,11 +144,32 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
             // same facing form one rig - trim/furl the whole sheet at once.
             List<BlockPos> sheet = findConnectedSailSheet(level, pos, state, MAX_SHEET_SIZE);
 
+            int minY = Integer.MAX_VALUE;
+            int maxY = Integer.MIN_VALUE;
+            for (BlockPos p : sheet) {
+                minY = Math.min(minY, p.getY());
+                maxY = Math.max(maxY, p.getY());
+            }
+            int totalHeight = maxY - minY + 1;
+            double bottomEdge = (maxY + 1.0) - (totalHeight * 0.5);
+
             for (BlockPos p : sheet) {
                 BlockState s = level.getBlockState(p);
-                if (s.getValue(SAIL_STATE) != next) {
-                    level.setBlock(p, s.setValue(SAIL_STATE, next), Block.UPDATE_ALL);
+                SailCanvas canvas;
+                if (next == 2) {
+                    canvas = SailCanvas.FULL;
+                } else if (next == 0) {
+                    canvas = (p.getY() == maxY) ? SailCanvas.ROLLED : SailCanvas.EMPTY;
+                } else {
+                    if (p.getY() >= bottomEdge) {
+                        canvas = SailCanvas.FULL;
+                    } else if (p.getY() + 1.0 <= bottomEdge) {
+                        canvas = SailCanvas.EMPTY;
+                    } else {
+                        canvas = SailCanvas.HALF;
+                    }
                 }
+                level.setBlock(p, s.setValue(SAIL_STATE, next).setValue(CANVAS, canvas), Block.UPDATE_ALL);
             }
 
             if (next != current) {
@@ -222,6 +255,6 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
 
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(FACING, WATERLOGGED, SAIL_STATE);
+        builder.add(FACING, WATERLOGGED, SAIL_STATE, CANVAS);
     }
 }
