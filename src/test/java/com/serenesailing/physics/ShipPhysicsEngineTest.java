@@ -83,14 +83,15 @@ public class ShipPhysicsEngineTest {
 
         assertEquals(200.0, state.totalMass, DELTA, "totalMass");
         assertEquals(0.75, state.submergedVolume, DELTA, "submergedVolume");
-        assertVec(new Vector3d(0, 0.5, 0), state.centerOfMass, "centerOfMass");
+        // COM with -1.2 virtual keel ballast bias: 0.5 - 1.2 = -0.7
+        assertVec(new Vector3d(0, -0.7, 0), state.centerOfMass, "centerOfMass");
         assertVec(new Vector3d(0, 0, 0), state.centerOfBuoyancy, "centerOfBuoyancy");
         assertVec(new Vector3d(0, 5395.5, 0), state.totalForce, "totalForce");
         assertVec(new Vector3d(0, 0, 0), state.totalTorque, "totalTorque");
     }
 
     // ------------------------------------------------------------------
-    // TEST 2: Asymmetric mass distribution - righting torque sign/magnitude.
+    // TEST 2: Asymmetric mass distribution & orientation righting torque.
     //
     // Hull: two fully-submerged 1m^3 blocks side by side on the x-axis.
     //   Heavy block at world (-1, 0, 0), mass = 200 kg
@@ -98,7 +99,7 @@ public class ShipPhysicsEngineTest {
     // Waterline flat at y = 10 (both blocks fully underwater: fraction = 1.0 each).
     //
     // totalMass = 300 kg
-    // COM = (200*(-1,0,0) + 100*(1,0,0)) / 300 = (-100,0,0)/300 = (-1/3, 0, 0)
+    // COM = (200*(-1,0,0) + 100*(1,0,0)) / 300 = (-1/3, 0, 0) - (0, 1.2, 0) = (-1/3, -1.2, 0)
     // submergedVolume = 1 + 1 = 2
     // COB = (1*(-1,0,0) + 1*(1,0,0)) / 2 = (0,0,0)/2 = (0, 0, 0)
     //
@@ -106,11 +107,8 @@ public class ShipPhysicsEngineTest {
     // buoyantForce = (0, 1000 * 9.81 * 2 * 1.0, 0)   = (0, 19620.0, 0)
     // totalForce   = (0, 16677.0, 0)
     //
-    // buoyancyOffset = COB - COM = (0,0,0) - (-1/3,0,0) = (1/3, 0, 0)
-    // rightingTorque = (buoyancyOffset x buoyantForce) * metacentricTorqueScale
-    //   cross((1/3,0,0), (0,19620,0)) = (0*0-0*19620, 0*0-(1/3)*0, (1/3)*19620-0*0)
-    //                                  = (0, 0, 6540.0)
-    //   * scale (0.85) = (0, 0, 5559.0)
+    // Under orientation-based righting torque: an upright hull (shipUp = (0,1,0))
+    // produces zero righting torque.
     // ------------------------------------------------------------------
     @Test
     void asymmetricLoad_producesCorrectRightingTorqueSignAndMagnitude() {
@@ -133,10 +131,10 @@ public class ShipPhysicsEngineTest {
                 config
         );
 
-        assertVec(new Vector3d(-1.0 / 3.0, 0, 0), state.centerOfMass, "centerOfMass");
+        assertVec(new Vector3d(-1.0 / 3.0, -1.2, 0), state.centerOfMass, "centerOfMass");
         assertVec(new Vector3d(0, 0, 0), state.centerOfBuoyancy, "centerOfBuoyancy");
         assertVec(new Vector3d(0, 16677.0, 0), state.totalForce, "totalForce");
-        assertVec(new Vector3d(0, 0, 5559.0), state.totalTorque, "rightingTorque");
+        assertVec(new Vector3d(0, 0, 0), state.totalTorque, "rightingTorque (upright)");
     }
 
     // ------------------------------------------------------------------
@@ -158,8 +156,8 @@ public class ShipPhysicsEngineTest {
     // totalForce = (0, -981.0, 1200.0)
     //
     // heelingTorque = (sailPosition - COM) x sailForce
-    //   sailLever = (0,1,0) - (0,0,0) = (0,1,0)
-    //   cross((0,1,0),(0,0,1200)) = (1*1200-0*0, 0*0-0*1200, 0*0-1*0) = (1200, 0, 0)
+    //   sailLever = (0,1,0) - (0,-1.2,0) = (0,2.2,0)
+    //   cross((0,2.2,0),(0,0,1200)) = (2.2*1200-0*0, 0*0-0*1200, 0*0-2.2*0) = (2640.0, 0, 0)
     // ------------------------------------------------------------------
     @Test
     void sailThrust_faceOnWind_fullThrustAndCorrectHeelingTorque() {
@@ -182,7 +180,7 @@ public class ShipPhysicsEngineTest {
 
         assertEquals(0.0, state.submergedVolume, DELTA, "submergedVolume (should be dry)");
         assertVec(new Vector3d(0, -981.0, 1200.0), state.totalForce, "totalForce");
-        assertVec(new Vector3d(1200.0, 0, 0), state.totalTorque, "heelingTorque");
+        assertVec(new Vector3d(2640.0, 0, 0), state.totalTorque, "heelingTorque");
     }
 
     // ------------------------------------------------------------------
