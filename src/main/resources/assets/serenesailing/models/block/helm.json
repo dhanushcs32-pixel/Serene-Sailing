@@ -1,35 +1,48 @@
 {
+  "credit": "SereneSailing - Helm Pedestal",
   "parent": "minecraft:block/block",
   "textures": {
-    "particle": "serenesailing:block/helm",
-    "helm": "serenesailing:block/helm",
-    "wood": "minecraft:block/oak_planks"
+    "wood": "minecraft:block/oak_planks",
+    "brass": "minecraft:block/stripped_oak_log",
+    "particle": "minecraft:block/oak_planks"
   },
   "elements": [
     {
-      "__comment": "Pedestal stand",
-      "from": [5, 0, 6],
-      "to": [11, 12, 10],
+      "name": "base_foot",
+      "from": [4.0, 0.0, 4.0],
+      "to": [12.0, 3.0, 12.0],
       "faces": {
-        "north": { "uv": [5, 4, 11, 16],  "texture": "#wood" },
-        "south": { "uv": [5, 4, 11, 16],  "texture": "#wood" },
-        "west":  { "uv": [6, 4, 10, 16],  "texture": "#wood" },
-        "east":  { "uv": [6, 4, 10, 16],  "texture": "#wood" },
-        "up":    { "uv": [5, 6, 11, 10],  "texture": "#wood" },
-        "down":  { "uv": [5, 6, 11, 10],  "texture": "#wood", "cullface": "down" }
+        "north": { "uv": [4, 13, 12, 16], "texture": "#wood" },
+        "east":  { "uv": [4, 13, 12, 16], "texture": "#wood" },
+        "south": { "uv": [4, 13, 12, 16], "texture": "#wood" },
+        "west":  { "uv": [4, 13, 12, 16], "texture": "#wood" },
+        "up":    { "uv": [4, 4, 12, 12],   "texture": "#wood" },
+        "down":  { "uv": [4, 4, 12, 12],   "texture": "#wood", "cullface": "down" }
       }
     },
     {
-      "__comment": "Center hub & spoke wheel (extends above the block cell)",
-      "from": [1, 6, 4],
-      "to": [15, 20, 6],
+      "name": "pedestal_column",
+      "from": [5.5, 3.0, 5.5],
+      "to": [10.5, 13.0, 10.5],
       "faces": {
-        "north": { "uv": [1, 0, 15, 14], "texture": "#helm" },
-        "south": { "uv": [1, 0, 15, 14], "texture": "#helm" },
-        "west":  { "uv": [0, 2, 2, 16],  "texture": "#helm" },
-        "east":  { "uv": [14, 2, 16, 16],"texture": "#helm" },
-        "up":    { "uv": [1, 4, 15, 6],  "texture": "#helm" },
-        "down":  { "uv": [1, 4, 15, 6],  "texture": "#helm" }
+        "north": { "uv": [5, 3, 11, 13], "texture": "#brass" },
+        "east":  { "uv": [5, 3, 11, 13], "texture": "#brass" },
+        "south": { "uv": [5, 3, 11, 13], "texture": "#brass" },
+        "west":  { "uv": [5, 3, 11, 13], "texture": "#brass" },
+        "up":    { "uv": [5, 5, 11, 11], "texture": "#brass" }
+      }
+    },
+    {
+      "name": "axle_housing",
+      "from": [6.0, 9.5, 1.0],
+      "to": [10.0, 13.5, 6.0],
+      "faces": {
+        "north": { "uv": [6, 10, 10, 14], "texture": "#wood" },
+        "east":  { "uv": [1, 10, 6, 14],  "texture": "#wood" },
+        "south": { "uv": [6, 10, 10, 14], "texture": "#wood" },
+        "west":  { "uv": [1, 10, 6, 14],  "texture": "#wood" },
+        "up":    { "uv": [6, 1, 10, 6],   "texture": "#wood" },
+        "down":  { "uv": [6, 1, 10, 6],   "texture": "#wood" }
       }
     }
   ]
