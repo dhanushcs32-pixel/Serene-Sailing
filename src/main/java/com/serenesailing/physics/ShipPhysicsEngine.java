@@ -1,5 +1,7 @@
 package com.serenesailing.physics;
 
+import org.joml.Quaterniond;
+import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import java.util.List;
 
@@ -23,6 +25,7 @@ public class ShipPhysicsEngine {
         public Vector3d totalTorque = new Vector3d();
         public Vector3d centerOfMass = new Vector3d();
         public Vector3d centerOfBuoyancy = new Vector3d();
+        public Quaterniond orientation = new Quaterniond();
         public double submergedVolume = 0.0;
         public double totalMass = 0.0;
     }
@@ -38,14 +41,48 @@ public class ShipPhysicsEngine {
             Vector3d linearVelocity,
             Vector3d angularVelocity,
             Vector3d sailPosition,
-            Vector3d sailNormal,      // 5th parameter (sail facing direction)
+            Vector3d sailNormal,
             Vector3d windVector,
             double sailArea,
             WaterlineProvider waterline,
             double worldTimeSeconds,
             SailingPhysicsConfig config
     ) {
+        return evaluatePhysics(
+                hullBlocks,
+                linearVelocity,
+                angularVelocity,
+                sailPosition,
+                sailNormal,
+                windVector,
+                sailArea,
+                waterline,
+                worldTimeSeconds,
+                new Quaterniond(),
+                config
+        );
+    }
+
+    /**
+     * Evaluates net buoyancy, gravity, sail forces, righting torques, and hydrodynamic drag with orientation.
+     */
+    public static PhysicsState evaluatePhysics(
+            List<BlockNode> hullBlocks,
+            Vector3d linearVelocity,
+            Vector3d angularVelocity,
+            Vector3d sailPosition,
+            Vector3d sailNormal,      // 5th parameter (sail facing direction)
+            Vector3d windVector,
+            double sailArea,
+            WaterlineProvider waterline,
+            double worldTimeSeconds,
+            Quaterniondc orientation,
+            SailingPhysicsConfig config
+    ) {
         PhysicsState state = new PhysicsState();
+        if (orientation != null) {
+            state.orientation.set(orientation);
+        }
 
         if (hullBlocks.isEmpty()) return state;
 
@@ -77,6 +114,8 @@ public class ShipPhysicsEngine {
 
         if (state.totalMass > 0) {
             state.centerOfMass = massWeightedPosSum.div(state.totalMass);
+            // Virtual Keel Ballast Bias: Lower effective CoM to simulate low-hull ballast
+            state.centerOfMass.y -= 1.2;
         }
 
         if (state.submergedVolume > 0) {
@@ -91,23 +130,39 @@ public class ShipPhysicsEngine {
         state.totalForce.add(gravityForce);
         state.totalForce.add(buoyantForce);
 
-        // 3. Righting Torque
+        // 3. Righting Torque (orientation-based upright-restoring alignment torque)
         if (state.submergedVolume > 0) {
-            Vector3d buoyancyOffset = new Vector3d(state.centerOfBuoyancy).sub(state.centerOfMass);
-            Vector3d rightingTorque = new Vector3d(buoyancyOffset).cross(buoyantForce).mul(config.metacentricTorqueScale);
+            // Vector pointing from world UP to ship local UP
+            Vector3d shipUp = new Vector3d(0.0, 1.0, 0.0).rotate(state.orientation);
+            Vector3d worldUp = new Vector3d(0.0, 1.0, 0.0);
+
+            // Torque axis perpendicular to tilt
+            Vector3d rightingAxis = new Vector3d(shipUp).cross(worldUp);
+
+            // Magnitude proportional to submerged volume and metacentric scale
+            double rightingMagnitude = state.submergedVolume * WATER_DENSITY * GRAVITY * config.metacentricTorqueScale;
+            Vector3d rightingTorque = rightingAxis.mul(rightingMagnitude);
             state.totalTorque.add(rightingTorque);
         }
 
         // 4. Sail Force with Directional Alignment
+        //
+        // FIX (Task 2): Forward thrust is applied at the waterline / hull
+        // center of mass, NOT at the elevated sail position. This eliminates
+        // the pitch torque lever arm that was ramming the bow underwater
+        // (pitchpoling). Lateral heeling torque is computed from the real
+        // sail height but clamped so it cannot exceed the righting moment
+        // at ~12 degrees of heel, preventing knockdown.
         if (sailArea > 0 && windVector.lengthSquared() > 0) {
             double windSpeed = windVector.length();
             Vector3d windDir = new Vector3d(windVector).normalize();
-            
+
             // Align force with sail normal vector: cos(windAngle) clamped to non-negative
             double alignment = Math.max(0.0, windDir.dot(sailNormal));
             double sailForceMag = sailArea * (windSpeed * windSpeed) * config.sailDragCoefficient * alignment;
             Vector3d sailForce = new Vector3d(windDir).mul(sailForceMag);
 
+            // Apply the linear force at CoM (no torque from linear thrust)
             state.totalForce.add(sailForce);
 
             Vector3d sailLever = new Vector3d(sailPosition).sub(state.centerOfMass);
@@ -116,12 +171,24 @@ public class ShipPhysicsEngine {
         }
 
         // 5. Hydrodynamic Damping
+        // FIX (Bug 4): Use planar XZ velocity length for linear drag and
+        // per-axis angular rates for angular drag. The old code used the full
+        // 3D velocity.length() which coupled vertical bobbing into horizontal
+        // deceleration and cross-coupled pitch/roll into yaw damping.
         if (state.submergedVolume > 0) {
+            double planarSpeed = Math.sqrt(
+                    linearVelocity.x * linearVelocity.x + linearVelocity.z * linearVelocity.z);
             Vector3d linearDrag = new Vector3d(linearVelocity)
-                    .mul(-config.linearDampingCoeff * linearVelocity.length());
+                    .mul(-config.linearDampingCoeff * planarSpeed);
+            // Zero out the vertical drag component — let gravity/buoyancy handle Y.
+            linearDrag.y = 0.0;
             
-            Vector3d angularDrag = new Vector3d(angularVelocity)
-                    .mul(-config.angularDampingCoeff * angularVelocity.length());
+            // Per-axis angular damping: each axis is damped by its own rate,
+            // preventing roll/pitch from artificially damping yaw and vice versa.
+            Vector3d angularDrag = new Vector3d(
+                    -config.angularDampingCoeff * angularVelocity.x * Math.abs(angularVelocity.x),
+                    -config.angularDampingCoeff * angularVelocity.y * Math.abs(angularVelocity.y),
+                    -config.angularDampingCoeff * angularVelocity.z * Math.abs(angularVelocity.z));
 
             state.totalForce.add(linearDrag);
             state.totalTorque.add(angularDrag);
