@@ -47,6 +47,8 @@ public class CapstanRenderer implements BlockEntityRenderer<CapstanBlockEntity> 
     public void render(CapstanBlockEntity be, float partialTick, PoseStack poseStack,
                        MultiBufferSource bufferSource, int light, int overlay) {
         float length = be.getInterpolatedChainLength(partialTick);
+        float trailX = be.getInterpolatedTrailX(partialTick);
+        float trailZ = be.getInterpolatedTrailZ(partialTick);
         if (length <= 0.05f) {
             // Anchor weighed - nothing deployed to draw.
             return;
@@ -78,15 +80,18 @@ public class CapstanRenderer implements BlockEntityRenderer<CapstanBlockEntity> 
         // ---- Chain: alternating crossed-link segments -----------------------
         // Continuous fractional float loop; LINK_STEP < LINK_HEIGHT ensures
         // consecutive links overlap and interlock tightly (~0.13f overlap).
-        // Stop the chain at the top of the anchor shank so links connect
-        // cleanly to the shank without poking through the crossbars.
+        // Catenary curve: links follow a smooth curved arc from the capstan
+        // drum down to the trailing anchor fluke behind the vessel.
         float chainEnd = Math.max(0.0f, length - SHANK_HEIGHT);
         int linkIndex = 0;
         for (float y = 0.15f; y < chainEnd; y += LINK_STEP) {
+            float frac = length > 0.01f ? (y / length) : 0.0f;
+            float curve = (float) Math.pow(frac, 1.4);
+            float linkX = trailX * curve;
+            float linkZ = trailZ * curve;
+
             poseStack.pushPose();
-            // Translate downward ONLY on Y — X/Z are already centered by the
-            // outer translate(0.5, ..., 0.5) above.
-            poseStack.translate(0.0, -y, 0.0);
+            poseStack.translate(linkX, -y, linkZ);
             boolean flipped = (linkIndex & 1) != 0;
             renderLink(poseStack, builder, chainSprite, packedLight, packedOverlay, flipped, LINK_HEIGHT);
             poseStack.popPose();
@@ -94,10 +99,10 @@ public class CapstanRenderer implements BlockEntityRenderer<CapstanBlockEntity> 
         }
 
         // ---- Anchor head resting at bottom of the chain ---------------------
-        // Rendered unconditionally whenever enough chain is deployed, regardless
-        // of whether the state is MOORED, DEPLOYING, or WEIGHING.
+        // Rendered unconditionally whenever enough chain is deployed, positioned
+        // at the trailing seabed fluke position.
         if (length > 0.25f) {
-            renderAnchorFluke(poseStack, builder, ironSprite, packedLight, packedOverlay, length);
+            renderAnchorFluke(poseStack, builder, ironSprite, packedLight, packedOverlay, length, trailX, trailZ);
         }
 
         poseStack.popPose();
@@ -110,10 +115,11 @@ public class CapstanRenderer implements BlockEntityRenderer<CapstanBlockEntity> 
      * sits exactly flush on the top surface of the seabed block instead of clipping into it.
      */
     private static void renderAnchorFluke(PoseStack poseStack, VertexConsumer builder, TextureAtlasSprite ironSprite,
-                                          int packedLight, int packedOverlay, float length) {
+                                          int packedLight, int packedOverlay, float length, float trailX, float trailZ) {
         poseStack.pushPose();
-        // Anchor tip at the lowest paid-out link — offset by +BAR_T so crossbars sit flush on seabed surface.
-        poseStack.translate(0.0, -length + BAR_T, 0.0);
+        // Anchor tip at the lowest paid-out link — offset by +BAR_T so crossbars sit flush on seabed surface,
+        // and offset by trailX, trailZ so it lands behind the ship.
+        poseStack.translate(trailX, -length + BAR_T, trailZ);
         // Central vertical iron shank running up the chain's tail.
         box(poseStack.last(), builder, ironSprite, packedLight, packedOverlay,
                 -BAR_T, 0.0f, -BAR_T, BAR_T, 0.5f, BAR_T);

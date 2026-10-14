@@ -4,11 +4,13 @@ import com.serenesailing.SereneSailing;
 import com.serenesailing.block.CapstanBlock;
 import com.serenesailing.event.ServerPhysicsHandler;
 import com.serenesailing.registry.ModBlockEntities;
+import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import org.joml.Vector3d;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -34,8 +36,10 @@ import net.minecraft.world.phys.Vec3;
  */
 public class CapstanBlockEntity extends BlockEntity {
 
-    /** Chain winch speed [blocks/tick] (= 1.5 m/s at 20 tps). */
-    private static final float WINCH_SPEED_PER_TICK = 0.075f;
+    /** Anchor free-drop payout speed [blocks/tick] (~5 m/s in water). */
+    private static final float DROP_SPEED_PER_TICK = 0.25f;
+    /** Chain heave-in winch speed [blocks/tick] (~1.6 m/s at 20 tps). */
+    private static final float HEAVE_SPEED_PER_TICK = 0.08f;
     /** Maximum straight-down seabed search depth [blocks]. */
     private static final int MAX_SEABED_SEARCH = 48;
 
@@ -46,6 +50,12 @@ public class CapstanBlockEntity extends BlockEntity {
     private float prevChainLength = 0.0f;
     /** Currently deployed chain length [blocks]. */
     private float chainLength = 0.0f;
+    /** Horizontal trailing offset (ship local X) of the anchor behind the capstan. */
+    private float trailX = 0.0f;
+    private float prevTrailX = 0.0f;
+    /** Horizontal trailing offset (ship local Z) of the anchor behind the capstan. */
+    private float trailZ = 0.0f;
+    private float prevTrailZ = 0.0f;
     /** Throttle counter for server -> client chain sync while winching. */
     private int syncCounter = 0;
 
@@ -92,15 +102,38 @@ public class CapstanBlockEntity extends BlockEntity {
         return this.chainLength;
     }
 
+    /** True once the dropped anchor has reached the seabed and bites into the bottom. */
+    public boolean isHolding() {
+        return this.anchored && (this.chainLength >= Math.max(0.5f, this.seabedDepth - 0.4f) || this.seabedDepth <= 0.5f);
+    }
+
+    public float getTrailX() {
+        return this.trailX;
+    }
+
+    public float getTrailZ() {
+        return this.trailZ;
+    }
+
+    public float getInterpolatedTrailX(float partialTick) {
+        return Mth.lerp(partialTick, this.prevTrailX, this.trailX);
+    }
+
+    public float getInterpolatedTrailZ(float partialTick) {
+        return Mth.lerp(partialTick, this.prevTrailZ, this.trailZ);
+    }
+
     /**
      * Per-tick chain simulation (both sides, via the block's ticker):
-     * advances {@link #chainLength} toward its target at the winch speed.
-     * On the server this raycasts the seabed while moored and throttled-syncs
-     * the length to tracking clients; on the client it animates toward the
-     * last synced target between packets.
+     * advances {@link #chainLength} toward its target at realistic drop/heave speed.
+     * On the server this raycasts the seabed, calculates hydrodynamic trailing
+     * offset if the vessel is underway so the anchor takes a curved path and
+     * lands a bit behind, and throttled-syncs state to tracking clients.
      */
     public void tick() {
         this.prevChainLength = this.chainLength;
+        this.prevTrailX = this.trailX;
+        this.prevTrailZ = this.trailZ;
         if (level == null) {
             return;
         }
@@ -115,24 +148,60 @@ public class CapstanBlockEntity extends BlockEntity {
                     Vec3 localCenter = Vec3.atCenterOf(this.worldPosition);
                     Vec3 worldCenter = pose.transformPosition(localCenter);
                     overworldY = worldCenter.y;
+
+                    // If the ship is moving, calculate hydrodynamic lag trailing offset
+                    // so the anchor follows a curved path and lands behind the vessel
+                    RigidBodyHandle body = RigidBodyHandle.of(subLevel);
+                    Vector3d worldVel = (body != null && body.isValid())
+                            ? new Vector3d(body.getLinearVelocity())
+                            : ServerPhysicsHandler.getVesselVelocity(subLevel.getUniqueId());
+                    Vector3d localVel = pose.transformNormalInverse(worldVel, new Vector3d());
+
+                    // While dropping or before biting, the anchor trails behind opposite to motion
+                    if (!isHolding()) {
+                        float lagFactor = 1.2f; // meters of trailing lag per m/s of ship speed
+                        float targetTrailX = (float) (-localVel.x * lagFactor);
+                        float targetTrailZ = (float) (-localVel.z * lagFactor);
+                        float maxTrail = Math.min(Math.max(1.0f, this.chainLength) * 0.75f, 15.0f);
+                        float dist = (float) Math.sqrt(targetTrailX * targetTrailX + targetTrailZ * targetTrailZ);
+                        if (dist > maxTrail && dist > 1.0e-4f) {
+                            targetTrailX = (targetTrailX / dist) * maxTrail;
+                            targetTrailZ = (targetTrailZ / dist) * maxTrail;
+                        }
+                        this.trailX += (targetTrailX - this.trailX) * 0.2f;
+                        this.trailZ += (targetTrailZ - this.trailZ) * 0.2f;
+                    }
+                    // Once isHolding() is true, the anchor has bitten the seabed — trailX and trailZ stay fixed!
                 }
             }
 
             if (this.syncCounter % 20 == 0) {
-                SereneSailing.LOGGER.info("[ANCHOR-DIAG] Dimension: {} | LocalPos: {} | OverworldY: {} | SeabedDepth: {} | ChainLength: {}",
-                        level.dimension().location(), this.worldPosition, overworldY, this.seabedDepth, this.chainLength);
+                SereneSailing.LOGGER.info("[ANCHOR-DIAG] Dimension: {} | LocalPos: {} | OverworldY: {} | SeabedDepth: {} | ChainLength: {} | Trail: ({}, {})",
+                        level.dimension().location(), this.worldPosition, overworldY, this.seabedDepth, this.chainLength, this.trailX, this.trailZ);
+            }
+        } else if (!level.isClientSide && !this.anchored) {
+            // When weighing anchor, smoothly retract trailing displacement as chain pays in
+            if (this.seabedDepth > 0.1f) {
+                float retractRatio = Math.min(1.0f, this.chainLength / this.seabedDepth);
+                this.trailX *= retractRatio;
+                this.trailZ *= retractRatio;
+            } else {
+                this.trailX = 0.0f;
+                this.trailZ = 0.0f;
             }
         }
+
         float target = this.anchored ? this.seabedDepth : 0.0f;
         float diff = target - this.chainLength;
-        if (Math.abs(diff) <= WINCH_SPEED_PER_TICK) {
+        float step = diff > 0 ? DROP_SPEED_PER_TICK : HEAVE_SPEED_PER_TICK;
+        if (Math.abs(diff) <= step) {
             this.chainLength = target;
         } else {
-            this.chainLength += Math.signum(diff) * WINCH_SPEED_PER_TICK;
+            this.chainLength += Math.signum(diff) * step;
         }
 
-        // Throttled sync (~5 Hz) while the winch is actually moving.
-        if (!level.isClientSide && Math.abs(diff) > 0.001f
+        // Throttled sync (~5 Hz) while the winch is actually moving or trail is shifting.
+        if (!level.isClientSide && (Math.abs(diff) > 0.001f || Math.abs(this.trailX - this.prevTrailX) > 0.01f || Math.abs(this.trailZ - this.prevTrailZ) > 0.01f)
                 && ++this.syncCounter % 4 == 0) {
             setChanged();
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
@@ -233,6 +302,8 @@ public class CapstanBlockEntity extends BlockEntity {
         tag.putBoolean("Anchored", this.anchored);
         tag.putFloat("SeabedDepth", this.seabedDepth);
         tag.putFloat("ChainLength", this.chainLength);
+        tag.putFloat("TrailX", this.trailX);
+        tag.putFloat("TrailZ", this.trailZ);
     }
 
     @Override
@@ -241,8 +312,12 @@ public class CapstanBlockEntity extends BlockEntity {
         this.anchored = tag.getBoolean("Anchored");
         this.seabedDepth = tag.getFloat("SeabedDepth");
         this.chainLength = tag.getFloat("ChainLength");
+        this.trailX = tag.getFloat("TrailX");
+        this.trailZ = tag.getFloat("TrailZ");
         // Snap interpolation state so the chain does not visibly rewind.
         this.prevChainLength = this.chainLength;
+        this.prevTrailX = this.trailX;
+        this.prevTrailZ = this.trailZ;
     }
 
     @Override

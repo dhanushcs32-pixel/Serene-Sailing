@@ -45,9 +45,9 @@ public class TaffrailLogBlockEntity extends BlockEntity {
         super(ModBlockEntities.TAFFRAIL_LOG.get(), pos, state);
     }
 
-    /** Pushes live ship speed from the physics handler [m/s]. */
+    /** Pushes live ship speed from the physics handler [m/s]. Negative = sternway. */
     public void setSpeedTelemetry(float speedMs) {
-        this.speedMs = Math.max(0.0f, speedMs);
+        this.speedMs = speedMs;
     }
 
     public float getSpeedMs() {
@@ -59,7 +59,10 @@ public class TaffrailLogBlockEntity extends BlockEntity {
     }
 
     public String getActionBarDisplay() {
-        return String.format("\u00A7bShip Speed: %.1f knots (%.1f m/s)", getSpeedKnots(), getSpeedMs());
+        float absKnots = Math.abs(getSpeedKnots());
+        float absMs = Math.abs(getSpeedMs());
+        String direction = this.speedMs < -0.05f ? "\u00A7cSternway" : "\u00A7bShip Speed";
+        return String.format("%s: %.1f knots (%.1f m/s)", direction, absKnots, absMs);
     }
 
     /** Comparator analog output: 0-15 proportional to 0-15 knots. */
@@ -112,8 +115,9 @@ public class TaffrailLogBlockEntity extends BlockEntity {
                 shipForwardHeading.set(0.0, 0.0, -1.0);
             }
 
-            forwardSpeed = Math.max(0.0, worldVelocity.dot(shipForwardHeading));
-        } else if (this.speedMs > 0.0f) {
+            // FIX: Allow negative forward speed (sternway) for accurate telemetry.
+            forwardSpeed = worldVelocity.dot(shipForwardHeading);
+        } else if (Math.abs(this.speedMs) > 0.0f) {
             forwardSpeed = this.speedMs;
         }
 
@@ -121,10 +125,12 @@ public class TaffrailLogBlockEntity extends BlockEntity {
         this.speedMs = (float) forwardSpeed;
 
         if (this.tickCount++ % 20 == 0) {
-            SereneSailing.LOGGER.info("[TAFFRAIL] Measured ship world speed: {} m/s ({} knots)", forwardSpeed, knots);
+            String dir = forwardSpeed < -0.05 ? "STERNWAY" : "FWD";
+            SereneSailing.LOGGER.info("[TAFFRAIL] {} ship speed: {} m/s ({} knots)", dir, 
+                    String.format("%.2f", forwardSpeed), String.format("%.1f", Math.abs(knots)));
         }
 
-        int signal = (int) Mth.clamp(knots, 0.0f, MAX_KNOTS);
+        int signal = (int) Mth.clamp(Math.abs(knots), 0.0f, MAX_KNOTS);
         if (signal != this.redstoneSignal || Math.abs(this.speedMs - this.prevSpeedMs) > 0.05f) {
             this.redstoneSignal = signal;
             setChanged();
