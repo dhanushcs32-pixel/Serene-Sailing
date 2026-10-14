@@ -83,8 +83,11 @@ public class WindVaneBlockEntity extends BlockEntity {
         }
         double fx = forwardWorld.x() / fwdLen;
         double fz = forwardWorld.z() / fwdLen;
-        double adx = ax / apparentWindSpeed;
-        double adz = az / apparentWindSpeed;
+        // Negate: apparent wind velocity points where the wind travels TO,
+        // but sailing convention measures from the bow toward where the
+        // wind comes FROM. 0° = head-to-wind, 180° = dead downwind.
+        double adx = -ax / apparentWindSpeed;
+        double adz = -az / apparentWindSpeed;
 
         // Signed angle from bow to apparent wind (CCW positive when viewed
         // from above): cos = dot, sin = cross-y component.

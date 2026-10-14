@@ -61,7 +61,7 @@ public class SailingConfig {
                         "Sable's pre-physics event fires at high sub-step rates (60-120 Hz),",
                         "so keep this small - large values accumulate impulses per sub-step",
                         "and launch ships into orbit.")
-                .defineInRange("sailThrustMultiplier", 0.05, 0.0, 50.0);
+                .defineInRange("sailThrustMultiplier", 1.0, 0.0, 50.0);
         MIN_WIND_SPEED = builder.comment(
                         "Baseline true wind speed in m/s used when Weather2 reports dead calm.",
                         "0.0 = no wind floor; sails produce nothing in a calm.")
