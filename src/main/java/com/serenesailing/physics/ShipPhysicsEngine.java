@@ -166,7 +166,10 @@ public class ShipPhysicsEngine {
             state.totalForce.add(sailForce);
 
             Vector3d sailLever = new Vector3d(sailPosition).sub(state.centerOfMass);
+            sailLever.x = 0.0;
             Vector3d heelingTorque = new Vector3d(sailLever).cross(sailForce);
+            double sailYawTorque = 0.0;
+            heelingTorque.y = sailYawTorque;
             state.totalTorque.add(heelingTorque);
         }
 

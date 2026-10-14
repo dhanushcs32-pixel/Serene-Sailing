@@ -28,6 +28,7 @@ public class SailingPhysicsEngine {
         double sailArea = subLevel.getSailArea();
 
         Vector3d windVector = resolveWind(subLevel, worldTimeSeconds);
+        org.joml.Quaterniondc orientation = subLevel.getOrientation();
 
         ShipPhysicsEngine.PhysicsState state = ShipPhysicsEngine.evaluatePhysics(
                 hullBlocks,
@@ -39,6 +40,7 @@ public class SailingPhysicsEngine {
                 sailArea,
                 waterlineProvider,
                 worldTimeSeconds,
+                orientation,
                 config
         );
 
@@ -71,6 +73,9 @@ public class SailingPhysicsEngine {
         double getSailArea();
         double getDeltaTime();
         List<BlockSample> getBlocks();
+        default org.joml.Quaterniondc getOrientation() {
+            return new org.joml.Quaterniond();
+        }
         void applyImpulseAt(Vector3d impulse, Vector3d point);
         void applyAngularImpulse(Vector3d torqueImpulse);
 
