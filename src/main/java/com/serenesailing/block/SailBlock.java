@@ -2,14 +2,20 @@ package com.serenesailing.block;
 
 import com.serenesailing.registry.ModSounds;
 import com.serenesailing.physics.SailAerodynamics;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Block;
@@ -96,9 +102,13 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
      * ({@code worldSamplePos}) while using {@code pos} only for block-state data.
      */
     public Vector3d getPropulsionForce(Level level, BlockPos pos, BlockState state, Vector3d contraptionVelocity, Vec3 worldSamplePos) {
+        // FACING points toward the player (away from the bow) due to
+        // getHorizontalDirection().getOpposite() in getStateForPlacement().
+        // The ship's forward (bow) direction is the opposite of FACING.
         Direction facing = state.getValue(FACING);
-        Vector3d forward = new Vector3d(facing.getStepX(), 0, facing.getStepZ());
-        Vector3d normal = new Vector3d(facing.getClockWise().getStepX(), 0, facing.getClockWise().getStepZ());
+        Direction bowDir = facing.getOpposite();
+        Vector3d forward = new Vector3d(bowDir.getStepX(), 0, bowDir.getStepZ());
+        Vector3d normal = new Vector3d(bowDir.getClockWise().getStepX(), 0, bowDir.getClockWise().getStepZ());
 
         // Resolve a level Weather2 actually tracks (plot accessors / unregistered
         // dimensions read 0.0 wind forever otherwise).
@@ -109,7 +119,11 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
         float windAngle = WindReader.getWindAngle(queryLevel, worldSamplePos);
         float windSpeed = WindReader.getWindSpeed(queryLevel, BlockPos.containing(worldSamplePos));
         double rad = Math.toRadians(windAngle);
-        Vector3d trueWind = new Vector3d(-Math.sin(rad), 0, Math.cos(rad)).mul(Math.max(6.0, windSpeed * 20.0));
+        // FIX (Bug 3): Use configurable MIN_WIND_SPEED instead of hardcoded 6.0 m/s floor.
+        // The old hardcoded floor caused per-block force diagnostics to show thrust
+        // in dead calm, inconsistent with the physics handler which uses SailingConfig.
+        double minWind = com.serenesailing.config.SailingConfig.MIN_WIND_SPEED.get();
+        Vector3d trueWind = new Vector3d(-Math.sin(rad), 0, Math.cos(rad)).mul(Math.max(minWind, windSpeed * 20.0));
 
         return SailAerodynamics.calculateSailForce(trueWind, contraptionVelocity, forward, normal, 1.0);
     }
@@ -170,6 +184,16 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
                     }
                 }
                 level.setBlock(p, s.setValue(SAIL_STATE, next).setValue(CANVAS, canvas), Block.UPDATE_ALL);
+            }
+
+            if (level instanceof ServerLevel serverLevel) {
+                SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+                if (container instanceof ServerSubLevelContainer serverContainer) {
+                    LevelPlot plot = serverContainer.getPlot(new ChunkPos(pos));
+                    if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                        com.serenesailing.event.ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+                    }
+                }
             }
 
             if (next != current) {
