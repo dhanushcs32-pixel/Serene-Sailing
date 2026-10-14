@@ -70,13 +70,10 @@ public final class SailAerodynamics {
         double dynamicPressure = 0.5 * AIR_DENSITY * apparentSpeed * apparentSpeed;
         double thrustMagnitude = dynamicPressure * DEFAULT_SAIL_AREA * sailEfficiency * propulsionCoeff * SAIL_THRUST_MULTIPLIER;
 
+        // Calculate pure forward thrust vector along the ship centerline
         Vector3d forwardThrust = new Vector3d(shipForwardDir).mul(thrustMagnitude);
 
-        // Lateral heeling component for crosswinds
-        Vector3d lateralDir = new Vector3d(shipForwardDir).cross(0, 1, 0).normalize();
-        double lateralDot = apparentWindDir.dot(lateralDir);
-        Vector3d heelingForce = new Vector3d(lateralDir).mul(thrustMagnitude * 0.2 * lateralDot);
-
-        return forwardThrust.add(heelingForce);
+        // Return PURE forward propulsion — do NOT add lateralDir to forwardThrust!
+        return forwardThrust;
     }
 }
