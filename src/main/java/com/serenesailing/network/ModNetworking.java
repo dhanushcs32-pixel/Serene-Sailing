@@ -14,7 +14,7 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 public final class ModNetworking {
 
     /** Protocol version for the payload set - bump on wire-format changes. */
-    private static final String PROTOCOL_VERSION = "1";
+    private static final String PROTOCOL_VERSION = "2";
 
     private ModNetworking() {
     }
@@ -22,7 +22,13 @@ public final class ModNetworking {
     @SubscribeEvent
     public static void onRegisterPayloads(RegisterPayloadHandlersEvent event) {
         PayloadRegistrar registrar = event.registrar(PROTOCOL_VERSION);
+
+        // Legacy slider-based helm angle payload (kept for backward compat)
         registrar.playToServer(SetHelmAnglePayload.TYPE, SetHelmAnglePayload.STREAM_CODEC,
                 SetHelmAnglePayload::handle);
+
+        // New mouse-drag steering payload with activelyHeld flag
+        registrar.playToServer(ServerboundSteerPayload.TYPE, ServerboundSteerPayload.STREAM_CODEC,
+                ServerboundSteerPayload::handle);
     }
 }
