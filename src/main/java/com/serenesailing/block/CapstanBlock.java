@@ -1,17 +1,24 @@
 package com.serenesailing.block;
 
 import com.serenesailing.entity.CapstanBlockEntity;
+import com.serenesailing.event.ServerPhysicsHandler;
 import com.serenesailing.registry.ModBlockEntities;
 import com.serenesailing.registry.ModSounds;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
@@ -83,6 +90,15 @@ public class CapstanBlock extends Block implements EntityBlock {
                 capstanBE.setChanged();
             }
             level.sendBlockUpdated(pos, state, state.setValue(ANCHORED, newAnchored), 3);
+            if (level instanceof ServerLevel serverLevel) {
+                SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+                if (container instanceof ServerSubLevelContainer serverContainer) {
+                    LevelPlot plot = serverContainer.getPlot(new ChunkPos(pos));
+                    if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                        ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+                    }
+                }
+            }
             level.playSound(null, pos, ModSounds.CAPSTAN_CRANK.get(), SoundSource.BLOCKS,
                     1.0F, newAnchored ? 0.8F : 1.2F);
             player.displayClientMessage(Component.literal(

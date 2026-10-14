@@ -2,6 +2,7 @@ package com.serenesailing.client;
 
 import com.serenesailing.SereneSailing;
 import com.serenesailing.client.renderer.CapstanRenderer;
+import com.serenesailing.client.renderer.HelmBlockEntityRenderer;
 import com.serenesailing.client.renderer.RudderRenderer;
 import com.serenesailing.client.renderer.WindVaneRenderer;
 import com.serenesailing.registry.ModBlockEntities;
@@ -19,7 +20,8 @@ import net.neoforged.neoforge.client.event.EntityRenderersEvent;
  * {@code IllegalArgumentException} during bootstrap for an auto-subscribed
  * class with no listeners.</p>
  *
- * <p>Registers dynamic block entity renderers (wind vane, capstan, rudder).</p>
+ * <p>Registers dynamic block entity renderers (wind vane, capstan, rudder,
+ * helm wheel).</p>
  */
 @EventBusSubscriber(modid = SereneSailing.MOD_ID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.MOD)
 public class ClientSetup {
@@ -41,6 +43,8 @@ public class ClientSetup {
         // Dynamic rudder blade deflection.
         event.registerBlockEntityRenderer(ModBlockEntities.RUDDER.get(),
                 RudderRenderer::new);
+        // Dynamic 8-spoke ship's wheel with rotation.
+        event.registerBlockEntityRenderer(ModBlockEntities.HELM.get(),
+                HelmBlockEntityRenderer::new);
     }
 }
-
