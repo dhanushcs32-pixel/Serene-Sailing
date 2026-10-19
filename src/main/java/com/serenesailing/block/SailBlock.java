@@ -36,7 +36,6 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Vector3d;
-import weather2.util.WindReader;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -110,14 +109,10 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
         Vector3d forward = new Vector3d(bowDir.getStepX(), 0, bowDir.getStepZ());
         Vector3d normal = new Vector3d(bowDir.getClockWise().getStepX(), 0, bowDir.getClockWise().getStepZ());
 
-        // Resolve a level Weather2 actually tracks (plot accessors / unregistered
-        // dimensions read 0.0 wind forever otherwise).
-        Level queryLevel = com.serenesailing.event.ServerPhysicsHandler.resolveWeatherQueryLevel(level);
-        if (queryLevel == null) {
-            return new Vector3d(0, 0, 0);
-        }
-        float windAngle = WindReader.getWindAngle(queryLevel, worldSamplePos);
-        float windSpeed = WindReader.getWindSpeed(queryLevel, BlockPos.containing(worldSamplePos));
+        com.serenesailing.event.ServerPhysicsHandler.CachedWind cachedWind =
+                com.serenesailing.event.ServerPhysicsHandler.getDimensionWind(level.dimension());
+        float windAngle = cachedWind.angle();
+        float windSpeed = cachedWind.speed();
         double rad = Math.toRadians(windAngle);
         // FIX (Bug 3): Use configurable MIN_WIND_SPEED instead of hardcoded 6.0 m/s floor.
         // The old hardcoded floor caused per-block force diagnostics to show thrust
@@ -137,10 +132,12 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
      */
     public static void logWindTransformProbe(Level level, SubLevel subLevel, BlockPlaceContext ctx) {
         BlockPos worldPos = subLevel.localToWorld(ctx.getClickedPos());
-        float windSpeed = WindReader.getWindSpeed(level, worldPos);
-        float windAngle = WindReader.getWindAngle(level, Vec3.atCenterOf(worldPos));
+        com.serenesailing.event.ServerPhysicsHandler.CachedWind cachedWind =
+                com.serenesailing.event.ServerPhysicsHandler.getDimensionWind(level.dimension());
+        float windSpeed = cachedWind.speed();
+        float windAngle = cachedWind.angle();
 
-        com.serenesailing.SereneSailing.LOGGER.info("Sail LocalPos: {} -> WorldPos: {} | WindSpeed: {}, WindAngle: {}", 
+        com.serenesailing.SereneSailing.LOGGER.debug("Sail LocalPos: {} -> WorldPos: {} | WindSpeed: {}, WindAngle: {}", 
             ctx.getClickedPos(), worldPos, windSpeed, windAngle);
     }
 

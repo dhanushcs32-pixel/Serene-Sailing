@@ -53,7 +53,7 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
         context.enqueueWork(() -> {
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
-                SereneSailing.LOGGER.info("[HELM-NET] Received angle: {} for pos: {}", payload.angle(), payload.pos());
+                SereneSailing.LOGGER.debug("[HELM-NET] Received angle: {} for pos: {}", payload.angle(), payload.pos());
 
                 HelmBlockEntity helm = null;
                 ServerSubLevel helmSubLevel = null;

@@ -23,7 +23,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniondc;
 import org.joml.Vector3d;
-import weather2.util.WindReader;
 
 /**
  * Masthead Wind Vane. {@code ServerPhysicsHandler} and internal tickers refresh the live wind
@@ -172,28 +171,13 @@ public class WindVaneBlockEntity extends BlockEntity {
             }
         }
 
-        Vec3 samplePos;
-        BlockPos queryPos;
-        if (subLevel != null) {
-            Pose3dc pose = subLevel.logicalPose();
-            samplePos = new Vec3(pose.position().x(), pose.position().y(), pose.position().z());
-            queryPos = BlockPos.containing(samplePos);
-        } else {
-            samplePos = Vec3.atCenterOf(this.worldPosition);
-            queryPos = this.worldPosition;
-        }
-
-        ServerLevel queryLevel = ServerPhysicsHandler.resolveWeatherQueryLevel(serverLevel);
-        if (queryLevel == null) {
-            queryLevel = serverLevel;
-        }
-
-        float trueSpeed = WindReader.getWindSpeed(queryLevel, queryPos);
-        float trueAngle = WindReader.getWindAngle(queryLevel, samplePos);
+        ServerPhysicsHandler.CachedWind cachedWind = ServerPhysicsHandler.getDimensionWind(serverLevel.dimension());
+        float trueSpeed = cachedWind.speed();
+        float trueAngle = cachedWind.angle();
 
         if (this.tickCount++ % 20 == 0) {
-            SereneSailing.LOGGER.info("[WINDVANE] True Wind: speed={}, angle={} | Pos: {} | Level: {}",
-                    trueSpeed, trueAngle, queryPos, queryLevel.dimension().location());
+            SereneSailing.LOGGER.debug("[WINDVANE] True Wind: speed={}, angle={} | Pos: {} | Level: {}",
+                    trueSpeed, trueAngle, this.worldPosition, serverLevel.dimension().location());
         }
 
         double effectiveWindSpeed = Math.max(SailingConfig.MIN_WIND_SPEED.get(), trueSpeed * 20.0);
