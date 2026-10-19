@@ -30,8 +30,18 @@ public class SereneSailing {
         // Register configuration
         ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.COMMON, SailingConfig.SPEC);
 
+        modEventBus.addListener(this::commonSetup);
+
         // ServerPhysicsHandler registers itself via @EventBusSubscriber (game bus).
         // Do NOT also call NeoForge.EVENT_BUS.register(...) here - that would
         // register the class twice and apply every sailing force twice per step.
+    }
+
+    private void commonSetup(final net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent event) {
+        event.enqueueWork(() -> {
+            if (net.neoforged.fml.ModList.get().isLoaded("weather2")) {
+                com.serenesailing.compat.weather2.SafeWeatherNetworking.install();
+            }
+        });
     }
 }
