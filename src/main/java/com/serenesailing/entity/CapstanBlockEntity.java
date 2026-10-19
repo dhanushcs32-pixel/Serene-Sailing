@@ -176,7 +176,7 @@ public class CapstanBlockEntity extends BlockEntity {
             }
 
             if (this.syncCounter % 20 == 0) {
-                SereneSailing.LOGGER.info("[ANCHOR-DIAG] Dimension: {} | LocalPos: {} | OverworldY: {} | SeabedDepth: {} | ChainLength: {} | Trail: ({}, {})",
+                SereneSailing.LOGGER.debug("[ANCHOR-DIAG] Dimension: {} | LocalPos: {} | OverworldY: {} | SeabedDepth: {} | ChainLength: {} | Trail: ({}, {})",
                         level.dimension().location(), this.worldPosition, overworldY, this.seabedDepth, this.chainLength, this.trailX, this.trailZ);
             }
         } else if (!level.isClientSide && !this.anchored) {

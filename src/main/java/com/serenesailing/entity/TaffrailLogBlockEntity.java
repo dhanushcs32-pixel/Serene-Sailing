@@ -3,10 +3,8 @@ package com.serenesailing.entity;
 import com.serenesailing.SereneSailing;
 import com.serenesailing.event.ServerPhysicsHandler;
 import com.serenesailing.registry.ModBlockEntities;
-import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
-import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
@@ -18,8 +16,6 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import org.joml.Quaterniondc;
-import org.joml.Vector3d;
 
 /**
  * Stern taffrail log. Measures the parent vessel's speed in m/s (pushed as
@@ -100,24 +96,12 @@ public class TaffrailLogBlockEntity extends BlockEntity {
 
         double forwardSpeed = 0.0;
         if (subLevel != null) {
-            RigidBodyHandle body = RigidBodyHandle.of(subLevel);
-            Vector3d worldVelocity = (body != null && body.isValid())
-                    ? new Vector3d(body.getLinearVelocity())
-                    : ServerPhysicsHandler.getVesselVelocity(subLevel.getUniqueId());
-
-            Pose3dc pose = subLevel.logicalPose();
-            Quaterniondc orientation = pose.orientation();
-            Vector3d shipForwardHeading = new Vector3d(0.0, 0.0, -1.0).rotate(orientation);
-            shipForwardHeading.y = 0.0;
-            if (shipForwardHeading.lengthSquared() > 1.0e-4) {
-                shipForwardHeading.normalize();
-            } else {
-                shipForwardHeading.set(0.0, 0.0, -1.0);
+            // Read authoritative forward speed cached by ServerPhysicsHandler along vessel heading (localForward)
+            forwardSpeed = ServerPhysicsHandler.getForwardSpeed(subLevel.getUniqueId());
+            if (Math.abs(forwardSpeed) < 1.0e-5 && Math.abs(this.speedMs) > 1.0e-5) {
+                forwardSpeed = this.speedMs;
             }
-
-            // FIX: Allow negative forward speed (sternway) for accurate telemetry.
-            forwardSpeed = worldVelocity.dot(shipForwardHeading);
-        } else if (Math.abs(this.speedMs) > 0.0f) {
+        } else {
             forwardSpeed = this.speedMs;
         }
 
@@ -126,7 +110,7 @@ public class TaffrailLogBlockEntity extends BlockEntity {
 
         if (this.tickCount++ % 20 == 0) {
             String dir = forwardSpeed < -0.05 ? "STERNWAY" : "FWD";
-            SereneSailing.LOGGER.info("[TAFFRAIL] {} ship speed: {} m/s ({} knots)", dir, 
+            SereneSailing.LOGGER.debug("[TAFFRAIL] {} ship speed: {} m/s ({} knots)", dir, 
                     String.format("%.2f", forwardSpeed), String.format("%.1f", Math.abs(knots)));
         }
 
