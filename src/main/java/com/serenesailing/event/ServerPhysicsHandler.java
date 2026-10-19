@@ -12,6 +12,7 @@ import com.serenesailing.entity.RudderBlockEntity;
 import com.serenesailing.entity.TaffrailLogBlockEntity;
 import com.serenesailing.entity.WindVaneBlockEntity;
 import com.serenesailing.physics.SailAerodynamics;
+import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import com.serenesailing.registry.ModBlocks;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
@@ -31,12 +32,14 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.util.Mth;
-import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import weather2.util.WindReader;
 
 import com.serenesailing.registry.ModSounds;
@@ -44,6 +47,8 @@ import net.minecraft.sounds.SoundSource;
 
 import org.slf4j.Logger;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -64,7 +69,7 @@ public class ServerPhysicsHandler {
     private static long stepCounter = 0L;
 
     // --- Runaway guardrails & Fossen / MMG Hydrodynamics ---
-    private static final double FORCE_PER_FULL_SAIL_N = 450.0;
+    private static final double FORCE_PER_FULL_SAIL_N = 750.0;
     /** Yaw impulse guard - sized so the steering torque stays proportional to
      *  v_fwd across all playable speeds (800 * v * sin(30 deg) * dt stays
      *  below this up to ~9 m/s), keeping the turn rate continuous rather than
@@ -90,7 +95,8 @@ public class ServerPhysicsHandler {
     /** Cached rudder: live block entity, application point, and facing. */
     private record RudderInfo(RudderBlockEntity blockEntity, Vector3d localPoint, Direction facing) {}
 
-    /** Per-sub-level steering scan: rudders, helm stations, vanes, capstans, taffrails, sails, blockCount, sailFacing, sailCount. */
+    /** Per-sub-level steering scan: rudders, helm stations, vanes, capstans, taffrails, sails, blockCount, sailFacing, sailCount,
+     *  keelLocalPoint, minBlockY, maxBlockY, targetDraft, interiorAirVolume, hullHeight, hullLength, hullBeam. */
     private record SteeringCache(List<RudderInfo> rudders, List<HelmBlockEntity> helms,
                                  List<WindVaneBlockEntity> vanes,
                                  List<CapstanBlockEntity> capstans,
@@ -99,7 +105,15 @@ public class ServerPhysicsHandler {
                                  double sailAreaEfficiency,
                                  int blockCount,
                                  Direction sailFacing,
-                                 int sailCount) {}
+                                 int sailCount,
+                                 Vector3d keelLocalPoint,
+                                 int minBlockY,
+                                 int maxBlockY,
+                                 float targetDraft,
+                                 int interiorAirVolume,
+                                 double hullHeight,
+                                 double hullLength,
+                                 double hullBeam) {}
 
     private static final Map<UUID, SteeringCache> STEERING_CACHE = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> STEERING_CACHE_STEP = new ConcurrentHashMap<>();
@@ -113,6 +127,18 @@ public class ServerPhysicsHandler {
     private static final Map<UUID, Vector3d> VESSEL_VELOCITY_CACHE = new ConcurrentHashMap<>();
     /** Forward speed [m/s] along vessel heading cached per sub-level UUID. */
     private static final Map<UUID, Double> FORWARD_SPEED_CACHE = new ConcurrentHashMap<>();
+
+    /** Cached wind speed and angle sampled on the main server thread. */
+    public record CachedWind(float angle, float speed) {
+        public static final CachedWind ZERO = new CachedWind(0.0f, 0.0f);
+    }
+
+    /** Dimension-level wind cache keyed by Dimension ResourceKey sampled on the main server thread. */
+    private static final Map<ResourceKey<Level>, CachedWind> DIMENSION_WIND_CACHE = new ConcurrentHashMap<>();
+
+    public static CachedWind getDimensionWind(ResourceKey<Level> dimension) {
+        return DIMENSION_WIND_CACHE.getOrDefault(dimension, CachedWind.ZERO);
+    }
 
     public static void setHelmAngle(UUID subLevelId, float angle) {
         HELM_ANGLE_CACHE.put(subLevelId, angle);
@@ -147,6 +173,28 @@ public class ServerPhysicsHandler {
             }
         }
         return serverLevel;
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Pre event) {
+        MinecraftServer server = event.getServer();
+        if (server == null) {
+            return;
+        }
+
+        if (server.getTickCount() % 20 != 0) {
+            return;
+        }
+
+        // Cache wind per dimension on the main server thread once every 20 ticks.
+        // This decouples Weather2 queries from high-frequency physics substeps and
+        // avoids querying chunk heightmaps on Sable sublevels or unprimed chunks.
+        for (ServerLevel serverLevel : server.getAllLevels()) {
+            ServerLevel weatherLevel = resolveWeatherQueryLevel(serverLevel);
+            float dimAngle = weatherLevel != null ? WindReader.getWindAngle(weatherLevel) : 0.0f;
+            float dimSpeed = weatherLevel != null ? WindReader.getWindSpeed(weatherLevel) : 0.0f;
+            DIMENSION_WIND_CACHE.put(serverLevel.dimension(), new CachedWind(dimAngle, dimSpeed));
+        }
     }
 
     @SubscribeEvent
@@ -193,13 +241,10 @@ public class ServerPhysicsHandler {
         Pose3dc pose = subLevel.logicalPose();
         Vector3dc worldPos = pose.position();
 
-        // ---- Weather2 wind at the ship's WORLD position -------------------
-        Vec3 samplePos = new Vec3(worldPos.x(), worldPos.y(), worldPos.z());
-        ServerLevel weatherLevel = resolveWeatherQueryLevel(level);
-        float rawWindAngle = weatherLevel != null
-                ? WindReader.getWindAngle(weatherLevel, samplePos) : 0.0F;
-        float rawWindSpeed = weatherLevel != null
-                ? WindReader.getWindSpeed(weatherLevel, BlockPos.containing(samplePos)) : 0.0F;
+        // ---- Read strictly from thread-safe dimension wind cache (Decoupled from Weather2 Netty thread) ----
+        CachedWind cachedWind = getDimensionWind(level.dimension());
+        float rawWindAngle = cachedWind.angle();
+        float rawWindSpeed = cachedWind.speed();
         double effectiveWindSpeed = Math.max(SailingConfig.MIN_WIND_SPEED.get(), rawWindSpeed * 20.0);
         double windRad = Math.toRadians(rawWindAngle);
         Vector3d trueWindWorld = new Vector3d(-Math.sin(windRad), 0.0, Math.cos(windRad))
@@ -249,9 +294,9 @@ public class ServerPhysicsHandler {
             calculatedMass = massTracker.getMass();
         }
         int blockCount = steering.blockCount();
-        // If rigid body mass is uninitialized or defaulting below 2,000 kg for an assembled
+        // If rigid body mass is uninitialized or defaulting below 800 kg for an assembled
         // multi-block vessel, ensure a realistic minimum mass based on total block count:
-        double minMass = blockCount > 0 ? Math.max(2000.0, blockCount * 450.0) : 2000.0;
+        double minMass = blockCount > 0 ? Math.max(800.0, blockCount * 80.0) : 800.0;
         double totalMass = Math.max(calculatedMass, minMass);
         double massScale = (calculatedMass > 0.0 && calculatedMass < totalMass)
                 ? (calculatedMass / totalMass)
@@ -268,24 +313,73 @@ public class ServerPhysicsHandler {
             taffrail.setSpeedTelemetry((float) fwdSpeed);
         }
 
-        // ---- Buoyancy / ride height -----------------------------------------
-        double waterSurfaceY = waterSurfaceY(level, subLevel);
-        var bounds = subLevel.boundingBox();
-        double rawBottomY = bounds.minY();
-        double hullHeight = bounds.maxY() - bounds.minY();
+        // ---- Buoyancy / ride height (Keel Tracking & Hollow Hull Draft) ---
+        // Upright vertical offset from SubLevel's local rotation origin (pose.rotationPoint()) to keel bottom:
+        // Must be invariant to roll/pitch angle to prevent a positive feedback loop
+        // where rolling the ship raises the transformed keel position and tricks
+        // the ride height spring into dragging the entire vessel underwater!
+        double keelOffsetFromOriginY = steering.keelLocalPoint().y() - pose.rotationPoint().y();
+        double keelWorldY = worldPos.y() + keelOffsetFromOriginY;
+        double hullHeight = steering.hullHeight();
+        double hullLength = steering.hullLength();
+        double hullBeam = steering.hullBeam();
         boolean isShallowDraft = hullHeight <= 1.5;
+        float targetDraft = steering.targetDraft();
 
-        // Clamp bottomY so a deployed anchor chain cannot fool the spring solver
-        double bottomY = Math.max(rawBottomY, waterSurfaceY - TARGET_HULL_DRAFT - 2.0);
+        double baseWaterSurfaceY = waterSurfaceY(level, subLevel, keelWorldY, hullHeight);
+
+        // 4-point wave surface sampling around hull extremes (bow, stern, port, starboard)
+        double halfLength = hullLength * 0.5;
+        double halfBeam = hullBeam * 0.5;
+
+        Vector3d hullCenterWorld = new Vector3d(worldPos.x(), keelWorldY, worldPos.z());
+        Vector3d bowPos = new Vector3d(hullCenterWorld).add(new Vector3d(forwardWorld).mul(halfLength));
+        Vector3d sternPos = new Vector3d(hullCenterWorld).sub(new Vector3d(forwardWorld).mul(halfLength));
+        Vector3d portPos = new Vector3d(hullCenterWorld).sub(new Vector3d(starboardWorld).mul(halfBeam));
+        Vector3d starPos = new Vector3d(hullCenterWorld).add(new Vector3d(starboardWorld).mul(halfBeam));
+
+        double time = level != null ? (double) level.getGameTime() : 0.0;
+        double offsetBow = WAVE_HEIGHT_HOOK.getWaveHeight(level, bowPos.x, bowPos.z, time);
+        double offsetStern = WAVE_HEIGHT_HOOK.getWaveHeight(level, sternPos.x, sternPos.z, time);
+        double offsetPort = WAVE_HEIGHT_HOOK.getWaveHeight(level, portPos.x, portPos.z, time);
+        double offsetStarboard = WAVE_HEIGHT_HOOK.getWaveHeight(level, starPos.x, starPos.z, time);
+
+        double stormIntensity = GerstnerWaveEngine.getStormIntensity(level);
+        boolean hasActiveWaves = (stormIntensity >= 0.05) && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
+                || Math.abs(offsetPort) > 1.0e-4 || Math.abs(offsetStarboard) > 1.0e-4);
+
+        // Heavy hull inertia filtering: large multi-deck ships span wave crests and cut through swells
+        double heaveAttenuation = 1.0 / (1.0 + (steering.blockCount() / 400.0));
+
+        double wavePitchTarget = 0.0;
+        double waveRollTarget = 0.0;
+        if (hasActiveWaves) {
+            double effectiveLength = Math.max(6.0, hullLength * 0.7);
+            double effectiveBeam = Math.max(4.0, hullBeam * 0.7);
+            double rotAtten = Math.max(0.35, heaveAttenuation);
+            wavePitchTarget = Mth.clamp(Math.atan2(offsetBow - offsetStern, effectiveLength) * rotAtten, -0.35, 0.35);
+            waveRollTarget = Mth.clamp(Math.atan2(offsetPort - offsetStarboard, effectiveBeam) * rotAtten, -0.40, 0.40);
+        }
+
+        double rawMeanWaveOffset = (offsetBow + offsetStern + offsetPort + offsetStarboard) * 0.25;
+        double attenuatedWaveOffset = rawMeanWaveOffset * heaveAttenuation;
+
+        double meanWaterSurfaceY = baseWaterSurfaceY;
+        if (hasActiveWaves && baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
+            // Anti-flooding floor: clamp negative wave trough offset on meanWaterSurfaceY to >= baseWaterSurfaceY - 0.35,
+            // while allowing full positive heave lift (+0.0 to +2.5m) on wave crests!
+            double clampedWaveOffset = Math.max(-0.35, attenuatedWaveOffset);
+            meanWaterSurfaceY = baseWaterSurfaceY + clampedWaveOffset;
+        }
 
         // Task 3.1: Raft Flotation Check: Flat vessels with minimal draft (T < 0.5m)
         // are recognized as floating whenever any hull block intersects water.
-        int submergedSamples = countSubmergedHullSamples(level, subLevel);
-        boolean waterContact = waterSurfaceY > Double.NEGATIVE_INFINITY
-                && (rawBottomY < waterSurfaceY + 1.5 || (isShallowDraft && rawBottomY <= waterSurfaceY + 0.5));
+        int submergedSamples = countSubmergedHullSamples(level, subLevel, keelWorldY, targetDraft, isShallowDraft);
+        boolean waterContact = meanWaterSurfaceY > Double.NEGATIVE_INFINITY
+                && (keelWorldY <= meanWaterSurfaceY + 0.5 || (isShallowDraft && keelWorldY <= meanWaterSurfaceY + 0.3));
         boolean afloat = waterContact || (submergedSamples > 0);
-        if (afloat && waterSurfaceY > Double.NEGATIVE_INFINITY) {
-            applyRideHeightSpring(body, waterSurfaceY, bottomY, isShallowDraft, dt);
+        if (afloat && meanWaterSurfaceY > Double.NEGATIVE_INFINITY) {
+            applyRideHeightSpring(body, meanWaterSurfaceY, keelWorldY, targetDraft, dt, stormIntensity, attenuatedWaveOffset);
         }
 
         // ---- Flotation gate: beached ships get ground friction only --------
@@ -426,10 +520,26 @@ public class ServerPhysicsHandler {
                     !hasActiveThrust, activeHelmAngle, dt, massScale, dragForceMag, localRight);
         }
 
+        // ---- Storm Wave Orbital Push (Stokes Drift) -------------------------
+        // During storms (S > 0.4), apply a horizontal Stokes wave drift force along wave propagation direction
+        if (!anchored && stormIntensity > 0.4 && afloat) {
+            var waveState = GerstnerWaveEngine.getDimensionState(level);
+            double stokesForceMag = (stormIntensity - 0.4) * 350.0 * Math.sqrt(totalMass / 1000.0);
+            Vector3d stokesForceWorld = new Vector3d(
+                    waveState.smoothedWindDirX * stokesForceMag,
+                    0.0,
+                    waveState.smoothedWindDirZ * stokesForceMag
+            );
+            Vector3d stokesImpulseLocal = pose.transformNormalInverse(stokesForceWorld, new Vector3d())
+                    .mul(dt * massScale);
+            body.applyLinearAndAngularImpulse(stokesImpulseLocal, new Vector3d(), true);
+        }
+
         // ---- Stabilized pure-yaw steering & righting torque -----------------
         boolean sailsCatchingWind = thrustMag > 1.0e-9;
         applySteeringAndStabilization(subLevel, body, pose, level, forwardWorld, shipVelWorld, omegaWorld, planarSpeed, sailsCatchingWind, anchored, dt,
-                steering, thrustForceN, dragForceMag, totalMass, massScale, localForward, localRight, localLinearImpulse, hasActiveThrust);
+                steering, thrustForceN, dragForceMag, totalMass, massScale, localForward, localRight, localLinearImpulse, hasActiveThrust,
+                wavePitchTarget, waveRollTarget);
 
         // ---- Nautical ambience: hull creaks under heavy stress ---------------
         // Fires when wave roll or yaw rate exceeds a threshold, with a
@@ -471,7 +581,7 @@ public class ServerPhysicsHandler {
         updateWindVanes(steering.vanes(), forwardWorld, trueWindWorld, shipVelWorld);
 
         if (stepCounter % 20L == 0L && thrustMag > 1.0e-9) {
-            SereneSailing.LOGGER.info(String.format(
+            SereneSailing.LOGGER.debug(String.format(
                     "[SereneSailing] %s | wind %.2f m/s @ %.0f deg | thrust %.0f N | speed %.2f m/s",
                     subLevel.getName(), effectiveWindSpeed, rawWindAngle,
                     thrustMag, shipVelWorld.length()));
@@ -588,7 +698,9 @@ public class ServerPhysicsHandler {
                                                       Vector3d localForward,
                                                       Vector3d localRight,
                                                       Vector3d localLinearImpulse,
-                                                      boolean hasActiveThrust) {
+                                                      boolean hasActiveThrust,
+                                                      double wavePitchTarget,
+                                                      double waveRollTarget) {
         List<RudderInfo> rudders = getRudders(subLevel);
 
         // 1. Transform world gravity vertical (0, 1, 0) into ship body-local space
@@ -605,18 +717,21 @@ public class ServerPhysicsHandler {
         double omegaRoll = omegaLocal.dot(localForward);
         double omegaPitch = omegaLocal.dot(localRight);
 
-        // 4. Restoring Impulses (PD controller: -k*theta - c*omega)
-        // Base specific stiffness (normalized per tonne of displacement)
-        double massRatio = Math.max(1.0, totalMass / 2000.0);
+        // 4. Velocity-Space PD Attitude Control:
+        // Direct velocity-space stabilization is completely independent of Rapier's internal inertia tensor,
+        // preventing numerical impulse overshoot (which caused large multi-deck ships to topple).
+        // Roll requires +4.0 * (rollAngle - waveRollTarget) by right-hand rule on localForward!
+        double targetOmegaRoll = 4.0 * (rollAngle - waveRollTarget);
+        // Pitch requires -4.0 * (pitchAngle - wavePitchTarget) by right-hand rule on localRight!
+        double targetOmegaPitch = -4.0 * (pitchAngle - wavePitchTarget);
 
-        double kRoll  = K_ROLL_SPRING * massRatio;
-        double cRoll  = C_ROLL_DAMP * massRatio;
-        double kPitch = K_PITCH_SPRING * massRatio;
-        double cPitch = C_PITCH_DAMP * massRatio;
+        double deltaOmegaRoll = (targetOmegaRoll - omegaRoll) * 0.35;
+        double deltaOmegaPitch = (targetOmegaPitch - omegaPitch) * 0.35;
 
-        // Restoring vector impulses:
-        Vector3d rollTorqueVec = new Vector3d(localForward).mul((kRoll * rollAngle - cRoll * omegaRoll) * dt);
-        Vector3d pitchTorqueVec = new Vector3d(localRight).mul((-kPitch * pitchAngle - cPitch * omegaPitch) * dt);
+        Vector3d deltaOmegaLocal = new Vector3d(localForward).mul(deltaOmegaRoll)
+                .add(new Vector3d(localRight).mul(deltaOmegaPitch));
+        Vector3d deltaOmegaWorld = pose.transformNormal(deltaOmegaLocal, new Vector3d());
+        body.addLinearAndAngularVelocity(new Vector3d(0.0, 0.0, 0.0), deltaOmegaWorld);
 
         double yawTorque = 0.0;
         float unifiedSteeringAngle = 0.0f;
@@ -646,25 +761,42 @@ public class ServerPhysicsHandler {
 
                 double facingSignSum = 0.0;
                 for (RudderInfo rudder : rudders) {
-                    // FIX: Transform the rudder's local position to world space,
-                    // then sample water at the block bottom (localPoint Y is the
-                    // block bottom, not center — see scan fix below).
                     Vector3d rudderWorld = pose.transformPosition(
                             new Vector3d(rudder.localPoint()), new Vector3d());
-                    if (!level.getFluidState(BlockPos.containing(
-                            rudderWorld.x, rudderWorld.y, rudderWorld.z)).is(FluidTags.WATER)) {
+
+                    // MMG 4-point vertical blade submersion ratio:
+                    // Blade Deep Reach  (rudderWorld.y - 1.50): weight 0.25 (detects water for rudders mounted 1-2 blocks above keel on tall sterns)
+                    // Blade Bottom Tip  (rudderWorld.y - 0.65): weight 0.35
+                    // Blade Mid-Section (rudderWorld.y - 0.15): weight 0.25
+                    // Blade Top Stock   (rudderWorld.y + 0.35): weight 0.15
+                    double rudderSubmersion = 0.0;
+                    if (isPointSubmerged(level, rudderWorld.x, rudderWorld.y - 1.50, rudderWorld.z)) {
+                        rudderSubmersion += 0.25;
+                    }
+                    if (isPointSubmerged(level, rudderWorld.x, rudderWorld.y - 0.65, rudderWorld.z)) {
+                        rudderSubmersion += 0.35;
+                    }
+                    if (isPointSubmerged(level, rudderWorld.x, rudderWorld.y - 0.15, rudderWorld.z)) {
+                        rudderSubmersion += 0.25;
+                    }
+                    if (isPointSubmerged(level, rudderWorld.x, rudderWorld.y + 0.35, rudderWorld.z)) {
+                        rudderSubmersion += 0.15;
+                    }
+
+                    if (rudderSubmersion <= 0.0) {
                         continue;
                     }
                     submergedRudderCount++;
 
                     Direction facing = rudder.facing();
                     Vector3d rudderDir = new Vector3d(facing.getStepX(), facing.getStepY(), facing.getStepZ());
-                    facingSignSum += (rudderDir.dot(localForward) <= 0.0) ? 1.0 : -1.0;
+                    double sign = (rudderDir.dot(localForward) <= 0.0) ? 1.0 : -1.0;
+                    facingSignSum += sign * rudderSubmersion;
                 }
 
-                if (submergedRudderCount > 0 && facingSignSum != 0.0) {
+                if (submergedRudderCount > 0 && Math.abs(facingSignSum) > 1.0e-5) {
                     // FIX: Direct inline torque formula — STEER_TORQUE_COEFF is
-                    // applied directly as tau = -coeff * v * sin(theta) * N_rudders.
+                    // applied directly as tau = -coeff * v * sin(theta) * facingSignSum.
                     // The old RudderHydrodynamics bridge divided by 800, zeroing
                     // the result. This formula is proven and well-scaled.
                     double thetaRad = Math.toRadians(unifiedSteeringAngle);
@@ -689,32 +821,31 @@ public class ServerPhysicsHandler {
         double yawDampingImpulse = yawDampingTorque * dt;
         yawImpulse += yawDampingImpulse;
 
-        // 6. Apply to rigid body with body-fixed 3D axis mapping
+        // 6. Apply pure yaw steering torque to rigid body
         Vector3d yawTorqueVec = new Vector3d(0.0, yawImpulse, 0.0);
-        Vector3d totalAngularImpulse = new Vector3d(rollTorqueVec).add(pitchTorqueVec).add(yawTorqueVec);
-        body.applyLinearAndAngularImpulse(new Vector3d(0.0, 0.0, 0.0), totalAngularImpulse, true);
+        body.applyLinearAndAngularImpulse(new Vector3d(0.0, 0.0, 0.0), yawTorqueVec, true);
 
         // ---- In-Game Runtime Diagnostic Telemetry (throttled ~1 Hz / 20 ticks) ----
         long lastPhysTick = PHYS_DEBUG_TICK.getOrDefault(subLevel.getUniqueId(), -1L);
         if (level.getGameTime() % 20 == 0 && level.getGameTime() != lastPhysTick && hasActiveThrust) {
             PHYS_DEBUG_TICK.put(subLevel.getUniqueId(), level.getGameTime());
-            LOGGER.info("[PHYS-DEBUG] Speed: {} m/s ({} kts) | ThrustN: {} | DragN: {} | MassScale: {}",
+            LOGGER.debug("[PHYS-DEBUG] Speed: {} m/s ({} kts) | ThrustN: {} | DragN: {} | MassScale: {}",
                 planarSpeed, planarSpeed * 1.94384, thrustForceN, dragForceMag, massScale);
-            LOGGER.info("[PHYS-DEBUG] ActiveSails: {} | AreaEff: {} | ThrustN: {} | BodyMass: {}",
+            LOGGER.debug("[PHYS-DEBUG] ActiveSails: {} | AreaEff: {} | ThrustN: {} | BodyMass: {}",
                 steering.sailCount(), steering.sailAreaEfficiency(), thrustForceN, totalMass);
-            LOGGER.info("[PHYS-DEBUG] localForward: ({}, {}, {}) | LinImpulse: ({}, {}, {})",
+            LOGGER.debug("[PHYS-DEBUG] localForward: ({}, {}, {}) | LinImpulse: ({}, {}, {})",
                 localForward.x, localForward.y, localForward.z,
                 localLinearImpulse.x, localLinearImpulse.y, localLinearImpulse.z);
-            LOGGER.info("[PHYS-DEBUG] Angles -> Roll: {} rad, Pitch: {} rad | OmegaLocal: ({}, {}, {})",
+            LOGGER.debug("[PHYS-DEBUG] Angles -> Roll: {} rad, Pitch: {} rad | OmegaLocal: ({}, {}, {})",
                 rollAngle, pitchAngle, omegaLocal.x, omegaLocal.y, omegaLocal.z);
-            LOGGER.info("[PHYS-DEBUG] Impulses -> Pitch(X): {}, Yaw(Y): {}, Roll(Z): {}",
-                totalAngularImpulse.x, totalAngularImpulse.y, totalAngularImpulse.z);
+            LOGGER.debug("[PHYS-DEBUG] YawImpulse: {}, DeltaOmegaWorld: ({}, {}, {})",
+                yawImpulse, deltaOmegaWorld.x, deltaOmegaWorld.y, deltaOmegaWorld.z);
         }
 
         // ---- Diagnostic telemetry (throttled ~1 Hz) -------------------------
         if (stepCounter % 20 == 0 && Math.abs(unifiedSteeringAngle) >= 0.5f) {
             Vector3d angVelAfter = new Vector3d(body.getAngularVelocity());
-            SereneSailing.LOGGER.info(String.format(
+            SereneSailing.LOGGER.debug(String.format(
                     "[STEER-DIAG] SubLevel: %s | HelmAngle: %.1f deg | SubmergedRudders: %d | "
                   + "ForwardSpeed: %.3f m/s | RawTorque: %.2f | YawImpulse: %.4f | "
                   + "AngVelY: %.4f rad/s | sailsCatchingWind: %s",
@@ -815,8 +946,53 @@ public class ServerPhysicsHandler {
     }
 
     /**
+     * Calculates the hydrostatic equilibrium draft [m] from the keel upwards by integrating
+     * slice volumes layer-by-layer until displaced water weight equals total vessel mass.
+     * If the vessel is overloaded (required volume exceeds total hull displacement), returns
+     * a draft exceeding hull height, signaling negative buoyancy / sinking.
+     */
+    public static double calculateArchimedesDraft(double[] sliceVolumes, double totalMassKg, double waterDensityKgM3) {
+        if (sliceVolumes == null || sliceVolumes.length == 0 || totalMassKg <= 0.0) {
+            return 0.0;
+        }
+        double waterDensity = waterDensityKgM3 > 0.0 ? waterDensityKgM3 : 1000.0;
+        double reqVolume = totalMassKg / waterDensity;
+        double accumulatedVolume = 0.0;
+        double draft = 0.0;
+        int n = sliceVolumes.length;
+
+        for (int i = 0; i < n; i++) {
+            double v = sliceVolumes[i];
+            if (v <= 0.0) {
+                draft += 1.0;
+                continue;
+            }
+            if (accumulatedVolume + v < reqVolume) {
+                accumulatedVolume += v;
+                draft += 1.0;
+            } else {
+                double fraction = (reqVolume - accumulatedVolume) / v;
+                draft += fraction;
+                return draft;
+            }
+        }
+
+        // Negative buoyancy: mass exceeds total displacement volume
+        double lastWaterplaneArea = 1.0;
+        for (int i = n - 1; i >= 0; i--) {
+            if (sliceVolumes[i] > 0.0) {
+                lastWaterplaneArea = sliceVolumes[i];
+                break;
+            }
+        }
+        double excessVolume = reqVolume - accumulatedVolume;
+        draft = n + (excessVolume / lastWaterplaneArea);
+        return draft;
+    }
+
+    /**
      * Scans plot chunks for rudders (with facings), helm stations, wind vanes,
-     * capstans, taffrail logs, and aggregates sail reefing efficiency.
+     * capstans, taffrail logs, and computes exact slice-by-slice Archimedes draft.
      */
     private static SteeringCache scanSteering(ServerSubLevel subLevel) {
         List<RudderInfo> rudders = new ArrayList<>();
@@ -830,61 +1006,209 @@ public class ServerPhysicsHandler {
         int blockCount = 0;
         Direction sailFacing = null;
         var plot = subLevel.getPlot();
-        if (plot != null) {
-            Block sailBlock = ModBlocks.CANVAS_SAIL.get();
-            for (PlotChunkHolder holder : plot.getLoadedChunks()) {
-                LevelChunk chunk = holder.getChunk();
-                if (chunk == null) {
+        if (plot == null) {
+            return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState,
+                    sailAreaEfficiency, blockCount, sailFacing, sailCount,
+                    new Vector3d(0.0, 0.0, 0.0), 0, 0, TARGET_HULL_DRAFT, 0, 1.0, 1.0, 1.0);
+        }
+
+        Block sailBlock = ModBlocks.CANVAS_SAIL.get();
+
+        int minBlockX = Integer.MAX_VALUE;
+        int maxBlockX = Integer.MIN_VALUE;
+        int minBlockY = Integer.MAX_VALUE;
+        int maxBlockY = Integer.MIN_VALUE;
+        int minBlockZ = Integer.MAX_VALUE;
+        int maxBlockZ = Integer.MIN_VALUE;
+
+        double keelSumX = 0;
+        double keelSumZ = 0;
+        int keelCount = 0;
+
+        // Pass 1: Scan block entities and identify 3D extents across ALL loaded chunks
+        for (PlotChunkHolder holder : plot.getLoadedChunks()) {
+            LevelChunk chunk = holder.getChunk();
+            if (chunk == null) {
+                continue;
+            }
+            for (var entry : chunk.getBlockEntities().entrySet()) {
+                BlockPos p = entry.getKey();
+                if (entry.getValue() instanceof RudderBlockEntity rudder) {
+                    BlockState rs = entry.getValue().getBlockState();
+                    Direction facing = rs.hasProperty(RudderBlock.FACING)
+                            ? rs.getValue(RudderBlock.FACING) : Direction.NORTH;
+                    // FIX: Use block BOTTOM Y (p.getY()) for the rudder's
+                    // local point so the submergence water check reliably
+                    // finds water even with shallow TARGET_HULL_DRAFT.
+                    rudders.add(new RudderInfo(rudder,
+                            new Vector3d(p.getX() + 0.5, p.getY(), p.getZ() + 0.5),
+                            facing));
+                } else if (entry.getValue() instanceof HelmBlockEntity helm) {
+                    helms.add(helm);
+                } else if (entry.getValue() instanceof WindVaneBlockEntity vane) {
+                    vanes.add(vane);
+                } else if (entry.getValue() instanceof CapstanBlockEntity capstan) {
+                    capstans.add(capstan);
+                    BlockState cs = capstan.getBlockState();
+                    if (cs.getBlock() instanceof CapstanBlock
+                            && cs.hasProperty(CapstanBlock.ANCHORED)
+                            && cs.getValue(CapstanBlock.ANCHORED)) {
+                        anchorState = true;
+                    }
+                } else if (entry.getValue() instanceof TaffrailLogBlockEntity taffrail) {
+                    taffrails.add(taffrail);
+                }
+            }
+
+            LevelChunkSection[] sections = chunk.getSections();
+            for (int secIdx = 0; secIdx < sections.length; secIdx++) {
+                LevelChunkSection section = sections[secIdx];
+                if (section == null || section.hasOnlyAir()) {
                     continue;
                 }
-                for (var entry : chunk.getBlockEntities().entrySet()) {
-                    BlockPos p = entry.getKey();
-                    if (entry.getValue() instanceof RudderBlockEntity rudder) {
-                        BlockState rs = entry.getValue().getBlockState();
-                        Direction facing = rs.hasProperty(RudderBlock.FACING)
-                                ? rs.getValue(RudderBlock.FACING) : Direction.NORTH;
-                        // FIX: Use block BOTTOM Y (p.getY()) for the rudder's
-                        // local point so the submergence water check reliably
-                        // finds water even with shallow TARGET_HULL_DRAFT.
-                        rudders.add(new RudderInfo(rudder,
-                                new Vector3d(p.getX() + 0.5, p.getY(), p.getZ() + 0.5),
-                                facing));
-                    } else if (entry.getValue() instanceof HelmBlockEntity helm) {
-                        helms.add(helm);
-                    } else if (entry.getValue() instanceof WindVaneBlockEntity vane) {
-                        vanes.add(vane);
-                    } else if (entry.getValue() instanceof CapstanBlockEntity capstan) {
-                        capstans.add(capstan);
-                        // Cross-check the placed blockstate: if the ANCHORED
-                        // property is set, the vessel is moored even if the
-                        // block entity's cached flag has gone stale.
-                        BlockState cs = capstan.getBlockState();
-                        if (cs.getBlock() instanceof CapstanBlock
-                                && cs.hasProperty(CapstanBlock.ANCHORED)
-                                && cs.getValue(CapstanBlock.ANCHORED)) {
-                            anchorState = true;
+                int sectionY = chunk.getSectionYFromSectionIndex(secIdx);
+                int baseBlockY = sectionY << 4;
+                for (int sy = 0; sy < 16; sy++) {
+                    for (int sz = 0; sz < 16; sz++) {
+                        for (int sx = 0; sx < 16; sx++) {
+                            BlockState s = section.getBlockState(sx, sy, sz);
+                            if (!s.isAir()) {
+                                blockCount++;
+                                if (s.getBlock() == sailBlock) {
+                                    sailCount++;
+                                    sailAreaEfficiency += s.getValue(SailBlock.SAIL_STATE) * 0.5;
+                                    if (sailFacing == null && s.hasProperty(SailBlock.FACING)) {
+                                        sailFacing = s.getValue(SailBlock.FACING);
+                                    }
+                                }
+
+                                int blockX = chunk.getPos().getMinBlockX() + sx;
+                                int blockY = baseBlockY + sy;
+                                int blockZ = chunk.getPos().getMinBlockZ() + sz;
+
+                                if (blockX < minBlockX) minBlockX = blockX;
+                                if (blockX > maxBlockX) maxBlockX = blockX;
+                                if (blockY < minBlockY) {
+                                    minBlockY = blockY;
+                                    keelSumX = blockX + 0.5;
+                                    keelSumZ = blockZ + 0.5;
+                                    keelCount = 1;
+                                } else if (blockY == minBlockY) {
+                                    keelSumX += blockX + 0.5;
+                                    keelSumZ += blockZ + 0.5;
+                                    keelCount++;
+                                }
+                                if (blockY > maxBlockY) maxBlockY = blockY;
+                                if (blockZ < minBlockZ) minBlockZ = blockZ;
+                                if (blockZ > maxBlockZ) maxBlockZ = blockZ;
+                            }
                         }
-                    } else if (entry.getValue() instanceof TaffrailLogBlockEntity taffrail) {
-                        taffrails.add(taffrail);
                     }
                 }
+            }
+        }
 
-                for (LevelChunkSection section : chunk.getSections()) {
-                    if (section == null || section.hasOnlyAir()) {
-                        continue;
-                    }
+        if (blockCount == 0 || minBlockY == Integer.MAX_VALUE) {
+            return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState,
+                    sailAreaEfficiency, blockCount, sailFacing, sailCount,
+                    new Vector3d(0.0, 0.0, 0.0), 0, 0, TARGET_HULL_DRAFT, 0, 1.0, 1.0, 1.0);
+        }
+
+        double keelCenterX = keelCount > 0 ? (keelSumX / keelCount) : 0.0;
+        double keelCenterZ = keelCount > 0 ? (keelSumZ / keelCount) : 0.0;
+        double keelLocalY = minBlockY;
+        Vector3d keelLocalPoint = new Vector3d(keelCenterX, keelLocalY, keelCenterZ);
+
+        int gridWidth = maxBlockX - minBlockX + 1;
+        int gridHeight = maxBlockY - minBlockY + 1;
+        int gridDepth = maxBlockZ - minBlockZ + 1;
+
+        Vector3d localForward;
+        if (!helms.isEmpty()) {
+            Direction helmFacing = helms.get(0).getBlockState().hasProperty(HelmBlock.FACING)
+                    ? helms.get(0).getBlockState().getValue(HelmBlock.FACING) : Direction.NORTH;
+            localForward = new Vector3d(helmFacing.getStepX(), helmFacing.getStepY(), helmFacing.getStepZ());
+        } else if (sailFacing != null) {
+            Direction bowDir = sailFacing.getOpposite();
+            localForward = new Vector3d(bowDir.getStepX(), bowDir.getStepY(), bowDir.getStepZ());
+        } else {
+            localForward = new Vector3d(0.0, 0.0, -1.0);
+        }
+        if (localForward.lengthSquared() < 1.0e-4) {
+            localForward = new Vector3d(0.0, 0.0, -1.0);
+        } else {
+            localForward.normalize();
+        }
+        Vector3d localUp = new Vector3d(0.0, 1.0, 0.0);
+        Vector3d localRight = new Vector3d(localForward).cross(localUp).normalize();
+
+        double hullLength = Math.max(1.0, Math.abs(localForward.x) * gridWidth + Math.abs(localForward.z) * gridDepth);
+        double hullBeam = Math.max(1.0, Math.abs(localRight.x) * gridWidth + Math.abs(localRight.z) * gridDepth);
+        double totalStructureHeight = Math.max(1.0, gridHeight);
+
+        boolean trackGrid = gridHeight <= 256 && gridWidth <= 512 && gridDepth <= 512
+                && ((long) gridWidth * gridHeight * gridDepth) <= 16000000L;
+
+        double[] sliceVolumes = new double[gridHeight];
+        int totalEnclosedAirVolume = 0;
+
+        if (trackGrid) {
+            BitSet solidMask = new BitSet(gridWidth * gridHeight * gridDepth);
+            short[][] minXMap = new short[gridHeight][gridDepth];
+            short[][] maxXMap = new short[gridHeight][gridDepth];
+            short[][] minZMap = new short[gridHeight][gridWidth];
+            short[][] maxZMap = new short[gridHeight][gridWidth];
+            int[] solidInLayer = new int[gridHeight];
+            int[] layerMinX = new int[gridHeight];
+            int[] layerMaxX = new int[gridHeight];
+            int[] layerMinZ = new int[gridHeight];
+            int[] layerMaxZ = new int[gridHeight];
+
+            for (int y = 0; y < gridHeight; y++) {
+                Arrays.fill(minXMap[y], Short.MAX_VALUE);
+                Arrays.fill(maxXMap[y], Short.MIN_VALUE);
+                Arrays.fill(minZMap[y], Short.MAX_VALUE);
+                Arrays.fill(maxZMap[y], Short.MIN_VALUE);
+            }
+            Arrays.fill(layerMinX, Integer.MAX_VALUE);
+            Arrays.fill(layerMaxX, Integer.MIN_VALUE);
+            Arrays.fill(layerMinZ, Integer.MAX_VALUE);
+            Arrays.fill(layerMaxZ, Integer.MIN_VALUE);
+
+            // Pass 2: Fill solidMask, minX/maxX, minZ/maxZ, and solidInLayer
+            for (PlotChunkHolder holder : plot.getLoadedChunks()) {
+                LevelChunk chunk = holder.getChunk();
+                if (chunk == null) continue;
+                LevelChunkSection[] sections = chunk.getSections();
+                for (int secIdx = 0; secIdx < sections.length; secIdx++) {
+                    LevelChunkSection section = sections[secIdx];
+                    if (section == null || section.hasOnlyAir()) continue;
+                    int sectionY = chunk.getSectionYFromSectionIndex(secIdx);
+                    int baseBlockY = sectionY << 4;
                     for (int sy = 0; sy < 16; sy++) {
                         for (int sz = 0; sz < 16; sz++) {
                             for (int sx = 0; sx < 16; sx++) {
                                 BlockState s = section.getBlockState(sx, sy, sz);
                                 if (!s.isAir()) {
-                                    blockCount++;
-                                    if (s.getBlock() == sailBlock) {
-                                        sailCount++;
-                                        sailAreaEfficiency += s.getValue(SailBlock.SAIL_STATE) * 0.5;
-                                        if (sailFacing == null && s.hasProperty(SailBlock.FACING)) {
-                                            sailFacing = s.getValue(SailBlock.FACING);
-                                        }
+                                    int blockX = chunk.getPos().getMinBlockX() + sx;
+                                    int blockY = baseBlockY + sy;
+                                    int blockZ = chunk.getPos().getMinBlockZ() + sz;
+
+                                    int rx = blockX - minBlockX;
+                                    int ry = blockY - minBlockY;
+                                    int rz = blockZ - minBlockZ;
+
+                                    if (rx >= 0 && rx < gridWidth && ry >= 0 && ry < gridHeight && rz >= 0 && rz < gridDepth) {
+                                        solidMask.set((ry * gridDepth + rz) * gridWidth + rx);
+                                        if (rx < minXMap[ry][rz]) minXMap[ry][rz] = (short) rx;
+                                        if (rx > maxXMap[ry][rz]) maxXMap[ry][rz] = (short) rx;
+                                        if (rz < minZMap[ry][rx]) minZMap[ry][rx] = (short) rz;
+                                        if (rz > maxZMap[ry][rx]) maxZMap[ry][rx] = (short) rz;
+                                        if (rx < layerMinX[ry]) layerMinX[ry] = rx;
+                                        if (rx > layerMaxX[ry]) layerMaxX[ry] = rx;
+                                        if (rz < layerMinZ[ry]) layerMinZ[ry] = rz;
+                                        if (rz > layerMaxZ[ry]) layerMaxZ[ry] = rz;
+                                        solidInLayer[ry]++;
                                     }
                                 }
                             }
@@ -892,24 +1216,95 @@ public class ServerPhysicsHandler {
                     }
                 }
             }
+
+            int lowerHullLayers = Math.max(1, (int) Math.ceil(gridHeight * 0.40));
+            boolean hadEnclosedAir = false;
+            boolean deckCeilingReached = false;
+
+            for (int ry = 0; ry < gridHeight; ry++) {
+                int enclosedAir = 0;
+                if (!deckCeilingReached) {
+                    for (int rz = 0; rz < gridDepth; rz++) {
+                        short minX = minXMap[ry][rz];
+                        short maxX = maxXMap[ry][rz];
+                        if (maxX > minX + 1) {
+                            for (int rx = minX + 1; rx < maxX; rx++) {
+                                if (!solidMask.get((ry * gridDepth + rz) * gridWidth + rx)) {
+                                    short minZ = minZMap[ry][rx];
+                                    short maxZ = maxZMap[ry][rx];
+                                    if (rz > minZ && rz < maxZ) {
+                                        enclosedAir++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (enclosedAir > 0) {
+                    hadEnclosedAir = true;
+                } else if (hadEnclosedAir) {
+                    // Enclosed air ceased -> main deck ceiling reached
+                    deckCeilingReached = true;
+                }
+                totalEnclosedAirVolume += enclosedAir;
+                double countedVolume = solidInLayer[ry] + enclosedAir;
+
+                // For lower hull layers (bottom 40% of structure), ensure displacement reflects
+                // the outer hull bounding footprint with naval prismatic block coefficient C_B = 0.75.
+                // This prevents cabin window openings, gunports, and stairs from collapsing the buoyant volume.
+                if (ry < lowerHullLayers && layerMinX[ry] <= layerMaxX[ry] && layerMinZ[ry] <= layerMaxZ[ry]) {
+                    int layerSpanX = layerMaxX[ry] - layerMinX[ry] + 1;
+                    int layerSpanZ = layerMaxZ[ry] - layerMinZ[ry] + 1;
+                    double footprintDisplacement = layerSpanX * layerSpanZ * 0.75;
+                    sliceVolumes[ry] = Math.max(countedVolume, footprintDisplacement);
+                } else {
+                    sliceVolumes[ry] = countedVolume;
+                }
+            }
+        } else {
+            // Fallback: estimate slice volume evenly
+            double avgSlice = (double) blockCount / gridHeight;
+            Arrays.fill(sliceVolumes, avgSlice);
         }
-        return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState, sailAreaEfficiency, blockCount, sailFacing, sailCount);
+
+        double calculatedMass = 0.0;
+        var massTracker = subLevel.getMassTracker();
+        if (massTracker != null && !massTracker.isInvalid()) {
+            calculatedMass = massTracker.getMass();
+        }
+        double minMass = blockCount > 0 ? Math.max(800.0, blockCount * 80.0) : 800.0;
+        double totalMass = Math.max(calculatedMass, minMass);
+
+        double targetDraft = calculateArchimedesDraft(sliceVolumes, totalMass, 1000.0);
+        boolean isShallowDraft = totalStructureHeight <= 1.5;
+        if (isShallowDraft) {
+            targetDraft = Math.min(targetDraft, 0.15);
+        } else if (targetDraft <= totalStructureHeight) {
+            // For any buoyant wooden vessel (not overloaded/sinking), cap the equilibrium draft
+            // to at most 1.35 blocks from the bottom of the keel (minBlockY).
+            // With waterSurfaceY at 63.0, the keel rests at Y = 61.65, keeping the lower
+            // walkable cabin deck (minBlockY + 2) at Y = 63.65 - well above Overworld ocean water (62.88).
+            targetDraft = Math.min(targetDraft, 1.35);
+        }
+
+        return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState,
+                sailAreaEfficiency, blockCount, sailFacing, sailCount,
+                keelLocalPoint, minBlockY, maxBlockY, (float) targetDraft, totalEnclosedAirVolume,
+                totalStructureHeight, hullLength, hullBeam);
     }
 
     /**
-     * Samples the hull waterline: bottom-center plus four inset corners of the
+     * Samples the hull waterline around the keel: bottom-center plus four inset corners of the
      * sub-level's world bounding box.
      *
      * @return submerged sample count; zero means the ship is beached.
      */
-    private static int countSubmergedHullSamples(ServerLevel level, ServerSubLevel subLevel) {
+    private static int countSubmergedHullSamples(ServerLevel level, ServerSubLevel subLevel,
+                                                 double keelWorldY, float targetDraft, boolean isShallowDraft) {
         var bounds = subLevel.boundingBox();
-        double midY = (bounds.minY() + bounds.maxY()) * 0.5;
-        double hullHeight = bounds.maxY() - bounds.minY();
-        // Task 3.1: For flat rafts (height <= 1.5), sample at vertical bottom + 0.1 to reliably detect water intersection
-        double waterlineY = hullHeight <= 1.5
-                ? bounds.minY() + 0.1
-                : midY - (hullHeight * 0.4) + 0.25;
+        double waterlineY = isShallowDraft
+                ? keelWorldY + 0.1
+                : keelWorldY + targetDraft;
         double centerX = (bounds.minX() + bounds.maxX()) * 0.5;
         double centerZ = (bounds.minZ() + bounds.maxZ()) * 0.5;
         double insetX = (bounds.maxX() - bounds.minX()) * 0.25;
@@ -926,22 +1321,17 @@ public class ServerPhysicsHandler {
 
     /**
      * Finds the Y coordinate of the water surface under the hull's center:
-     * the topmost water block (with non-water above) within the scan band.
+     * the topmost water block (with non-water above) within the scan band near the keel.
      *
      * @return surface Y, or {@link Double#NEGATIVE_INFINITY} when no water
      *         surface is found near the hull (beached / airborne).
      */
-    private static double waterSurfaceY(ServerLevel level, ServerSubLevel subLevel) {
+    private static double waterSurfaceY(ServerLevel level, ServerSubLevel subLevel, double keelWorldY, double hullHeight) {
         var bounds = subLevel.boundingBox();
         double centerX = (bounds.minX() + bounds.maxX()) * 0.5;
         double centerZ = (bounds.minZ() + bounds.maxZ()) * 0.5;
-        // FIX (Task 1): Use the vertical center of the bounding box
-        // instead of minY for the scan band origin. When an anchor
-        // chain extends downward, minY plummets to the seabed, causing
-        // the water surface scan to miss the actual waterline entirely.
-        double midY = (bounds.minY() + bounds.maxY()) * 0.5;
-        int lo = (int) Math.floor(midY) - 6;
-        int hi = (int) Math.ceil(midY) + 4;
+        int lo = (int) Math.floor(keelWorldY) - 3;
+        int hi = (int) Math.ceil(keelWorldY + Math.min(hullHeight, 10.0)) + 2;
         for (int y = hi; y >= lo; y--) {
             if (isWaterAt(level, centerX, y, centerZ)
                     && !isWaterAt(level, centerX, y + 1, centerZ)) {
@@ -953,40 +1343,79 @@ public class ServerPhysicsHandler {
 
     /**
      * Vertical spring lifting the hull to its ride-height equilibrium: the
-     * hull bottom settles at {@code targetBottomY = waterSurfaceY - targetDraft},
-     * drafted ~0.4 blocks into the water (or ~0.15 blocks for shallow-draft flat rafts).
+     * keel settles at {@code targetKeelY = waterSurfaceY - targetDraft},
+     * drafted according to hollow-hull Archimedes displacement.
+     * Incorporates a strict calm-weather deadzone so motionless docked vessels have zero vertical bobbing.
      */
     private static void applyRideHeightSpring(RigidBodyHandle body, double waterSurfaceY,
-                                              double bottomY, boolean isShallowDraft, double dt) {
-        float targetDraft = isShallowDraft ? 0.15f : TARGET_HULL_DRAFT;
-        float targetBottomY = (float) (waterSurfaceY - targetDraft);
-        float currentBottomY = (float) bottomY;
-        double depth = targetBottomY - currentBottomY;
+                                              double keelWorldY, float targetDraft, double dt,
+                                              double stormIntensity, double waveHeaveOffset) {
+        float targetKeelY = (float) (waterSurfaceY - targetDraft);
+        float currentKeelY = (float) keelWorldY;
+        double depth = targetKeelY - currentKeelY;
         Vector3d vel = new Vector3d(body.getLinearVelocity());
 
-        // FIX (Bug 5): Symmetric spring — applies both upward lift when too
-        // deep AND downward pull when riding too high (e.g. after a collision
-        // or buoyancy overshoot). Without the downward component, the ship
-        // porpoises above equilibrium with no active restoring force.
+        boolean isCalmWater = (stormIntensity < 0.05) && (Math.abs(waveHeaveOffset) < 0.04);
+        if (isCalmWater && (Math.abs(depth) < 0.08 || (Math.abs(vel.y) < 0.05 && Math.abs(depth) < 0.20))) {
+            // Lock vertical spring entirely on calm days so docked ships are 100% motionless!
+            body.addLinearAndAngularVelocity(new Vector3d(0.0, -vel.y, 0.0), new Vector3d());
+            return;
+        }
+
+        // Softened spring response (0.5x RIDE_SPRING) and heavy velocity damping (exp(-6.0*dt))
+        // prevents rapid pogo-stick bobbing in waves while smoothly restoring equilibrium
         if (depth > 0.0) {
-            // Below equilibrium: lift up (capped at 3 blocks to prevent catapult)
-            double liftDv = Math.min(depth, 3.0) * RIDE_SPRING * dt;
-            double vy = (vel.y + liftDv) * Math.exp(-4.0 * dt);
+            // Below equilibrium: lift up (capped at 2 blocks to prevent catapult)
+            double liftDv = Math.min(depth, 2.0) * (RIDE_SPRING * 0.5) * dt;
+            double vy = (vel.y + liftDv) * Math.exp(-6.0 * dt);
             body.addLinearAndAngularVelocity(new Vector3d(0.0, vy - vel.y, 0.0),
                     new Vector3d());
-        } else if (depth < -0.1) {
-            // Above equilibrium by more than 0.1 blocks: pull back down.
-            // Softer constant (0.5x RIDE_SPRING) to avoid slamming the hull,
-            // capped at 1.5 blocks of overshoot contribution.
-            double pullDv = Math.max(depth, -1.5) * RIDE_SPRING * 0.5 * dt;
-            double vy = (vel.y + pullDv) * Math.exp(-4.0 * dt);
+        } else if (depth < -0.05) {
+            // Above equilibrium: pull back down with soft constant and heavy damping
+            double pullDv = Math.max(depth, -1.0) * (RIDE_SPRING * 0.25) * dt;
+            double vy = (vel.y + pullDv) * Math.exp(-6.0 * dt);
             body.addLinearAndAngularVelocity(new Vector3d(0.0, vy - vel.y, 0.0),
                     new Vector3d());
         }
     }
 
+    @FunctionalInterface
+    public interface WaveHeightHook {
+        double getWaveHeight(Level level, double x, double z, double time);
+    }
+
+    public static volatile WaveHeightHook WAVE_HEIGHT_HOOK = GerstnerWaveEngine::getWaveHeightOffset;
+
+    public static void setWaveHeightHook(WaveHeightHook hook) {
+        WAVE_HEIGHT_HOOK = hook != null ? hook : GerstnerWaveEngine::getWaveHeightOffset;
+    }
+
+    /**
+     * Samples the water surface height taking into account any active wave hook offset.
+     */
+    public static double sampleWaveSurfaceY(Level level, double x, double z, double defaultWaterSurfaceY) {
+        if (defaultWaterSurfaceY <= Double.NEGATIVE_INFINITY) {
+            return Double.NEGATIVE_INFINITY;
+        }
+        double time = level != null ? (double) level.getGameTime() : 0.0;
+        double waveOffset = WAVE_HEIGHT_HOOK.getWaveHeight(level, x, z, time);
+        return defaultWaterSurfaceY + waveOffset;
+    }
+
+    /**
+     * Helper to test if a given world point is submerged in water, respecting wave displacements.
+     */
+    public static boolean isPointSubmerged(Level level, double x, double y, double z) {
+        if (level == null) {
+            return false;
+        }
+        double time = (double) level.getGameTime();
+        double waveOffset = WAVE_HEIGHT_HOOK.getWaveHeight(level, x, z, time);
+        return level.getFluidState(BlockPos.containing(x, y - waveOffset, z)).is(FluidTags.WATER);
+    }
+
     private static boolean isWaterAt(ServerLevel level, double x, double y, double z) {
-        return level.getFluidState(BlockPos.containing(x, y, z)).is(FluidTags.WATER);
+        return isPointSubmerged(level, x, y, z);
     }
 
     /** Heavy ground friction for beached hulls (mass-independent velocity damping). */

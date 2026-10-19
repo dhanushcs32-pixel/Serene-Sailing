@@ -28,7 +28,8 @@ public class ClientSetup {
 
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {
-        SereneSailing.LOGGER.info("[SereneSailing] Client initialization complete.");
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(com.serenesailing.client.renderer.ClientWaveRenderer.class);
+        SereneSailing.LOGGER.info("[SereneSailing] Client initialization complete, registered ClientWaveRenderer to game bus.");
     }
 
     @SubscribeEvent

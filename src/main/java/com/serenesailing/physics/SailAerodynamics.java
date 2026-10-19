@@ -4,8 +4,8 @@ import org.joml.Vector3d;
 
 public final class SailAerodynamics {
 
-    private static final double AIR_DENSITY = 1.225;     // kg/m^3
-    private static final double DEFAULT_SAIL_AREA = 8.0; // m^2 per sail block
+    private static final double AIR_DENSITY = 1.225;      // kg/m^3
+    private static final double DEFAULT_SAIL_AREA = 12.0; // m^2 per sail block
     public static double SAIL_THRUST_MULTIPLIER = 1.0;   // SI Newton force output
     /** Fraction of dynamic pressure applied as backward push when the bow is
      *  dead into the apparent wind (within 30 degrees). This bleeds speed,
