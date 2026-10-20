@@ -345,7 +345,9 @@ public class ServerPhysicsHandler {
         double offsetStarboard = WAVE_HEIGHT_HOOK.getWaveHeight(level, starPos.x, starPos.z, time);
 
         double stormIntensity = GerstnerWaveEngine.getStormIntensity(level);
-        boolean hasActiveWaves = (stormIntensity >= 0.05) && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
+        boolean isCalmWeather = (level != null && !level.isRaining() && !level.isThundering()) && (stormIntensity <= 0.18);
+
+        boolean hasActiveWaves = !isCalmWeather && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
                 || Math.abs(offsetPort) > 1.0e-4 || Math.abs(offsetStarboard) > 1.0e-4);
 
         // Heavy hull inertia filtering: large multi-deck ships span wave crests and cut through swells
@@ -362,10 +364,15 @@ public class ServerPhysicsHandler {
         }
 
         double rawMeanWaveOffset = (offsetBow + offsetStern + offsetPort + offsetStarboard) * 0.25;
-        double attenuatedWaveOffset = rawMeanWaveOffset * heaveAttenuation;
+        double attenuatedWaveOffset = isCalmWeather ? 0.0 : (rawMeanWaveOffset * heaveAttenuation);
 
         double meanWaterSurfaceY = baseWaterSurfaceY;
-        if (hasActiveWaves && baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
+        if (isCalmWeather) {
+            // Calm-Weather Deadzone: static integer water surface (63.0) when afloat
+            if (baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
+                meanWaterSurfaceY = 63.0;
+            }
+        } else if (hasActiveWaves && baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
             // Anti-flooding floor: clamp negative wave trough offset on meanWaterSurfaceY to >= baseWaterSurfaceY - 0.35,
             // while allowing full positive heave lift (+0.0 to +2.5m) on wave crests!
             double clampedWaveOffset = Math.max(-0.35, attenuatedWaveOffset);
@@ -379,7 +386,7 @@ public class ServerPhysicsHandler {
                 && (keelWorldY <= meanWaterSurfaceY + 0.5 || (isShallowDraft && keelWorldY <= meanWaterSurfaceY + 0.3));
         boolean afloat = waterContact || (submergedSamples > 0);
         if (afloat && meanWaterSurfaceY > Double.NEGATIVE_INFINITY) {
-            applyRideHeightSpring(body, meanWaterSurfaceY, keelWorldY, targetDraft, dt, stormIntensity, attenuatedWaveOffset);
+            applyRideHeightSpring(body, meanWaterSurfaceY, keelWorldY, targetDraft, dt, isCalmWeather);
         }
 
         // ---- Flotation gate: beached ships get ground friction only --------
@@ -1281,10 +1288,10 @@ public class ServerPhysicsHandler {
             targetDraft = Math.min(targetDraft, 0.15);
         } else if (targetDraft <= totalStructureHeight) {
             // For any buoyant wooden vessel (not overloaded/sinking), cap the equilibrium draft
-            // to at most 1.35 blocks from the bottom of the keel (minBlockY).
-            // With waterSurfaceY at 63.0, the keel rests at Y = 61.65, keeping the lower
-            // walkable cabin deck (minBlockY + 2) at Y = 63.65 - well above Overworld ocean water (62.88).
-            targetDraft = Math.min(targetDraft, 1.35);
+            // to at most 1.25 blocks from the bottom of the keel (minBlockY).
+            // With waterSurfaceY at 63.0, the keel rests at Y = 61.75, keeping the lower
+            // walkable cabin deck (minBlockY + 2) at Y = 63.75 - well above Overworld ocean water (62.88).
+            targetDraft = Math.min(targetDraft, 1.25);
         }
 
         return new SteeringCache(rudders, helms, vanes, capstans, taffrails, anchorState,
@@ -1349,16 +1356,17 @@ public class ServerPhysicsHandler {
      */
     private static void applyRideHeightSpring(RigidBodyHandle body, double waterSurfaceY,
                                               double keelWorldY, float targetDraft, double dt,
-                                              double stormIntensity, double waveHeaveOffset) {
+                                              boolean isCalmWeather) {
         float targetKeelY = (float) (waterSurfaceY - targetDraft);
         float currentKeelY = (float) keelWorldY;
         double depth = targetKeelY - currentKeelY;
         Vector3d vel = new Vector3d(body.getLinearVelocity());
 
-        boolean isCalmWater = (stormIntensity < 0.05) && (Math.abs(waveHeaveOffset) < 0.04);
-        if (isCalmWater && (Math.abs(depth) < 0.08 || (Math.abs(vel.y) < 0.05 && Math.abs(depth) < 0.20))) {
-            // Lock vertical spring entirely on calm days so docked ships are 100% motionless!
-            body.addLinearAndAngularVelocity(new Vector3d(0.0, -vel.y, 0.0), new Vector3d());
+        // In calm water near equilibrium (depth < 0.05) and low vertical velocity (vy < 0.08),
+        // smoothly damp vy (vy *= 0.5) without applying oscillating impulses so docked ships sit 100% motionless!
+        if (isCalmWeather && Math.abs(depth) < 0.05 && Math.abs(vel.y) < 0.08) {
+            double dampedVy = vel.y * 0.5;
+            body.addLinearAndAngularVelocity(new Vector3d(0.0, dampedVy - vel.y, 0.0), new Vector3d());
             return;
         }
 

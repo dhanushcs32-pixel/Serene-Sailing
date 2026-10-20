@@ -363,3 +363,339 @@ Sessions 40–60 Consolidated Milestone: Sail/Rudder Physics Engine, Test Harnes
 5. Active Persisting Issues (UNRESOLVED):
    - Block Model Visuals: Placed Sail and Rudder blocks still render in-game as full 16x16x16 solid cube meshes rather than their custom thin 3D models.
    - Raft Propagation: Assembled contraption / raft entity remains completely stationary in the water and does not move under wind force or respond to rudder deflection in-game despite passing mathematical unit tests and telemetry readouts.
+
+Session 61: Survival Recipes, Advancements & Deterministic Mod Loading (Aug 29 2026):
+- Diagnosed NeoForge startup crash (`ModLoadingCrashException: An uncaught parallel processing error has occurred` / `NullPointerException: Trying to access unbound value: neoforge:swim_speed` during `AttributeCallbacks.onBake`).
+- Cause: Asynchronous registry freeze race condition in NeoForge 21.1.228 where `DefaultAttributes.<clinit>` triggered before the attribute snapshot finished binding.
+- Fix: Updated `build.gradle` runs block (`configureEach`) to enforce single-threaded mod loading:
+  `systemProperty 'neoforge.enableParallelModLoading', 'false'`
+  `systemProperty 'fml.enableParallelModLoading', 'false'`
+- Fixed crafting recipe parse failures and missing recipe book entries:
+  1. Corrected 3x3 pattern strings in recipe JSONs (removed token whitespace padding that exceeded the 3-wide grid).
+  2. Converted flat key strings to strict 1.21 key objects (`{ "item": "..." }` and `{ "tag": "..." }`).
+  3. Authored recipe unlock advancements under `data/serenesailing/advancement/recipes/` for `canvas_sail`, `helm`, `rudder`, `wind_vane`, and `capstan`, granting recipes via inventory change triggers on wool, planks, copper, and chain.
+
+Session 62: Wind Vane Interpolation & Helm Control Interface (Aug 30 2026):
+- Implemented smooth shortest-arc rotation for the Masthead Wind Vane:
+  1. Updated `WindVaneBlockEntity.java` to track `prevApparentWindAngle` and `apparentWindAngle` in degrees.
+  2. Registered client/server ticker via `WindVaneBlock.getTicker(...)`.
+  3. Updated `WindVaneRenderer.java` to interpolate angles using `Mth.rotLerp(partialTick, prev, current)`, eliminating 1-tick discrete stepping and 360-degree boundary wrap glitches.
+- Verified Helm interaction: slider-based steering angle control with instant "Center" reset button, providing continuous yaw rate without stalling vessels in irons.
+
+Session 63: Capstan Winch Mechanics, Seabed Raycasting & BER Rendering (Aug 31 2026):
+- Resolved Capstan anchor chain rendering and block-phasing issues:
+  1. Raycast detection in `CapstanBlockEntity.java`: scans downward up to 48 blocks using `BlockPos.MutableBlockPos` for the first non-air, non-fluid block satisfying `blocksMotion()` or `isFaceSturdy(..., Direction.UP)`. Sets `seabedDepth = (float) d - 0.15f` so the anchor rests on top of the seabed floor rather than phasing through it.
+  2. Winch kinetics: smooth deployment and retrieval at 0.075 blocks/tick (1.5 m/s) between `0.0f` and `seabedDepth`, synchronizing `SeabedDepth` and `ChainLength` via NBT update packets.
+  3. Created `CapstanRenderer.java` implementing `BlockEntityRenderer<CapstanBlockEntity>`: pulls `minecraft:block/chain` and `minecraft:block/iron_block` directly from `TextureAtlas.LOCATION_BLOCKS` via `Minecraft.getInstance().getModelManager().getAtlas(...)`. Renders alternating perpendicular crossed quads on `RenderType.entityCutoutNoCull` with dynamic world lighting, ending in a horizontal iron fluke crossbar resting flush on the seabed.
+
+Session 64: Sail Reefing States, Zero-Wind Guard & Hydrodynamic Damping (Sep 1 2026):
+- Verified and tuned interactive sail reefing in `SailBlock.java`:
+  1. Uses `SAIL_STATE` integer property (0 = FURLED / 0% thrust, 1 = REEFED / 50% thrust, 2 = FULL / 100% thrust).
+  2. Right-click interaction cycles states across connected canvas sheets (flood-filled up to 64 blocks; sneak-right-click reverses).
+  3. Blockstates map each state across 4 facings to distinct models (`canvas_sail`, `canvas_sail_reefed`, `canvas_sail_furled`).
+- Fixed residual forward drift when wind is absent or sails are furled:
+  1. Added strict zero-wind/zero-sail guard in `ServerPhysicsHandler.applyShipPhysics`: forces thrust force to exact zero when effective wind speed is below 0.05 m/s or `sailAreaEfficiency <= 0.001`.
+  2. Confirmed rudder impulse injects pure angular torque without artificial forward linear force.
+  3. Added linear glide-to-stop exponential decay (`e^(-2 * dt)`) to planar velocity in `applyHydrodynamicForces`, with a hard snap to rest below 0.02 m/s.
+  4. Added rotational yaw damping (`e^(-3 * dt)`) when stationary, ensuring ships without forward water flow cannot turn on the spot.
+
+Session 65: Custom Audio System & SoundEvent Serialization Fix (Sep 2 2026):
+- Diagnosed silent audio playback across all mod interactions.
+- Cause: `assets/serenesailing/sounds.json` mapped sound definitions without specifying `"type": "event"` for vanilla sound delegates, causing the sound engine to search for nonexistent local `.ogg` files.
+- Fix: Rewrote `sounds.json` with explicit `"type": "event"` declarations for `sail_rustle`, `ship_creak`, `wind_billow`, and `capstan_crank`.
+- Audited server-side audio invocations: verified `level.playSound(null, pos, ...)` passes `null` as the excluded player so the acting player receives the packet.
+- Integrated dynamic hull creaking in `ServerPhysicsHandler` based on angular yaw rate and wave roll thresholds, and billowing audio when sails generate over 90% peak aerodynamic force.
+
+Session 66: Navigational Instruments - Stern Taffrail Log (Sep 3 2026):
+- Created Stern Taffrail Log (`TaffrailLogBlock.java`, `TaffrailLogBlockEntity.java`):
+  1. Stern-mounted speedometer measuring vessel forward velocity through water.
+  2. Converts sub-level linear velocity into nautical knots (1 m/s = 1.944 knots).
+  3. Displays live telemetry via right-click action bar: `Ship Speed: X.X knots (X.X m/s)`.
+  4. Implements redstone comparator output emitting an analog signal (0–15) proportional to 0–15 knots.
+  5. Added crafting recipe, loot table, recipe advancement, and mining harvest tags.
+
+Session 67: Sub-Level Binnacle Crash Fix & Clean Decommission (Sep 3 2026):
+- Diagnosed game crash when placing the Binnacle Compass block on an assembled ship:
+  1. Stacktrace: `NullPointerException` in `BlockEntityRenderDispatcher.tryRender` -> `BinnacleRenderer.render()`.
+  2. Root cause: renderer invoked `LevelRenderer.getLightColor(...)` manually (which breaks inside Sable virtual sub-levels) and emitted non-quad polygons to a quad-only buffer builder (`RenderType.entityCutoutNoCull`).
+  3. Successfully stabilized the renderer using strict 4-vertex quads and direct `packedLight`/`packedOverlay` parameters.
+- User Architecture Decision: Decommission Binnacle Compass block entirely to avoid sub-level block entity rendering complexities and retain focus on exterior telemetry (Taffrail Log / Wind Vane).
+- Deletion & Registry Cleanup:
+  1. Deleted 9 files: `BinnacleBlock.java`, `BinnacleBlockEntity.java`, `BinnacleRenderer.java`, blockstate JSON, block model, item model, recipe, loot table, and advancement.
+  2. Cleaned declarations from `ModBlocks`, `ModBlockEntities`, `ModItems`, `ModCreativeTabs`, `ClientSetup`, mining tags (`mineable/axe.json`, `mineable/pickaxe.json`), and `ServerPhysicsHandler`.
+  3. Verified zero remaining references across all source files; build clean.
+
+Session 68: Buoyancy Spring Physics & Cockpit Waterline Offset (Sep 3 2026):
+- Diagnosed ocean water clipping into the ship's sunken wooden cockpit:
+  1. Cause: Sable does not generate watertight occlusion volumes across non-full blocks (stairs/slabs). Because `ServerPhysicsHandler` previously lacked its own vertical buoyancy restoring force, gravity caused the hull to settle too deep in the water, submerging the open floorboards below sea level.
+- Implemented active buoyancy spring in `ServerPhysicsHandler.java`:
+  1. Added `waterSurfaceY(level, subLevel)`: samples the ship's center column top-down to locate the true surface water plane.
+  2. Added `applyRideHeightSpring(body, waterY, bottomY, dt)`: implements a critically damped vertical spring with `RIDE_HEIGHT_BIAS = 0.7`.
+  3. Equilibrium raises the hull bottom ~0.7 blocks higher, keeping the cockpit floor safely above the ocean surface without water clipping.
+  4. Lift velocity change clamped at `min(depth, 3) * RIDE_SPRING * dt` with vertical velocity damped by `e^(-4 * dt)` to prevent porpoising or launch glitches.
+  5. Reworked flotation gate so raised hulls maintain sailing aerodynamics, rudder torque, and hydrodynamic drag.
+
+Session 69: Workspace Environment Advisory - Cloud Storage & Gradle (Sep 3 2026):
+- Evaluated running the development workspace directly from a Google Drive synced directory.
+- Finding: Not viable for active execution. Google Drive for Desktop's background sync client locks files in `.gradle/`, `build/`, and `run/client/` during compilation, triggering `Access is denied` / `FileNotFoundException` build failures, virtual drive NIO failures, and `session.lock` corruption in test worlds.
+- Workflow locked: Keep active project directory on local physical drive (NTFS), use Git for remote backup and version control, or pause Drive syncing and exclude temporary build caches (`.gradle/`, `build/`, `run/`) before cloud transfers.
+
+Session 70: Buoyancy Draft, Capstan Overlap, Anchor Phasing & Helm-Rudder Sync (Sep 23 2026):
+- Corrected hull hovering and flotation draft in ServerPhysicsHandler.java:
+  1. Replaced RIDE_HEIGHT_BIAS = 0.7f with TARGET_HULL_DRAFT = 0.40f[cite: 1].
+  2. In applyRideHeightSpring, updated equilibrium target to (waterSurfaceY - TARGET_HULL_DRAFT)[cite: 1].
+  3. Upward restoring spring engages only when currentBottomY < targetBottomY, establishing a natural ~0.4-block draft submergence for the lower planks while keeping the cockpit floor dry[cite: 1].
+- Fixed Capstan chain visual disconnection in CapstanRenderer.java:
+  1. Defined LINK_HEIGHT = 0.35f and LINK_STEP = 0.25f, establishing a 0.10f interlink vertical overlap[cite: 1].
+  2. Chain render loop steps by LINK_STEP with dynamic ((int)(y / LINK_STEP) & 1) != 0 rotation toggling, producing continuous alternating crossed quads without floating gaps[cite: 1].
+- Corrected seabed anchor fluke phasing in CapstanBlockEntity.java:
+  1. Adjusted downward payout calculation in findSeabedDepth to Math.max(0.0f, (float)(d - 1) - 0.05f)[cite: 1].
+  2. Stops chain deployment flush atop the seabed floor block rather than clipping 0.15 blocks inside it[cite: 1, 2].
+- Connected Helm wheel controls to contraption rudders and resolved low-speed steerage:
+  1. In HelmBlockEntity.java, added propagateSteeringAngle(angle) during server-side setSteeringAngle calls, syncing deflection angles to all RudderBlockEntity instances on the sub-level and dispatching network update packets for visual sync[cite: 1, 2].
+  2. In RudderHydrodynamics.java, clamped effective forward inflow velocity to Math.copySign(Math.max(Math.abs(forwardFlow), 0.08), forwardFlow), eliminating the zero-torque deadband during slow underway maneuvers[cite: 1].
+  3. In ServerPhysicsHandler.java, verified submerged rudders apply yaw torque scaled by sin(theta_helm) across active sub-levels[cite: 1].
+- Verification:
+  1. Executed ./gradlew test --info: all suites in RaftPropagationUnitTest passed[cite: 1].
+  2. Executed ./gradlew build: zero compilation errors, clean build[cite: 1].
+
+Session 71: Sub-Level Coordinate Isolation & Telemetry Resolution (Sep 23 2026):
+- Resolved sub-level coordinate isolation breaking Weather2 and velocity telemetry:
+  1. WindVaneBlockEntity detects virtual sub-level plots, samples actual world coordinates via subLevel.logicalPose().position(), and routes weather cell queries to the Overworld through ServerPhysicsHandler.resolveWeatherQueryLevel[cite: 1].
+  2. WindVaneBlockEntity derives apparent wind vector (V_apparent = V_true - V_ship) and transforms it into the vessel's local forward heading frame to drive apparentWindAngle[cite: 1].
+  3. TaffrailLogBlockEntity queries parent vessel world linear velocity from RigidBodyHandle / ServerPhysicsHandler.getVesselVelocity, calculating forward speed via scalar dot product max(0.0, V_world . V_fwd), converting to knots (1.944 knots per m/s), and mapping analog redstone output (0–15)[cite: 1].
+  4. Added plot chunk holder fallback inside TaffrailLogBlock.useWithoutItem for right-click action-bar speed telemetry inside virtual sub-levels[cite: 1].
+- Fixed Helm-to-Rudder network propagation and sub-level plot lookups:
+  1. Updated SetHelmAnglePayload.handle and HelmBlockEntity.propagateSteeringAngle to resolve targets across ServerSubLevelContainer / LevelPlot chunk holders rather than failing vanilla server chunk queries.
+  2. Cached authoritative steering input in ServerPhysicsHandler.setHelmAngle(subLevelId, angle) via HELM_ANGLE_CACHE, ensuring applySteeringAndStabilization applies yaw turning torque directly even if block entities are asleep or virtualized[cite: 1].
+  3. Propagated angle updates to RudderBlockEntity instances, marking them dirty and invoking level.sendBlockUpdated(pos, state, state, 3) to sync visual deflection angles to client renderers[cite: 1, 2].
+  4. Added server-side telemetry caches (VESSEL_VELOCITY_CACHE, FORWARD_SPEED_CACHE) and debug logging ([HELM-NET], [HELM-SYNC], [WINDVANE], [TAFFRAIL])[cite: 1].
+- Verification:
+  1. Executed ./gradlew compileJava --offline: Clean build, 0 compilation errors.
+  2. Executed ./gradlew test --offline: All physics propagation and aerodynamic unit tests passed[cite: 2].
+
+Session 72: Rudder Hydrodynamic Bridging, 45-Degree Envelope & Dynamic BER (Sep 24 2026):
+- Bridged live physics loop to RudderHydrodynamics in ServerPhysicsHandler.java:
+  1. Replaced inline steering calculation with direct invocation of RudderHydrodynamics.calculateRudderForces()[cite: 1].
+  2. Passed forward heading and active sail thrust flag (thrustMag > 1.0e-9) to drive hydrodynamic foil lift[cite: 1].
+  3. Enforced minimum underway inflow velocity floor (0.08 m/s) in RudderHydrodynamics.java, eliminating zero-torque deadband during slow turns[cite: 1].
+- Standardized steering control envelope to [-45.0f, +45.0f]:
+  1. Expanded HelmScreen slider, SetHelmAnglePayload, HelmBlockEntity, and RudderBlockEntity clamping bounds to [-45.0f, +45.0f][cite: 1].
+  2. Throttled HelmScreen network packets to dispatch only on >= 1.0 degree changes, on mouse release, or screen close[cite: 1].
+- Implemented dynamic BlockEntityRenderer for the Rudder:
+  1. Updated RudderBlock.java to implement EntityBlock returning ModBlockEntities.RUDDER[cite: 1].
+  2. Stripped dynamic blade geometry from rudder.json, retaining only the stationary mounting post to prevent duplicate meshes[cite: 1].
+  3. Created RudderRenderer.java rendering the blade with poseStack.mulPose(Axis.YP.rotationDegrees(-steeringAngle)) onto RenderType.entityCutoutNoCull[cite: 1].
+  4. Registered RudderRenderer in ClientSetup.java via registerBlockEntityRenderer[cite: 1].
+- Verification:
+  1. Executed ./gradlew test --offline: All physics tests passed cleanly with 0 errors.
+
+Session 73: Live Yaw Damping Bypass, Torque Scaling & Rudder Submergence Fix (Sep 24 2026):
+- Diagnosed and resolved 4 critical defects preventing yaw rotation in ServerPhysicsHandler.java:
+  1. Bug 1 (Rest-snapping wiping yaw): Excluded yaw (Y) from low-speed rest decay (thrustMag <= 1e-9, planarSpeed < 0.05). Rest-snapping now damps only roll (X) and pitch (Z) via new Vector3d(omegaWorld.x * (keep - 1.0), 0.0, omegaWorld.z * (keep - 1.0)), allowing rudder-induced yaw angular velocity to accumulate.
+  2. Bug 2 (Zero-thrust yaw damping): Updated applyHydrodynamicForces to accept activeHelmAngle. Yaw angular velocity damping (e^(-3*dt)) is now strictly gated to when the helm is centered (|helmAngle| < 0.5 deg), preventing zero-thrust drag from killing active steering impulses[cite: 1].
+  3. Bug 3 (Torque scaling underpower): Eliminated the "/ 800.0" division in torque scaling. Reverted to the direct torque multiplier tau = -STEER_TORQUE_COEFF * v_steer * sin(theta) * facingSignSum, ensuring sufficient angular impulse to overcome Sable's large moments of inertia (I_yy ~ 50,000+ kg*m^2)[cite: 1].
+  4. Bug 4 (Rudder submergence depth): Adjusted rudder water sampling from block center (p.getY() + 0.5) to block bottom (p.getY()). Ensures submergedRudderCount resolves > 0 even with TARGET_HULL_DRAFT = 0.40f[cite: 1].
+- Added throttled diagnostic telemetry:
+  1. Logs [STEER-DIAG] every 20 ticks (~1 Hz) when helm is deflected, reporting helm angle, submerged rudder count, forward speed, raw torque, yaw impulse, angular velocity Y, and sail thrust state.
+- In-game validation: Vessel turning and helm responsiveness confirmed operational underway[cite: 1].
+- Verification:
+  1. Executed ./gradlew compileJava --offline: Clean build, 0 errors, 0 warnings.
+  2. Executed ./gradlew test --offline: All JUnit physics propagation and aerodynamic unit tests passed.
+
+Session 74: Capstan Chain Double Translation, Interlink Overlap & Seabed Raycast Fix (Sep 24 2026):
+- Diagnosed and resolved segmented chain gaps and missing anchor fluke in CapstanRenderer.java:
+  1. Fixed double X/Z coordinate translation: Removed redundant (0.5, 0.5) translation inside the link loop on top of the outer (0.5, 0.2, 0.5) poseStack push, which had displaced links to (1.0, ?, 1.0) and caused the apparent "clumping + gap" artifact[cite: 1, 4]. Links and anchor fluke now translate solely along the vertical Y-axis (0.0, -y, 0.0).
+  2. Tightened interlink step: Decreased LINK_STEP to 0.22f (with LINK_HEIGHT = 0.35f) to ensure an ~0.13f vertical interlock. Switched alternation logic to an integer linkIndex counter rather than float casting[cite: 1].
+  3. Cleaned up variable shadowing: Removed redundant local LINK_HEIGHT/LINK_STEP declarations shadowing class-level fields.
+- Corrected seabed raycast and anchor positioning in CapstanBlockEntity.java:
+  1. Began vertical raycast at (worldPosition.getY() - 1) to prevent the scan from colliding with the ship's own deck or hull planks[cite: 1].
+  2. Adjusted payout depth calculation to (d - 0.05f), correctly representing the cable extension needed to meet the seabed surface[cite: 1].
+  3. Added defensive null guard on this.level before initiating the raycast loop.
+- Verification:
+  1. Executed ./gradlew compileJava --offline: Clean build, 0 compilation errors[cite: 2].
+  2. Executed ./gradlew test --offline: All JUnit physics propagation and aerodynamic unit tests passed cleanly[cite: 2].
+
+Session 75: Build Stabilization & Parallel Mod Loading Enforcement (Oct 1 2026):
+- Resolved startup crash (NullPointerException: Trying to access unbound value: neoforge:swim_speed during AttributeCallbacks.onBake)[cite: 1]:
+  1. Root cause: Asynchronous registry freeze race condition in NeoForge 21.1.228 between Create, Sable, and LivingEntity attribute baking[cite: 1].
+  2. Re-enforced single-threaded mod loading flags across build.gradle runs block and launch configurations:
+     systemProperty 'neoforge.enableParallelModLoading', 'false'[cite: 1]
+     systemProperty 'fml.enableParallelModLoading', 'false'[cite: 1]
+  3. Client boots verified deterministic and stable on multi-core test instances[cite: 1].
+
+Session 76: Capstan Overworld Raycast Transformation & Anchor Fluke Offset (Oct 1 2026):
+- Resolved sub-level void raycast in CapstanBlockEntity.java:
+  1. Implemented resolveSubLevel(ServerLevel) using container/plot lookups to locate parent sub-level entities.
+  2. Transformed local capstan block position into true Overworld coordinates via subLevel.logicalPose().transformPosition(localCenter), establishing accurate overworldX, overworldZ, and startWorldY = (int) Math.floor(worldCenter.y) - 1.
+  3. Routed vertical raycasts to the Overworld ServerLevel via ServerPhysicsHandler.resolveWeatherQueryLevel, scanning downward for solid, non-fluid, motion-blocking seabed blocks and returning Math.max(0.0f, (float) d - 0.05f).
+  4. Added [ANCHOR-DIAG] logging every 20 ticks when anchored, reporting dimension location, local coordinates, Overworld Y, seabed depth, and chain length.
+- Corrected anchor geometry alignment in CapstanRenderer.java:
+  1. Extracted fluke drawing logic into dedicated renderAnchorFluke(...) method.
+  2. Shifted anchor vertical translation to poseStack.translate(0.0, -length + BAR_T, 0.0). Because crossbar boxes extend from y = -BAR_T to 0.0, this elevation offset seats the bottom edge of the crossbars flush on the top face of the seabed block without penetration.
+- Verification:
+  1. Executed ./gradlew compileJava --offline: Clean build, 0 compilation errors.
+  2. Executed ./gradlew test --offline: All physics tests passing.
+
+Session 77: Continuous Seabed Distance & Anchor Shank Chain Termination (Oct 1 2026):
+- Resolved floating fluke and floating draft truncation in CapstanBlockEntity.java:
+  1. Identified that floor-truncating worldCenter.y discarded the vessel's floating draft (~0.4 blocks), leaving seabed payout ~0.85 blocks short of the floor[cite: 1, 5].
+  2. Updated findSeabedDepth() to compute exact continuous vertical distance: (capstanWorldY - seabedTopY - 0.02f), where seabedTopY = scanPos.getY() + 1.0.
+  3. Ensured the fluke lands flush on top of solid seabed surfaces regardless of hull heave or floating draft.
+- Corrected chain loop termination in CapstanRenderer.java:
+  1. Defined SHANK_HEIGHT = 0.50f for the vertical iron shank.
+  2. Gated the chain link render loop to terminate at chainEnd = Math.max(0.0f, length - SHANK_HEIGHT).
+  3. The final link now connects directly to the top of the iron shank, preventing chain links from protruding through the bottom crossbars into open water[cite: 5].
+  4. Retained LINK_STEP = 0.22f and LINK_HEIGHT = 0.35f to guarantee continuous ~0.13f interlink overlap[cite: 1].
+- In-Game & Asset Pipeline Status:
+  1. Capstan winch, unbroken chain rendering, and seabed seating verified fully operational[cite: 1, 5, 6].
+  2. Telemetry tracking (Masthead Wind Vane apparent wind and Stern Taffrail Log speedometer) verified functional in-game[cite: 1].
+  3. Canvas Sail custom 3D model verified rendering properly (not rendering as a generic solid wool cube)[cite: 1].
+
+Session 78: Mod #2 Scaffolding - Serene Mob Modifier (Oct 2 2026):
+- Scaffolding initialized for standalone sister mod: "serenemobmodifier" (NeoForge 21.1.228 / Minecraft 1.21.1).
+- Platform & Architecture:
+  1. Utilizes native Minecraft 1.21.1 Attributes.SCALE (generic.scale) for automatic bounding box, model scale, and eye height synchronization without third-party bytecode transformations.
+  2. EntitySpawnHandler listens to EntityJoinLevelEvent on NeoForge.EVENT_BUS and tags entities with persistent CompoundTag ("SereneMobModified") to prevent duplicate attribute accumulation across chunk reloads.
+  3. MobModifierConfig provides tokenized rule definitions (entity_id|scale|health|damage|speed|follow_range|player_aggro|boat_aggro) with full namespace wildcard support (e.g. "mythsofthesea:*")[cite: 1].
+  4. MobModifierApplier injects attribute scalers and injects dynamic NearestAttackableTargetGoal targets for Player and Boat classes into targetSelector.
+- Configured build.gradle with deterministic single-threaded mod loading flags to prevent attribute baking race conditions on multi-core test instances[cite: 1].
+
+Session 79: Aquatic Predation AI & 3D Swim Vectoring - Serene Mob Modifier (Oct 2 2026):
+- Diagnosed Drowned passivity and seafloor spin jitter against surface boats:
+  1. Identified that Drowned defaulted to GroundPathNavigation because wantsToSwim() requires a living target in water; boats (non-living) and mounted players (not in water) kept the mob in seafloor-walking mode.
+  2. Fixed yaw jitter caused by atan2(dz, dx) angle flipping when directly beneath a boat by adding horizontal distance guards prior to body rotation updates.
+  3. Replaced navigation reliance with direct 3D vector propulsion (0.3 lerp factor per tick) when in water, clamped upward vertical velocity at the hull waterline (targetBoat.getY() - 0.35), and maintained vanilla land navigation as a fallback.
+  4. Added combat loop: 20-tick attack cadence with arm swings, sound effects, direct boat hull damage via boat.hurt(), and passenger damage with knockback.
+
+Session 80: Raw Type Erasure & Compiler Capture Resolution (Oct 2 2026):
+- Resolved compileJava type incompatibility failures in MobModifierApplier.java:
+  1. Identified that Level/EntityGetter.getEntities(...) returns a raw List under NeoForge 21.1.228, causing javac to reject implicit Object -> Entity conversions in enhanced for-loops.
+  2. Refactored TargetBoatGoal.canUse() to iterate across raw Object collections, utilizing Java pattern matching (obj instanceof Boat boat) with null/empty boundary checks to eliminate type inference failures.
+  3. Verified clean offline compilation and JAR assembly across 28 Gradle tasks.
+
+Session 81: Resource Token Expansion & Metadata Processing (Oct 2 2026):
+- Resolved InvalidModFileException startup crash during client launch:
+  1. Root cause: build.gradle lacked a ProcessResources task configuration, causing META-INF/neoforge.mods.toml and pack.mcmeta to package with literal \({mod_id} and\){mod_version} tokens.
+  2. Configured tasks.withType(ProcessResources) block mapping gradle.properties entries through inputs.properties and applied expand(replaceProperties).
+  3. Verified proper token substitution and clean mod discovery on client boot.
+
+Session 82: Sodium-Style In-Game Configuration GUI & Network Sync (Oct 3 2026):
+- Implemented real-time in-game configuration interface:
+  1. KeyBindings.java: Registered customizable 'M' keybind (key.serenemobmodifier.open_menu) and ClientTickEvent.Post listener.
+  2. MobModifierScreen.java: Authored Sodium-inspired dual-panel UI with live EditBox search, category filtering tabs, per-frame slider rendering, and staged state management.
+  3. UpdateMobRulePayload.java & NetworkRegistration.java: Implemented CustomPacketPayload record and server-side OP level >= 2 / integrated server permission checks for synchronized rule updates.
+  4. MobModifierConfig.java: Added programmatic updateRule() and saveToDisk() methods wrapping SPEC.save() for persistent TOML serialization without game restarts.
+
+Session 83: Menu Blur Pass Ordering & Framebuffer Fix (Oct 3 2026):
+- Resolved GUI blurring defect where custom UI elements were blurred alongside the background world:
+  1. Root cause: Screen.render() in MC 1.21.1 executes this.renderBackground() internally; calling super.render() at the end re-triggered processBlurEffect over the MainRenderTarget after custom UI geometry had already been flushed.
+  2. Enforced proper pass sequence: this.renderBackground() runs first to blur the level, followed by manual UI draws, and finally iterating this.renderables directly to draw registered widgets without calling super.render().
+
+Session 84: Inspector Scroll Overflow & Config State Synchronization (Oct 6 2026):
+- Resolved vertical control clipping and slider 1.0x reset defect:
+  1. Inspector Panel Scrolling: Implemented dynamic height calculation, scissor box clipping (enableScissor / disableScissor), mouse wheel scrolling, scrollbar dragging, and input boundary guards to prevent footer overlap and ghost clicks.
+  2. Locale Sanitization: Fixed float corruption where String.format("%.1f", v) output commas in non-US locales ("1,4"), triggering silent NumberFormatException drops in MobRule.parse. Enforced Locale.ROOT across serialization and introduced parseDoubleSafe() comma normalization.
+  3. Wildcard Resolution: Added findRuleForEntity() resolver supporting namespace wildcards (e.g., "mythsofthesea:*"), syncing slider states and green indicator dots accurately with active TOML rules.
+
+Session 85: Mod 3 Scaffolding & World Preset Architecture (Oct 6 2026):
+- Initiated Mod 3: Serene Ocean Worldgen (D:\Worldgen, modid: sereneworldgen):
+  1. Established project workspace, settings.gradle, gradle.properties, and build.gradle with NeoForge 21.1.228 and Java 21 toolchains.
+  2. Authored mod container entrypoint SereneOceanWorldgen.java and metadata assets (pack.mcmeta, neoforge.mods.toml).
+  3. Created data-driven world preset sereneworldgen:endless_ocean and registered it under the vanilla #minecraft:worldgen/world_preset/normal tag for World Type selection.
+
+Session 86: Sail Hitbox Alignment, Z-Fighting Resolution & Front-Facing Canvas Layering (Oct 11 2026):
+- Resolved VoxelShape hitbox mismatch, clipping / Z-fighting, and canvas front-layering on SailBlock:
+  1. Directional VoxelShapes: Added EnumMap<Direction, VoxelShape> SHAPES to SailBlock.java indexed by FACING (North: 0..4px Z, South: 12..16px Z, West: 0..4px X, East: 12..16px X), ensuring the wireframe bounding box rotates with block placement.
+  2. Layered Depth Architecture: Re-architected all canvas sail block models (canvas_sail_full, canvas_sail_half, canvas_sail_rolled, canvas_sail_empty) with back-to-front layering along Z (North base):
+     - Frame elements (spars/yardarms/posts): Z = 0.5px to 2.5px (leaving 0.5px margin against adjacent mast/fence blocks to eliminate neighbor clipping).
+     - Canvas cloth elements: Z = 2.5px to 4.0px (completely unbroken in front of the timber frame, eliminating grate appearance from the front).
+     - Rolled bundle (canvas_sail_rolled): Z = 1.5px to 5.0px at Y = 12..16px lashed to the yardarm.
+  3. Total elimination of Z-fighting: Frame and canvas cloth quads occupy distinct non-overlapping Z planes.
+  4. Verified Blockstate Rotations: canvas_sail.json correctly maps y=0 (North), y=90 (East), y=180 (South), and y=270 (West) across all canvas enum variants.
+  5. Build and Test: Clean compilation via `./gradlew.bat compileJava --offline` and all physics unit tests passing.
+Session 87: Hydrostatic Overhaul, Metacentric Righting Torque & Axis Alignment (Oct 12 2026):
+- Resolved severe permanent heel/list defect where contraption vessels capsized or stayed permanently heeled without righting themselves:
+  1. Coordinate Frame & Axis Inversion: Aligned local body axes (+X = Starboard, +Y = Mast/Up, -Z = Bow/Forward). Fixed axis inversion in ServerPhysicsHandler.java where Roll was mapped to X and Pitch to Z; mapped Roll to local Z and Pitch to local X.
+  2. Proportional-Derivative (PD) Restoring Spring: Replaced pure viscous angular velocity damping (-c * omega, which froze tilted vessels once rotation ceased) with a true PD restoring spring:
+     - rollAngle = shipUp.dot(shipRight) (tilt toward starboard/port)
+     - pitchAngle = shipUp.dot(shipForward) (tilt bow down/up)
+     - rollImpulse = (-K_ROLL_SPRING * rollAngle - C_ROLL_DAMP * omegaLocal.z) * dt (K=85, C=14)
+     - pitchImpulse = (-K_PITCH_SPRING * pitchAngle - C_PITCH_DAMP * omegaLocal.x) * dt (K=120, C=18)
+     - Impulse vector mapped cleanly to new Vector3d(pitchImpulse, yawImpulse, rollImpulse).
+  3. Rest Snapping Gate: Gated low-speed roll/pitch angular velocity decay by Math.abs(rollAngle) < 0.03 && Math.abs(pitchAngle) < 0.03 so uprighting dynamics are not damped while the ship is listed. Enabled restoring torque while anchored.
+  4. Metacentric Alignment Torque in ShipPhysicsEngine.java: Replaced raw submarine lever-arm cross product (CoB - CoM) x F_buoyancy (which generated positive-feedback capsize when CoM_y > CoB_y) with orientation-based restoring moment:
+     - rightingAxis = shipUp.cross(worldUp)
+     - rightingTorque = rightingAxis * (submergedVolume * WATER_DENSITY * GRAVITY * metacentricTorqueScale)
+  5. Virtual Keel Ballast Bias: Lowered effective CoM Y-coordinate by 1.2 blocks (centerOfMass.y -= 1.2) to simulate low-hull ballast against tall mast/sail superstructures.
+  6. Verification: .\gradlew.bat compileJava --offline and all 15 unit tests in ShipPhysicsEngineTest and PhysicsUnitTest passed cleanly.
+Session 88: 6-DOF Marine Hydrodynamics (Fossen / MMG Models), Yaw Stabilization & Mass Scaling (Oct 13 2026):
+- Resolved runaway speed, mass scaling, and yaw instability based on standard 6-DOF naval hydrodynamics:
+  1. Strict Linear Sail Thrust Scaling (Task 1):
+     - Eliminated the 2000 N force floor (previously `2000.0 + 1500.0 * sailAreaEfficiency`) in `ServerPhysicsHandler.java`.
+     - Replaced with strict linear scaling from zero: `double FORCE_PER_FULL_SAIL_N = 450.0; double maxAeroForce = sailAreaEfficiency * FORCE_PER_FULL_SAIL_N;`.
+     - Single 100% sail block caps at ~450 N; 8 sails produce ~3,600 N; 0 sails produce 0 N thrust.
+  2. Aerodynamic Yaw Decoupling (Task 1):
+     - Decoupled aerodynamic thrust from yaw torque by applying sail thrust purely along the vessel's longitudinal centerline (local X = 0) at the waterline plane (local Y = 0).
+     - Explicitly set aerodynamic sail yaw torque to zero: `sailYawTorque = 0.0`.
+     - Mirrored centerline alignment and `sailYawTorque = 0.0` in `ShipPhysicsEngine.java`.
+  3. Hydrodynamic Hull Yaw Damping (Task 2):
+     - Implemented Fossen / MMG cross-flow yaw damping resisting spin (`Nr * omega_y + N_{|r|r} * omega_y * |omega_y|`):
+       `double YAW_DAMP_LINEAR = 65.0; double YAW_DAMP_QUAD = 35.0; double yawDampingTorque = -(YAW_DAMP_LINEAR * omegaYaw + YAW_DAMP_QUAD * omegaYaw * Math.abs(omegaYaw));`
+     - Added damping impulse directly to `yawImpulse += yawDampingImpulse;`.
+  4. Rudder Speed Scaling Clamping (Task 2):
+     - Clamped forward speed term for rudder lift between 0.5 and 12.0 knots (`Mth.clamp(Math.abs(forwardSpeedKnots), 0.5, 12.0)`), preventing astronomical turning moments during surges while maintaining turning authority when stalled.
+  5. Rigid Body Mass & Acceleration Guardrails (Task 3):
+     - Verified rigid body mass from `subLevel.getMassTracker().getMass()`.
+     - Enforced realistic minimum mass based on total block count (`minMass = Math.max(2000.0, blockCount * 450.0); totalMass = Math.max(calculatedMass, minMass);`).
+     - Ensured aerodynamic linear acceleration satisfies `a = F_thrust / M_total`, scaling impulse by `(calculatedMass / totalMass)` or applying velocity delta directly to ensure smooth, gradual acceleration without instant velocity spikes.
+  6. Verification & Test Suite (Task 4):
+     - Created `HydrodynamicsFossenMmgTest.java` with 5 targeted unit tests.
+     - `./gradlew.bat compileJava --offline` and `./gradlew.bat test --offline` passed cleanly (20/20 unit tests across all 4 suites).
+Session 89: Coordinate Frame Leakage Elimination, Karnopp Stick-Slip Damping & Raft Dynamics (Oct 13 2026):
+- Resolved sail-induced rotation, heel contamination, and flat raft immobility using Fossen / MMG / Karnopp hydrodynamics:
+  1. Strict Body-Fixed Propulsion Vector (Task 1):
+     - Formulated forward thrust strictly in body-fixed local coordinates (`Vector3d localLinearImpulse = new Vector3d(localForward.x * thrustForceN * dt, 0.0, localForward.z * thrustForceN * dt)`).
+     - Applied thrust and body-fixed angular impulses via `body.applyLinearAndAngularImpulse(..., isLocal = true)` without world/Euler rotation contamination, preventing surge thrust from leaking into transverse sway ($F_x$) and inducing heel ($K$) or yaw ($N$).
+  2. Karnopp Conditional Damping at Low Speeds (Task 2):
+     - Implemented Karnopp stick-slip switching in `ServerPhysicsHandler.java`: conditionally bypassed the low-speed exponential decay (`Math.exp(-12.0 * dt)`) and rest-snapping deadband whenever active sail thrust is positive (`thrustMag > 1.0` or `sailAreaEfficiency > 0.0`).
+     - Allowed subtle single-tick Euler accelerations ($\Delta u \approx 0.01\text{ m/s}$) to accumulate into forward breakaway velocity instead of being erased every tick.
+     - Preserved deadband snapping only when sails are furled (0% deployment) or the vessel is anchored.
+  3. Shallow-Draft Support & Heading Fallback for Rafts (Task 3):
+     - Shallow draft handling in `countSubmergedHullSamples` and `applyRideHeightSpring`: identified planar craft ($T < 0.5\text{ m}$, hull height $\le 1.5\text{ m}$) and sampled waterline at `bounds.minY() + 0.1` with equilibrium draft adjusted to $0.15\text{ m}$ (preventing zero-draft buoyancy singularities).
+     - Rudderless/helmless heading inference: when no `HelmBlock` is installed, inferred bow heading from `SailBlock` facing direction (`sailFacing.getOpposite()`), falling back to local $(0, 0, -1)$.
+  4. Verification & Testing (Task 4):
+     - Expanded `HydrodynamicsFossenMmgTest.java` with tests for body-fixed propulsion vector, Karnopp conditional damping, and raft shallow draft / heading fallback.
+     - Executed `./gradlew.bat compileJava --offline` and `./gradlew.bat test --offline` with all 23/23 tests passing across all test suites.
+
+Session 90: Weather2 Netty Decoupling, MMG 3-Point Rudder Submersion & Taffrail Sync (Oct 14 2026):
+- Fixed Weather2 Netty serialization crash (weather2:nbt_client ConcurrentModificationException):
+  - Decoupled WindReader queries from high-frequency physics substeps in ForgeSablePrePhysicsTickEvent.
+  - Added CachedWind record and thread-safe caches (WIND_CACHE and DIMENSION_WIND_CACHE) populated on the main server thread via ServerTickEvent.Pre.
+  - In ForgeSablePrePhysicsTickEvent, read strictly from WIND_CACHE / DIMENSION_WIND_CACHE, completely eliminating Weather2 NBT/map access while Netty serializes packets.
+- Implemented MMG Multi-Point Fractional Rudder Submersion (ServerPhysicsHandler.java):
+  - Replaced single-point binary rudder check with a 3-point vertical blade submersion ratio:
+    * Blade Bottom Tip (rudderWorld.y - 0.65): weight 0.50
+    * Blade Mid-Section (rudderWorld.y - 0.15): weight 0.35
+    * Blade Top Stock (rudderWorld.y + 0.35): weight 0.15
+  - Routed checks through public static boolean isPointSubmerged(Level level, double x, double y, double z).
+  - Scaled rudder turning torque by rudderSubmersion (0.0 producing zero torque when airborne/in tornado, 0.50-1.0 in water).
+- Diagnosed Forward Speed and Fixed Taffrail Log Sync:
+  - Diagnosed speed at 0.458 m/s under 9450 N thrust: applyRideHeightSpring adjusts only vertical Y velocity (vy - vel.y) without altering horizontal X/Z. Governed by realistic mass scaling (MassScale = 0.001314 for ~1.5M kg displacement) and seabed collision.
+  - Fixed Taffrail log reading 0.00 m/s: read authoritative forward speed directly from ServerPhysicsHandler.getForwardSpeed(subLevelId).
+- Investigated CoroUtil NoSuchMethodError Console Spam:
+  - Set Particle_effect_rate = 0.0 in run/client/config/Weather2/Particle.toml.
+- Verification & Test Suite:
+  - Added unit test testMultiPointRudderSubmersion() in HydrodynamicsFossenMmgTest.java.
+  - Compiled and tested offline: compileJava and test passed (24/24 unit tests).
+
+Session 91: scanSteering() Audit & Naval Mass-to-Thrust Acceleration Calibration (Oct 14 2026):
+- Audited scanSteering() block counting:
+  - Confirmed blockCount strictly accumulates !s.isAir() across plot chunks (197 physical blocks total, no double-counting of chunks or water).
+  - Verified ActiveSails (42) vs AreaEff (21.0): all 42 sails were at 50% reefed (SAIL_STATE == 1), producing 42 * 0.5 = 21.0 AreaEff.
+- Calibrated naval mass and thrust in ServerPhysicsHandler.java & SailAerodynamics.java:
+  - Lowered per-block mass from 450.0 kg/block to 80.0 kg/block (minMass floor lowered from 2000.0 kg to 800.0 kg).
+  - Increased FORCE_PER_FULL_SAIL_N from 450.0 N to 750.0 N.
+  - Increased DEFAULT_SAIL_AREA in SailAerodynamics.java from 8.0 m^2 to 12.0 m^2 so 10 m/s wind yields ~735 N per sail.
+  - Resulting acceleration: 16,000 kg ship with 10 sails achieves 0.47 m/s^2 (cruising speed in ~7.5s); 2,000 kg raft with 2 sails achieves 0.75 m/s^2 (cruising speed in ~4s).
+- Updated HydrodynamicsFossenMmgTest.java assertions and verified: compileJava and test passed (24/24 unit tests).

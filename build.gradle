@@ -74,6 +74,7 @@ runs {
 // of Sable / Create / Aeronautics via the modpack, same as any other addon).
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+    testRuntimeClasspath.extendsFrom localRuntime
 }
 
 dependencies {
@@ -110,6 +111,8 @@ dependencies {
 }
 test {
     useJUnitPlatform()
+    classpath += configurations.localRuntime
+    classpath += configurations.compileClasspath
 }
 
 
