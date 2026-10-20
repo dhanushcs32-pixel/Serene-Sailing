@@ -76,7 +76,7 @@ public final class GerstnerWaveEngine {
         public double smoothedWindSpeed = 1.0;
         public double smoothedWindDirX = 0.0;
         public double smoothedWindDirZ = -1.0;
-        public double smoothedStormIntensity = 0.02;
+        public double smoothedStormIntensity = 0.15;
         public long lastUpdateTick = -1L;
 
         public synchronized void update(Level level, long gameTime) {
@@ -99,13 +99,13 @@ public final class GerstnerWaveEngine {
             // Beaufort / Storm Intensity Factor S in [0.0, 1.0] calibrated for Weather2 baseline wind
             double targetStorm;
             if (!raining && !thundering) {
-                // Clear weather: Weather2 baseline wind (rawSpeed <= 1.15) is normal calm sunny weather!
+                // Clear weather: Weather2 baseline wind (rawSpeed <= 1.15) provides gentle visual swell
                 if (rawSpeed <= 1.15f) {
-                    targetStorm = 0.02; // Virtually still water (max wave height <= 0.04m, no bobbing at dock!)
+                    targetStorm = 0.15; // Gentle visual swell floor
                 } else {
-                    // High wind event on a clear day: ramp gently from 0.02 to 0.25
+                    // High wind event on a clear day: ramp gently from 0.15 to 0.28
                     double frac = Math.min(1.0, (rawSpeed - 1.15) / 0.85);
-                    targetStorm = 0.02 + frac * 0.23;
+                    targetStorm = 0.15 + frac * 0.13;
                 }
             } else if (thundering || rawSpeed >= 1.8f) {
                 // Full Storm / Gale: S in [0.75, 1.0]
@@ -116,7 +116,7 @@ public final class GerstnerWaveEngine {
                 double frac = Math.min(1.0, Math.max(0.0, (rawSpeed - 0.5) / 1.0));
                 targetStorm = 0.35 + frac * 0.20;
             } else {
-                targetStorm = 0.02;
+                targetStorm = 0.15;
             }
 
             double rad = Math.toRadians(rawAngle);
