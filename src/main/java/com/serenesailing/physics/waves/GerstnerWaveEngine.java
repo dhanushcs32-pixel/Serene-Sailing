@@ -214,9 +214,50 @@ public final class GerstnerWaveEngine {
      * @param windDirZ normalized wind propagation direction Z
      * @return vertical wave surface elevation eta(x, z, t) [m]
      */
+    /**
+     * Fast, zero-allocation primitive evaluation of Gerstner & Trochoidal vertical wave displacement.
+     *
+     * @param x world X [m]
+     * @param z world Z [m]
+     * @param timeSeconds elapsed time [s]
+     * @param stormIntensity Beaufort / storm intensity factor in [0.0, 1.0]
+     * @param windDirX normalized wind propagation direction X
+     * @param windDirZ normalized wind propagation direction Z
+     * @return vertical wave surface elevation eta(x, z, t) [m]
+     */
     public static double evaluateWaveOffset(double x, double z, double timeSeconds,
                                             double stormIntensity, double windDirX, double windDirZ) {
-        double steepnessQ = Mth.clamp(0.25 * stormIntensity, 0.05, 0.28);
+        // Baseline Swell Boost:
+        // Clear/calm weather (stormIntensity <= 0.03) stays strictly <= 0.05m.
+        // Normal weather (0.10 to 0.25) produces the 0.45m - 0.75m swell that previously required stormIntensity = 1.0.
+        // Full storms (stormIntensity > 0.4) scale up to 1.2m - 1.8m+ crest-to-trough variation.
+        double effectiveIntensity;
+        if (stormIntensity <= 0.03) {
+            effectiveIntensity = stormIntensity;
+        } else {
+            double t = (stormIntensity - 0.03) / 0.12;
+            if (t < 1.0) {
+                double s = t * t * (3.0 - 2.0 * t);
+                effectiveIntensity = 0.03 + s * 0.72;
+            } else {
+                double u = (stormIntensity - 0.15) / 0.85;
+                effectiveIntensity = 0.75 + u * 0.60;
+            }
+        }
+
+        // Low-frequency Wave Group Envelope Modulation for rogue wave sets during storms
+        double envelope = 1.0;
+        if (stormIntensity > 0.35) {
+            double stormFrac = (stormIntensity - 0.35) / 0.65;
+            // Phase-aligned wave group envelope: produces rogue wave sets with deep drops and towering peaks
+            double groupWave = 0.65 + 0.55 * Math.sin(x * 0.03 + z * 0.025 - timeSeconds * 0.4 + 1.5707963);
+            envelope = Mth.lerp(stormFrac, 1.0, groupWave);
+        }
+
+        double steepnessQ = (stormIntensity > 0.4)
+                ? Mth.clamp(0.20 + 0.25 * stormIntensity, 0.05, 0.35)
+                : Mth.clamp(0.25 * effectiveIntensity, 0.05, 0.28);
+
         double totalOffset = 0.0;
 
         for (int i = 0; i < NUM_COMPONENTS; i++) {
@@ -225,14 +266,24 @@ public final class GerstnerWaveEngine {
             double alignment = dot > 0.0 ? dot : 0.0;
             double weight = 0.20 + 0.80 * (alignment * alignment);
 
-            double amp = BASE_AMPLITUDES[i] * stormIntensity * weight;
+            double amp = BASE_AMPLITUDES[i] * effectiveIntensity * weight * envelope;
             double phase = K[i] * (DIR_X[i] * x + DIR_Z[i] * z) - OMEGA[i] * timeSeconds;
 
             double cosPhi = Math.cos(phase);
             // 2nd-order Trochoidal crest sharpening: cos(2phi) = 2*cos^2(phi) - 1
             double cos2Phi = 2.0 * cosPhi * cosPhi - 1.0;
+            double waveProfile = cosPhi + steepnessQ * cos2Phi;
 
-            totalOffset += amp * (cosPhi + steepnessQ * cos2Phi);
+            if (stormIntensity > 0.4) {
+                // Sharper trochoidal crest sharpening curve
+                double sharpness = 1.0 + 0.8 * ((stormIntensity - 0.4) / 0.6);
+                double u = (cosPhi + 1.0) * 0.5;
+                double sharpened = Math.pow(u, sharpness) * 2.2 - 0.85;
+                double blend = ((stormIntensity - 0.4) / 0.6) * 0.4;
+                waveProfile = Mth.lerp(blend, waveProfile, sharpened);
+            }
+
+            totalOffset += amp * waveProfile;
         }
 
         return totalOffset;
@@ -253,7 +304,30 @@ public final class GerstnerWaveEngine {
     public static Vector3d evaluateWaveSlopeAndDrift(double x, double z, double timeSeconds,
                                                     double stormIntensity, double windDirX, double windDirZ,
                                                     Vector3d out) {
-        double steepnessQ = Mth.clamp(0.25 * stormIntensity, 0.05, 0.28);
+        double effectiveIntensity;
+        if (stormIntensity <= 0.03) {
+            effectiveIntensity = stormIntensity;
+        } else {
+            double t = (stormIntensity - 0.03) / 0.12;
+            if (t < 1.0) {
+                double s = t * t * (3.0 - 2.0 * t);
+                effectiveIntensity = 0.03 + s * 0.72;
+            } else {
+                double u = (stormIntensity - 0.15) / 0.85;
+                effectiveIntensity = 0.75 + u * 0.60;
+            }
+        }
+
+        double envelope = 1.0;
+        if (stormIntensity > 0.35) {
+            double stormFrac = (stormIntensity - 0.35) / 0.65;
+            double groupWave = 0.65 + 0.55 * Math.sin(x * 0.03 + z * 0.025 - timeSeconds * 0.4 + 1.5707963);
+            envelope = Mth.lerp(stormFrac, 1.0, groupWave);
+        }
+
+        double steepnessQ = (stormIntensity > 0.4)
+                ? Mth.clamp(0.20 + 0.25 * stormIntensity, 0.05, 0.35)
+                : Mth.clamp(0.25 * effectiveIntensity, 0.05, 0.28);
         double slopeX = 0.0;
         double slopeZ = 0.0;
         double stokesDriftMag = 0.0;
@@ -263,7 +337,7 @@ public final class GerstnerWaveEngine {
             double alignment = dot > 0.0 ? dot : 0.0;
             double weight = 0.20 + 0.80 * (alignment * alignment);
 
-            double amp = BASE_AMPLITUDES[i] * stormIntensity * weight;
+            double amp = BASE_AMPLITUDES[i] * effectiveIntensity * weight * envelope;
             double phase = K[i] * (DIR_X[i] * x + DIR_Z[i] * z) - OMEGA[i] * timeSeconds;
 
             double sinPhi = Math.sin(phase);
@@ -294,6 +368,20 @@ public final class GerstnerWaveEngine {
      * Computes the net horizontal Stokes drift vector [N or m/s] aligned with wave propagation.
      */
     public static Vector3d evaluateStokesDriftVector(double stormIntensity, double windDirX, double windDirZ, Vector3d out) {
+        double effectiveIntensity;
+        if (stormIntensity <= 0.03) {
+            effectiveIntensity = stormIntensity;
+        } else {
+            double t = (stormIntensity - 0.03) / 0.12;
+            if (t < 1.0) {
+                double s = t * t * (3.0 - 2.0 * t);
+                effectiveIntensity = 0.03 + s * 0.72;
+            } else {
+                double u = (stormIntensity - 0.15) / 0.85;
+                effectiveIntensity = 0.75 + u * 0.60;
+            }
+        }
+
         double driftX = 0.0;
         double driftZ = 0.0;
 
@@ -302,7 +390,7 @@ public final class GerstnerWaveEngine {
             double alignment = dot > 0.0 ? dot : 0.0;
             double weight = 0.20 + 0.80 * (alignment * alignment);
 
-            double amp = BASE_AMPLITUDES[i] * stormIntensity * weight;
+            double amp = BASE_AMPLITUDES[i] * effectiveIntensity * weight;
             double componentDrift = OMEGA[i] * K[i] * amp * amp;
             driftX += componentDrift * DIR_X[i];
             driftZ += componentDrift * DIR_Z[i];
