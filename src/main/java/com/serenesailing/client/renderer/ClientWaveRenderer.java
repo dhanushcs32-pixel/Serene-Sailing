@@ -21,11 +21,14 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.BiomeTags;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.Vec3;
@@ -42,18 +45,28 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Client-side visual representation of Gerstner ocean waves using an isolated,
- * self-contained {@link Tesselator} pass during {@link RenderLevelStageEvent.Stage#AFTER_PARTICLES}.
+ * self-contained {@link Tesselator} pass during
+ * {@link RenderLevelStageEvent.Stage#AFTER_PARTICLES}.
  *
- * <p>Key visual & architectural highlights:
+ * <p>
+ * Key visual & architectural highlights:
  * <ul>
- *   <li><b>Real Animated Water Texture:</b> Statically locked 1x1 block UVs match vanilla Minecraft's
- *       animated {@code block/water_still} sprite with zero stretching or sliding.</li>
- *   <li><b>Rolling Offshore Surf Breakers:</b> Detached, bright white crescent surf lines form 2 to 6 blocks
- *       offshore, roll toward the beach, and dissolve before reaching the sand.</li>
- *   <li><b>Seamless Boundary Pinning:</b> Pinned to {@code 62.890f} at block edges with smooth biome color
- *       and uniform alpha, eliminating hollow polygon gaps and jagged sawtooth triangles.</li>
- *   <li><b>Active Multi-Zone Wave Particles:</b> Responsive water splashes, bubbles, and foam ripples along
- *       breaking beach surf, open-ocean swells, and underway ship hulls.</li>
+ * <li><b>Real Animated Water Texture:</b> Statically locked 1x1 block UVs match
+ * vanilla Minecraft's
+ * animated {@code block/water_still} sprite with zero stretching or
+ * sliding.</li>
+ * <li><b>Natural Beach-Only Crescent Surf Breakers:</b> Detached, high-contrast
+ * white crescent surf lines
+ * form exclusively along natural sloping beaches (ignoring wooden docks, piers,
+ * and deep cutouts),
+ * roll shoreward, and wash out cleanly on the sand slope.</li>
+ * <li><b>Seamless Boundary Pinning:</b> Pinned to {@code 62.890f} at all
+ * solid/dock edges with smooth biome
+ * color and uniform alpha, eliminating hollow polygon gaps and jagged sawtooth
+ * triangles.</li>
+ * <li><b>Active Multi-Zone Wave Particles:</b> Responsive water splashes and
+ * bubbles along
+ * breaking beach surf, open-ocean swells, and underway ship hulls.</li>
  * </ul>
  */
 public class ClientWaveRenderer {
@@ -68,8 +81,11 @@ public class ClientWaveRenderer {
     private static int cachedSteps = -1;
     private static int cachedGridDim = -1;
     private static boolean[][] isWaterSurface = new boolean[0][0];
+    private static boolean[][] isNaturalBeachSeed = new boolean[0][0];
+    private static boolean[][] isShallowWater = new boolean[0][0];
     private static float[][] cachedShoreDist = new float[0][0];
     private static int[][] cachedBiomeColor = new int[0][0];
+    private static float[][] cachedBiomeMultiplier = new float[0][0];
 
     private static int cachedCenterX = Integer.MIN_VALUE;
     private static int cachedCenterZ = Integer.MIN_VALUE;
@@ -78,8 +94,33 @@ public class ClientWaveRenderer {
     private static final Map<ClientSubLevel, Vector3d> lastShipPos = new ConcurrentHashMap<>();
 
     /**
-     * Resizes the cached grid if simulation distance changes, and scans water surface.
-     * Stored at exact 1x1 block resolution with Chebyshev distance-to-shore field.
+     * Checks if a block state represents natural coastal terrain (sand, gravel,
+     * dirt, grass, clay, stone)
+     * rather than man-made docks, planks, contraptions, or air cutouts.
+     */
+    private static boolean isNaturalShoreBlock(BlockState state) {
+        if (state.isAir() || state.is(BlockTags.PLANKS) || state.is(BlockTags.LOGS)
+                || state.is(BlockTags.WOODEN_SLABS) || state.is(BlockTags.WOODEN_STAIRS)
+                || state.is(BlockTags.WOODEN_FENCES) || state.is(BlockTags.FENCE_GATES)
+                || state.is(BlockTags.TRAPDOORS) || state.is(BlockTags.DOORS)) {
+            return false;
+        }
+        return state.is(BlockTags.SAND)
+                || state.is(BlockTags.DIRT)
+                || state.is(BlockTags.TERRACOTTA)
+                || state.is(BlockTags.BASE_STONE_OVERWORLD)
+                || state.is(Blocks.GRAVEL)
+                || state.is(Blocks.CLAY)
+                || state.is(Blocks.SANDSTONE)
+                || state.is(Blocks.RED_SANDSTONE)
+                || state.is(Blocks.SMOOTH_SANDSTONE);
+    }
+
+    /**
+     * Resizes the cached grid if simulation distance changes, and scans water
+     * surface.
+     * Decouples airtight boundary pinning (all solid obstacles/docks) from natural
+     * beach surf generation.
      */
     private static void updateWaterCache(Level level, double camX, double camZ, long gameTime) {
         int simChunks = Minecraft.getInstance().options.simulationDistance().get();
@@ -90,8 +131,11 @@ public class ClientWaveRenderer {
             cachedSteps = cachedRadius / CELL_STEP;
             cachedGridDim = cachedSteps * 2 + 1;
             isWaterSurface = new boolean[cachedGridDim][cachedGridDim];
+            isNaturalBeachSeed = new boolean[cachedGridDim][cachedGridDim];
+            isShallowWater = new boolean[cachedGridDim][cachedGridDim];
             cachedShoreDist = new float[cachedGridDim][cachedGridDim];
             cachedBiomeColor = new int[cachedGridDim][cachedGridDim];
+            cachedBiomeMultiplier = new float[cachedGridDim][cachedGridDim];
             cachedCenterX = Integer.MIN_VALUE;
             cachedCenterZ = Integer.MIN_VALUE;
             lastCacheUpdateTick = -1L;
@@ -133,7 +177,10 @@ public class ClientWaveRenderer {
                     for (int gx = cellMinX; gx <= cellMaxX; gx++) {
                         for (int gz = cellMinZ; gz <= cellMaxZ; gz++) {
                             isWaterSurface[gx][gz] = false;
-                            cachedShoreDist[gx][gz] = 0.0f;
+                            isNaturalBeachSeed[gx][gz] = false;
+                            isShallowWater[gx][gz] = false;
+                            cachedShoreDist[gx][gz] = 99.0f;
+                            cachedBiomeMultiplier[gx][gz] = 1.0f;
                         }
                     }
                     continue;
@@ -148,86 +195,191 @@ public class ClientWaveRenderer {
                         FluidState fluid = level.getFluidState(probe);
                         if (!fluid.is(FluidTags.WATER)) {
                             isWaterSurface[gx][gz] = false;
-                            cachedShoreDist[gx][gz] = 0.0f;
+                            isShallowWater[gx][gz] = false;
+                            cachedShoreDist[gx][gz] = 99.0f;
+                            cachedBiomeMultiplier[gx][gz] = 1.0f;
+
+                            // Check if this non-water column at Y=62 is natural beach terrain
+                            BlockState state62 = level.getBlockState(probe);
+                            isNaturalBeachSeed[gx][gz] = isNaturalShoreBlock(state62);
                             continue;
                         }
 
                         probe.set(wx, 63, wz);
                         BlockState above = level.getBlockState(probe);
                         if (!above.isAir()) {
-                            // Any non-air block at Y=63 (wooden dock plank, slab, stair, lily pad, etc.)
-                            // means this column is covered or solid!
+                            // Wooden dock plank, slab, stair, etc. at Y=63 covers the water surface,
+                            // but is NOT a natural beach surf generator unless it's natural terrain
                             isWaterSurface[gx][gz] = false;
-                            cachedShoreDist[gx][gz] = 0.0f;
+                            isShallowWater[gx][gz] = false;
+                            isNaturalBeachSeed[gx][gz] = isNaturalShoreBlock(above);
+                            cachedShoreDist[gx][gz] = 99.0f;
+                            cachedBiomeMultiplier[gx][gz] = 1.0f;
                             continue;
                         }
 
                         isWaterSurface[gx][gz] = true;
+                        isNaturalBeachSeed[gx][gz] = false;
                         cachedBiomeColor[gx][gz] = BiomeColors.getAverageWaterColor(level, probe);
+
+                        // Ocean & Deep Ocean 1.25x swell boost (1.0x in coastal/rivers)
+                        var biomeHolder = level.getBiome(probe);
+                        boolean isOcean = biomeHolder.is(BiomeTags.IS_OCEAN) || biomeHolder.is(BiomeTags.IS_DEEP_OCEAN);
+                        cachedBiomeMultiplier[gx][gz] = isOcean ? 1.25f : 1.0f;
+
+                        // Check if this water column sits over a shallow shoaling seabed (Y=61, 60, or 59)
+                        boolean shallow = false;
+                        for (int depthY = 61; depthY >= 59; depthY--) {
+                            probe.set(wx, depthY, wz);
+                            BlockState bedState = level.getBlockState(probe);
+                            if (!bedState.isAir() && !level.getFluidState(probe).is(FluidTags.WATER)) {
+                                shallow = isNaturalShoreBlock(bedState);
+                                break;
+                            }
+                        }
+                        isShallowWater[gx][gz] = shallow;
                     }
                 }
             }
         }
 
-        // Compute Distance-to-Shore field (Chebyshev distance in [1..8] blocks, or 99 in deep water)
-        int maxCells = cachedGridDim * cachedGridDim;
-        int[] queue = new int[maxCells];
-        int head = 0, tail = 0;
-
+        // Compute Euclidean Distance-to-Natural-Beach field (Chamfer propagation +
+        // smoothing)
         for (int gx = 0; gx < cachedGridDim; gx++) {
             for (int gz = 0; gz < cachedGridDim; gz++) {
                 if (!isWaterSurface[gx][gz]) {
-                    cachedShoreDist[gx][gz] = 0.0f;
+                    cachedShoreDist[gx][gz] = 99.0f;
                     continue;
                 }
-                boolean adjacentToNonWater = false;
-                for (int dx = -1; dx <= 1 && !adjacentToNonWater; dx++) {
+                float minDist = 99.0f;
+                for (int dx = -1; dx <= 1; dx++) {
                     for (int dz = -1; dz <= 1; dz++) {
-                        if (dx == 0 && dz == 0) continue;
+                        if (dx == 0 && dz == 0)
+                            continue;
                         int nx = gx + dx;
                         int nz = gz + dz;
-                        if (nx < 0 || nx >= cachedGridDim || nz < 0 || nz >= cachedGridDim || !isWaterSurface[nx][nz]) {
-                            adjacentToNonWater = true;
-                            break;
+                        if (nx >= 0 && nx < cachedGridDim && nz >= 0 && nz < cachedGridDim) {
+                            if (isNaturalBeachSeed[nx][nz]) {
+                                float step = (dx != 0 && dz != 0) ? 1.4142f : 1.0f;
+                                if (step < minDist) {
+                                    minDist = step;
+                                }
+                            }
                         }
                     }
                 }
-                if (adjacentToNonWater) {
-                    cachedShoreDist[gx][gz] = 1.0f;
-                    queue[tail++] = (gx << 16) | gz;
-                } else {
-                    cachedShoreDist[gx][gz] = 99.0f;
-                }
+                cachedShoreDist[gx][gz] = minDist;
             }
         }
 
-        while (head < tail) {
-            int entry = queue[head++];
-            int gx = entry >> 16;
-            int gz = entry & 0xFFFF;
-            float d = cachedShoreDist[gx][gz];
-            if (d >= 8.0f) {
-                continue;
+        // Forward & Backward Chamfer Euclidean sweeps (eliminates 45/90-degree
+        // Chebyshev square corners)
+        for (int pass = 0; pass < 2; pass++) {
+            for (int gx = 1; gx < cachedGridDim - 1; gx++) {
+                for (int gz = 1; gz < cachedGridDim - 1; gz++) {
+                    if (!isWaterSurface[gx][gz] || !isShallowWater[gx][gz])
+                        continue;
+                    float d = cachedShoreDist[gx][gz];
+                    d = Math.min(d, cachedShoreDist[gx - 1][gz] + 1.0f);
+                    d = Math.min(d, cachedShoreDist[gx][gz - 1] + 1.0f);
+                    d = Math.min(d, cachedShoreDist[gx - 1][gz - 1] + 1.4142f);
+                    d = Math.min(d, cachedShoreDist[gx - 1][gz + 1] + 1.4142f);
+                    cachedShoreDist[gx][gz] = Math.min(d, 99.0f);
+                }
             }
-            float nextD = d + 1.0f;
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    if (dx == 0 && dz == 0) continue;
-                    int nx = gx + dx;
-                    int nz = gz + dz;
-                    if (nx >= 0 && nx < cachedGridDim && nz >= 0 && nz < cachedGridDim) {
-                        if (isWaterSurface[nx][nz] && cachedShoreDist[nx][nz] > nextD) {
-                            cachedShoreDist[nx][nz] = nextD;
-                            queue[tail++] = (nx << 16) | nz;
-                        }
-                    }
+            for (int gx = cachedGridDim - 2; gx >= 1; gx--) {
+                for (int gz = cachedGridDim - 2; gz >= 1; gz--) {
+                    if (!isWaterSurface[gx][gz] || !isShallowWater[gx][gz])
+                        continue;
+                    float d = cachedShoreDist[gx][gz];
+                    d = Math.min(d, cachedShoreDist[gx + 1][gz] + 1.0f);
+                    d = Math.min(d, cachedShoreDist[gx][gz + 1] + 1.0f);
+                    d = Math.min(d, cachedShoreDist[gx + 1][gz + 1] + 1.4142f);
+                    d = Math.min(d, cachedShoreDist[gx + 1][gz - 1] + 1.4142f);
+                    cachedShoreDist[gx][gz] = Math.min(d, 99.0f);
                 }
             }
         }
     }
 
     /**
-     * Renders connected 3D polygonal Gerstner wave quads using an isolated Tesselator pass.
+     * Evaluates the segmented, crisp white beach-surf foam intensity at any
+     * fractional world coordinate (wx, wz)
+     * and smoothed Euclidean shore distance (sDist).
+     * Returns 0.0f outside active surf ribbons, or [0.0..1.0] inside a rolling
+     * crescent breaker.
+     */
+    private static float evaluateBeachSurfRibbon(double wx, double wz, float sDist, double renderTime) {
+        if (sDist < 0.45f || sDist > 4.4f) {
+            return 0.0f;
+        }
+
+        // 1. Along-shore segmentation into natural crescent wave sets (4-10m patches
+        // with clear water gaps)
+        double setNoise = Math.sin(wx * 0.14 + wz * 0.11 + renderTime * 0.22)
+                + Math.cos(wx * 0.09 - wz * 0.16 - renderTime * 0.17) * 0.85;
+        float waveSetMask = Mth.clamp((float) ((setNoise - 0.15) / 0.95), 0.0f, 1.0f);
+        if (waveSetMask <= 0.01f) {
+            return 0.0f;
+        }
+        // Smoothstep the along-shore crescent tips so each ribbon tapers into a thin
+        // point
+        waveSetMask = waveSetMask * waveSetMask * (3.0f - 2.0f * waveSetMask);
+
+        // 2. Shoreward phase propagation (waves roll toward sDist -> 0)
+        double curveWarp = Math.sin(wx * 0.21 + wz * 0.19) * 0.75;
+        // Center of the crest travels from sDist = 4.0 down to sDist = 0.6
+        double cycle = (renderTime * 0.38 + curveWarp * 0.15) % 1.0;
+        if (cycle < 0.0)
+            cycle += 1.0;
+        float crestCenterDist = 4.0f - (float) cycle * 3.4f;
+
+        // Asymmetric cross-shore ribbon profile: sharp leading shoreward edge, short
+        // frothy trail behind
+        float distFromCrest = sDist - crestCenterDist;
+        float ribbonHalfWidth = 0.34f * (0.55f + 0.45f * waveSetMask);
+
+        float profile;
+        if (distFromCrest < 0.0f) {
+            // Leading edge (closer to beach): very crisp front
+            float norm = -distFromCrest / (ribbonHalfWidth * 0.65f);
+            if (norm > 1.0f)
+                return 0.0f;
+            profile = 1.0f - norm * norm;
+        } else {
+            // Trailing edge (seaward side): rapid frothy taper
+            float norm = distFromCrest / (ribbonHalfWidth * 1.15f);
+            if (norm > 1.0f)
+                return 0.0f;
+            profile = (1.0f - norm) * (1.0f - norm);
+        }
+
+        // 3. Distance envelope: fade in smoothly offshore (3.3..4.2) and wash out on
+        // sand (0.45..1.05)
+        float distEnvelope = 1.0f;
+        if (sDist < 1.05f) {
+            distEnvelope = Mth.clamp((sDist - 0.45f) / 0.60f, 0.0f, 1.0f);
+        } else if (sDist > 3.2f) {
+            distEnvelope = Mth.clamp((4.2f - sDist) / 1.0f, 0.0f, 1.0f);
+        }
+
+        // Secondary staggered wave train so neighboring beach segments have offset
+        // timing
+        float secondaryCycle = (float) ((renderTime * 0.38 + 0.5 + Math.cos(wx * 0.12 - wz * 0.14) * 0.18) % 1.0);
+        if (secondaryCycle < 0.0f)
+            secondaryCycle += 1.0f;
+        float crest2Dist = 3.8f - secondaryCycle * 3.2f;
+        float d2 = Math.abs(sDist - crest2Dist) / (ribbonHalfWidth * 0.85f);
+        float profile2 = d2 < 1.0f ? (1.0f - d2 * d2) * (1.0f - waveSetMask * 0.5f) : 0.0f;
+
+        float combined = Math.max(profile * waveSetMask, profile2 * waveSetMask * 0.85f) * distEnvelope;
+        return Mth.clamp(combined, 0.0f, 1.0f);
+    }
+
+    /**
+     * Renders connected 3D polygonal Gerstner wave quads using an isolated
+     * Tesselator pass,
+     * plus crisp detached white beach-surf ribbons along natural coastlines.
      */
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
@@ -272,56 +424,154 @@ public class ClientWaveRenderer {
         float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
         double renderTime = (gameTime + partialTick) * 0.05;
 
-        // 2 High-Frequency visual chop harmonics (lambda ~ 11m and 5.8m)
+        // 3 High-Frequency visual chop harmonics (lambda ~ 11m, 5.8m, and cross-chop at 3.4m)
         double windAngle = Math.atan2(windDirZ, windDirX);
-        double angle1 = windAngle + 0.30;
-        double angle2 = windAngle - 0.40;
+        double angle1 = windAngle + 0.30; // ~ +18 deg
+        double angle2 = windAngle - 0.40; // ~ -23 deg
+        double angle3 = windAngle + 0.733; // ~ +42 deg
         double dirX1 = Math.cos(angle1), dirZ1 = Math.sin(angle1);
         double dirX2 = Math.cos(angle2), dirZ2 = Math.sin(angle2);
-        double amp1 = 0.12 * stormIntensity + 0.035;
-        double amp2 = 0.07 * stormIntensity + 0.020;
+        double dirX3 = Math.cos(angle3), dirZ3 = Math.sin(angle3);
+
+        double stormScale = stormIntensity > 0.4 ? (1.0 + (stormIntensity - 0.4) * 0.8) : 1.0;
+        double amp1 = (0.12 * stormIntensity + 0.035) * stormScale;
+        double amp2 = (0.07 * stormIntensity + 0.020) * stormScale;
+        double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale;
+
+        // --- Sable Sub-Level Hull Masking ---
+        // Identify all grid cells overlapping assembled ClientSubLevel ship hulls or interior displaced holds
+        boolean[][] maskedByShipHull = new boolean[cachedGridDim][cachedGridDim];
+        SubLevelContainer subContainer = SubLevelContainer.getContainer(level);
+        if (subContainer instanceof ClientSubLevelContainer clientContainer) {
+            Vector3d worldProbe = new Vector3d();
+            Vector3d localProbe = new Vector3d();
+            BlockPos.MutableBlockPos subProbePos = new BlockPos.MutableBlockPos();
+
+            double gridMinX = startX;
+            double gridMaxX = startX + cachedGridDim * CELL_STEP;
+            double gridMinZ = startZ;
+            double gridMaxZ = startZ + cachedGridDim * CELL_STEP;
+
+            for (ClientSubLevel subLevel : clientContainer.getAllSubLevels()) {
+                var bounds = subLevel.boundingBox();
+                if (bounds == null) continue;
+
+                if (bounds.maxX() < gridMinX || bounds.minX() > gridMaxX
+                        || bounds.maxZ() < gridMinZ || bounds.minZ() > gridMaxZ) {
+                    continue;
+                }
+
+                if (bounds.maxY() < 58.0 || bounds.minY() > 68.0) {
+                    continue;
+                }
+
+                Pose3dc pose = subLevel.renderPose(partialTick);
+                if (pose == null) {
+                    pose = subLevel.logicalPose();
+                }
+                if (pose == null) continue;
+
+                Level subLevelWorld = subLevel.getLevel();
+                if (subLevelWorld == null) continue;
+
+                int minGX = Math.max(0, (int) Math.floor((bounds.minX() - startX) / CELL_STEP));
+                int maxGX = Math.min(cachedGridDim - 1, (int) Math.floor((bounds.maxX() - startX) / CELL_STEP));
+                int minGZ = Math.max(0, (int) Math.floor((bounds.minZ() - startZ) / CELL_STEP));
+                int maxGZ = Math.min(cachedGridDim - 1, (int) Math.floor((bounds.maxZ() - startZ) / CELL_STEP));
+
+                for (int gx = minGX; gx <= maxGX; gx++) {
+                    double wx = startX + gx * CELL_STEP + 0.5 * CELL_STEP;
+                    for (int gz = minGZ; gz <= maxGZ; gz++) {
+                        if (maskedByShipHull[gx][gz]) continue;
+                        double wz = startZ + gz * CELL_STEP + 0.5 * CELL_STEP;
+
+                        if (isInsideShipHull(subLevel, pose, subLevelWorld, wx, wz, worldProbe, localProbe, subProbePos)) {
+                            maskedByShipHull[gx][gz] = true;
+                        }
+                    }
+                }
+            }
+        }
 
         int vertDim = cachedGridDim + 1;
 
-        // Boundary Vertex Pinning: A corner vertex is interior ONLY if all 4 adjacent 1x1 cells are open water!
+        // Boundary Vertex Pinning: A corner vertex is interior ONLY if all 4 adjacent
+        // 1x1 cells are open water AND not masked by a ship hull!
+        // Vertices adjacent to masked ship hull cells become pinned boundary vertices (height 62.890f),
+        // preventing wave mesh penetration into the wooden hull planks.
         boolean[][] isInterior = new boolean[vertDim][vertDim];
         for (int vi = 1; vi < cachedGridDim; vi++) {
             for (int vj = 1; vj < cachedGridDim; vj++) {
-                if (isWaterSurface[vi - 1][vj - 1]
-                        && isWaterSurface[vi - 1][vj]
-                        && isWaterSurface[vi][vj - 1]
-                        && isWaterSurface[vi][vj]) {
+                if (isWaterSurface[vi - 1][vj - 1] && !maskedByShipHull[vi - 1][vj - 1]
+                        && isWaterSurface[vi - 1][vj] && !maskedByShipHull[vi - 1][vj]
+                        && isWaterSurface[vi][vj - 1] && !maskedByShipHull[vi][vj - 1]
+                        && isWaterSurface[vi][vj] && !maskedByShipHull[vi][vj]) {
                     isInterior[vi][vj] = true;
                 }
             }
         }
 
-        // Smoothly interpolate vertex shore distance from adjacent water cells
-        float[][] vertShoreDist = new float[vertDim][vertDim];
+        // Smoothly interpolate vertex shore distance from adjacent water cells (2-pass
+        // smoothed for organic curves)
+        float[][] rawVertShoreDist = new float[vertDim][vertDim];
         for (int vi = 0; vi < vertDim; vi++) {
             for (int vj = 0; vj < vertDim; vj++) {
-                if (!isInterior[vi][vj]) {
-                    vertShoreDist[vi][vj] = 0.5f; // Pinned boundary vertex
-                    continue;
-                }
                 float sum = 0.0f;
                 int count = 0;
+                boolean nearNaturalSeed = false;
                 for (int di = -1; di <= 0; di++) {
                     for (int dj = -1; dj <= 0; dj++) {
                         int ci = vi + di;
                         int cj = vj + dj;
-                        if (ci >= 0 && ci < cachedGridDim && cj >= 0 && cj < cachedGridDim && isWaterSurface[ci][cj]) {
-                            sum += cachedShoreDist[ci][cj];
-                            count++;
+                        if (ci >= 0 && ci < cachedGridDim && cj >= 0 && cj < cachedGridDim) {
+                            if (isNaturalBeachSeed[ci][cj]) {
+                                nearNaturalSeed = true;
+                            }
+                            if (isWaterSurface[ci][cj] && cachedShoreDist[ci][cj] < 50.0f) {
+                                sum += cachedShoreDist[ci][cj];
+                                count++;
+                            }
                         }
                     }
                 }
-                vertShoreDist[vi][vj] = count > 0 ? (sum / count) : 1.0f;
+                if (nearNaturalSeed) {
+                    rawVertShoreDist[vi][vj] = 0.35f;
+                } else if (count > 0) {
+                    rawVertShoreDist[vi][vj] = sum / count;
+                } else {
+                    rawVertShoreDist[vi][vj] = 99.0f;
+                }
+            }
+        }
+
+        // 3x3 spatial box filter over vertex shore distance so surf ribbons curve
+        // organically without grid stair-stepping
+        float[][] vertShoreDist = new float[vertDim][vertDim];
+        for (int vi = 0; vi < vertDim; vi++) {
+            for (int vj = 0; vj < vertDim; vj++) {
+                if (rawVertShoreDist[vi][vj] > 12.0f) {
+                    vertShoreDist[vi][vj] = 99.0f;
+                    continue;
+                }
+                float sum = 0.0f;
+                float weightSum = 0.0f;
+                for (int di = -1; di <= 1; di++) {
+                    for (int dj = -1; dj <= 1; dj++) {
+                        int ni = Mth.clamp(vi + di, 0, vertDim - 1);
+                        int nj = Mth.clamp(vj + dj, 0, vertDim - 1);
+                        float d = rawVertShoreDist[ni][nj];
+                        if (d < 20.0f) {
+                            float w = (di == 0 && dj == 0) ? 2.0f : 1.0f;
+                            sum += d * w;
+                            weightSum += w;
+                        }
+                    }
+                }
+                vertShoreDist[vi][vj] = weightSum > 0.0f ? (sum / weightSum) : 99.0f;
             }
         }
 
         float[][] waveOffset = new float[vertDim][vertDim];
-        float[][] breakerFactor = new float[vertDim][vertDim];
 
         for (int vi = 0; vi < vertDim; vi++) {
             double vx = startX + vi * CELL_STEP;
@@ -334,42 +584,38 @@ public class ClientWaveRenderer {
                         vx, vz, renderTime, stormIntensity, windDirX, windDirZ);
                 double chop1 = Math.sin(0.5712 * (dirX1 * vx + dirZ1 * vz) - 2.367 * renderTime) * amp1;
                 double chop2 = Math.sin(1.0833 * (dirX2 * vx + dirZ2 * vz) - 3.259 * renderTime) * amp2;
-                double h = baseWave + chop1 + chop2;
+                double chop3 = Math.sin(1.8480 * (dirX3 * vx + dirZ3 * vz) - 4.150 * renderTime) * amp3;
+                double h = baseWave + chop1 + chop2 + chop3;
 
-                // Wave Shoaling & Breaking Physics in the Surf Zone (1.2 <= sDist <= 6.5 blocks from shore)
+                // Smoothly interpolate Ocean & Deep Ocean 1.25x swell boost from adjacent cells
+                float b00 = (vi > 0 && vj > 0) ? cachedBiomeMultiplier[vi - 1][vj - 1] : 1.0f;
+                float b01 = (vi > 0 && vj < cachedGridDim) ? cachedBiomeMultiplier[vi - 1][vj] : 1.0f;
+                float b10 = (vi < cachedGridDim && vj > 0) ? cachedBiomeMultiplier[vi][vj - 1] : 1.0f;
+                float b11 = (vi < cachedGridDim && vj < cachedGridDim) ? cachedBiomeMultiplier[vi][vj] : 1.0f;
+                float biomeMult = (b00 + b01 + b10 + b11) * 0.25f;
+                h *= biomeMult;
+
+                // Subtle physical wave crest lift inside active beach breakers
                 float sDist = vertShoreDist[vi][vj];
-                if (sDist >= 1.2f && sDist <= 6.5f) {
-                    double spatialWarp = Math.sin(vx * 0.18 + vz * 0.14) * 1.6;
-                    double phase = sDist * 1.15 - renderTime * 2.6 + spatialWarp;
-                    double crestFactor = Math.sin(phase);
-
-                    if (crestFactor > 0.55 && sDist <= 5.5f) {
-                        float strength = (float) Mth.clamp((crestFactor - 0.55) / 0.45, 0.0, 1.0);
-                        float zoneEnvelope = 1.0f;
-                        if (sDist < 2.0f) {
-                            zoneEnvelope = (sDist - 1.2f) / 0.8f;
-                        } else if (sDist > 4.5f) {
-                            zoneEnvelope = (5.5f - sDist) / 1.0f;
-                        }
-                        strength *= Mth.clamp(zoneEnvelope, 0.0f, 1.0f);
-
-                        // Sharpen wave height slightly so breaker visibly curls near shore
-                        h += 0.12f * strength;
-                        breakerFactor[vi][vj] = strength;
-                    }
+                if (sDist <= 4.4f) {
+                    float surfRibbon = evaluateBeachSurfRibbon(vx, vz, sDist, renderTime);
+                    h += 0.065f * surfRibbon;
                 }
 
                 waveOffset[vi][vj] = (float) h;
             }
         }
 
-        // Texture sprite for animated native water - statically locked to 1x1 block coordinates
+        // Texture sprite for animated native water - statically locked to 1x1 block
+        // coordinates
         TextureAtlasSprite waterSprite = mc.getTextureAtlas(InventoryMenu.BLOCK_ATLAS)
                 .apply(ResourceLocation.withDefaultNamespace("block/water_still"));
         float u0 = waterSprite.getU0();
         float u1 = waterSprite.getU1();
         float v0 = waterSprite.getV0();
         float v1 = waterSprite.getV1();
+        float uMid = (u0 + u1) * 0.5f;
+        float vMid = (v0 + v1) * 0.5f;
 
         PoseStack poseStack = event.getPoseStack();
         poseStack.pushPose();
@@ -379,7 +625,7 @@ public class ClientWaveRenderer {
         RenderSystem.defaultBlendFunc();
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
-        RenderSystem.disableCull(); // Prevents backface culling from turning waves into thin streak lines
+        RenderSystem.disableCull();
         RenderSystem.setShader(GameRenderer::getPositionTexColorShader);
         RenderSystem.setShaderTexture(0, InventoryMenu.BLOCK_ATLAS);
 
@@ -391,14 +637,20 @@ public class ClientWaveRenderer {
         float lightDirY = 0.80f;
         float lightDirZ = (float) windDirZ * 0.5f - 0.25f;
         float lLen = Mth.sqrt(lightDirX * lightDirX + lightDirY * lightDirY + lightDirZ * lightDirZ);
-        lightDirX /= lLen; lightDirY /= lLen; lightDirZ /= lLen;
+        lightDirX /= lLen;
+        lightDirY /= lLen;
+        lightDirZ /= lLen;
 
-        float swellBaseline = (float) (0.08 * stormIntensity + 0.04);
+        // Unlocked Full Wave Rise AND Drop (Troughs):
+        // Elevated interior reference surface with safe floor prevents clipping underneath vanilla 62.88 water
+        // while exhibiting deep drops into troughs and dramatic rises into peaks!
+        float interiorBaseY = VANILLA_WATER_TOP_Y + 0.18f + (float) (0.22 * stormIntensity);
+        float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
 
         for (int gx = 0; gx < cachedGridDim; gx++) {
             for (int gz = 0; gz < cachedGridDim; gz++) {
-                if (!isWaterSurface[gx][gz]) {
-                    continue;
+                if (!isWaterSurface[gx][gz] || maskedByShipHull[gx][gz]) {
+                    continue; // Skip dry land and interior/sublevel ship holds!
                 }
 
                 float h00 = waveOffset[gx][gz];
@@ -416,27 +668,29 @@ public class ClientWaveRenderer {
                 boolean int11 = isInterior[gx + 1][gz + 1];
                 boolean int10 = isInterior[gx + 1][gz];
 
-                // Interior water vertices undulate smoothly; boundary vertices pin to 62.890f
-                float y00 = int00 ? (VANILLA_WATER_TOP_Y + Math.max(0.0f, h00 + swellBaseline)) : PINNED_WATER_Y;
-                float y01 = int01 ? (VANILLA_WATER_TOP_Y + Math.max(0.0f, h01 + swellBaseline)) : PINNED_WATER_Y;
-                float y11 = int11 ? (VANILLA_WATER_TOP_Y + Math.max(0.0f, h11 + swellBaseline)) : PINNED_WATER_Y;
-                float y10 = int10 ? (VANILLA_WATER_TOP_Y + Math.max(0.0f, h10 + swellBaseline)) : PINNED_WATER_Y;
+                // Interior water vertices undulate smoothly above and below interiorBaseY; boundary vertices pin to 62.890f
+                float y00 = int00 ? Math.max(safeFloor, interiorBaseY + h00) : PINNED_WATER_Y;
+                float y01 = int01 ? Math.max(safeFloor, interiorBaseY + h01) : PINNED_WATER_Y;
+                float y11 = int11 ? Math.max(safeFloor, interiorBaseY + h11) : PINNED_WATER_Y;
+                float y10 = int10 ? Math.max(safeFloor, interiorBaseY + h10) : PINNED_WATER_Y;
 
                 int biomeColor = cachedBiomeColor[gx][gz];
                 int br = (biomeColor >> 16) & 0xFF;
                 int bg = (biomeColor >> 8) & 0xFF;
                 int bb = biomeColor & 0xFF;
 
-                int c00 = computeVertexColor(int00, h00, breakerFactor[gx][gz], br, bg, bb,
+                // 1. Base Ocean Surface Quad (clean ocean water color — no blurry white vertex
+                // halo!)
+                int c00 = computeBaseWaterColor(int00, h00, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz0, camPos.x, camPos.z, stormIntensity,
                         gx, gz, waveOffset);
-                int c01 = computeVertexColor(int01, h01, breakerFactor[gx][gz + 1], br, bg, bb,
+                int c01 = computeBaseWaterColor(int01, h01, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz1, camPos.x, camPos.z, stormIntensity,
                         gx, gz + 1, waveOffset);
-                int c11 = computeVertexColor(int11, h11, breakerFactor[gx + 1][gz + 1], br, bg, bb,
+                int c11 = computeBaseWaterColor(int11, h11, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz1, camPos.x, camPos.z, stormIntensity,
                         gx + 1, gz + 1, waveOffset);
-                int c10 = computeVertexColor(int10, h10, breakerFactor[gx + 1][gz], br, bg, bb,
+                int c10 = computeBaseWaterColor(int10, h10, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz0, camPos.x, camPos.z, stormIntensity,
                         gx + 1, gz, waveOffset);
 
@@ -444,15 +698,83 @@ public class ClientWaveRenderer {
                     continue;
                 }
 
-                // Strictly static world-locked 1x1 block UVs matching vanilla Minecraft water sprite
-                bufferBuilder.addVertex(matrix, (float)(wx0 - camPos.x), (float)(y00 - camPos.y), (float)(wz0 - camPos.z))
+                bufferBuilder
+                        .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y00 - camPos.y), (float) (wz0 - camPos.z))
                         .setUv(u0, v0).setColor(c00);
-                bufferBuilder.addVertex(matrix, (float)(wx0 - camPos.x), (float)(y01 - camPos.y), (float)(wz1 - camPos.z))
+                bufferBuilder
+                        .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y01 - camPos.y), (float) (wz1 - camPos.z))
                         .setUv(u0, v1).setColor(c01);
-                bufferBuilder.addVertex(matrix, (float)(wx1 - camPos.x), (float)(y11 - camPos.y), (float)(wz1 - camPos.z))
+                bufferBuilder
+                        .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y11 - camPos.y), (float) (wz1 - camPos.z))
                         .setUv(u1, v1).setColor(c11);
-                bufferBuilder.addVertex(matrix, (float)(wx1 - camPos.x), (float)(y10 - camPos.y), (float)(wz0 - camPos.z))
+                bufferBuilder
+                        .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
                         .setUv(u1, v0).setColor(c10);
+
+                // 2. Detached High-Contrast Beach Surf Ribbon Overlay (0.5m sub-quad resolution
+                // for thin crisp lines)
+                float sd00 = vertShoreDist[gx][gz];
+                float sd01 = vertShoreDist[gx][gz + 1];
+                float sd11 = vertShoreDist[gx + 1][gz + 1];
+                float sd10 = vertShoreDist[gx + 1][gz];
+
+                if (isShallowWater[gx][gz] && (sd00 <= 4.5f || sd01 <= 4.5f || sd11 <= 4.5f || sd10 <= 4.5f)) {
+                    float distFromCam = (float) Math.hypot(wx0 - camPos.x, wz0 - camPos.z);
+                    float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
+                    if (distFade > 0.02f) {
+                        // Subdivide into 2x2 half-block sub-quads so the surf ribbon is thin (0.5m) and
+                        // curved
+                        for (int sx = 0; sx < 2; sx++) {
+                            float fx0 = sx * 0.5f;
+                            float fx1 = (sx + 1) * 0.5f;
+                            for (int sz = 0; sz < 2; sz++) {
+                                float fz0 = sz * 0.5f;
+                                float fz1 = (sz + 1) * 0.5f;
+
+                                float f00 = evalSubVertexFoam(wx0, wz0, fx0, fz0, sd00, sd10, sd01, sd11, renderTime);
+                                float f01 = evalSubVertexFoam(wx0, wz0, fx0, fz1, sd00, sd10, sd01, sd11, renderTime);
+                                float f11 = evalSubVertexFoam(wx0, wz0, fx1, fz1, sd00, sd10, sd01, sd11, renderTime);
+                                float f10 = evalSubVertexFoam(wx0, wz0, fx1, fz0, sd00, sd10, sd01, sd11, renderTime);
+
+                                if (f00 <= 0.02f && f01 <= 0.02f && f11 <= 0.02f && f10 <= 0.02f) {
+                                    continue;
+                                }
+
+                                float sy00 = bilerp(y00, y10, y01, y11, fx0, fz0) + 0.022f;
+                                float sy01 = bilerp(y00, y10, y01, y11, fx0, fz1) + 0.022f;
+                                float sy11 = bilerp(y00, y10, y01, y11, fx1, fz1) + 0.022f;
+                                float sy10 = bilerp(y00, y10, y01, y11, fx1, fz0) + 0.022f;
+
+                                double swx0 = wx0 + fx0;
+                                double swx1 = wx0 + fx1;
+                                double swz0 = wz0 + fz0;
+                                double swz1 = wz0 + fz1;
+
+                                int fc00 = packSurfFoamColor(f00 * distFade);
+                                int fc01 = packSurfFoamColor(f01 * distFade);
+                                int fc11 = packSurfFoamColor(f11 * distFade);
+                                int fc10 = packSurfFoamColor(f10 * distFade);
+
+                                bufferBuilder
+                                        .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy00 - camPos.y),
+                                                (float) (swz0 - camPos.z))
+                                        .setUv(uMid, vMid).setColor(fc00);
+                                bufferBuilder
+                                        .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy01 - camPos.y),
+                                                (float) (swz1 - camPos.z))
+                                        .setUv(uMid, vMid).setColor(fc01);
+                                bufferBuilder
+                                        .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy11 - camPos.y),
+                                                (float) (swz1 - camPos.z))
+                                        .setUv(uMid, vMid).setColor(fc11);
+                                bufferBuilder
+                                        .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy10 - camPos.y),
+                                                (float) (swz0 - camPos.z))
+                                        .setUv(uMid, vMid).setColor(fc10);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -467,12 +789,41 @@ public class ClientWaveRenderer {
         poseStack.popPose();
     }
 
-    private static int computeVertexColor(boolean isInterior, float h, float breaker,
-                                          int br, int bg, int bb,
-                                          float lightDirX, float lightDirY, float lightDirZ,
-                                          double wx, double wz, double camX, double camZ,
-                                          double stormIntensity,
-                                          int vi, int vj, float[][] waveOffset) {
+    private static float bilerp(float v00, float v10, float v01, float v11, float tx, float tz) {
+        float vx0 = Mth.lerp(tx, v00, v10);
+        float vx1 = Mth.lerp(tx, v01, v11);
+        return Mth.lerp(tz, vx0, vx1);
+    }
+
+    private static float evalSubVertexFoam(double wx0, double wz0, float tx, float tz,
+            float sd00, float sd10, float sd01, float sd11,
+            double renderTime) {
+        float sDist = bilerp(sd00, sd10, sd01, sd11, tx, tz);
+        return evaluateBeachSurfRibbon(wx0 + tx, wz0 + tz, sDist, renderTime);
+    }
+
+    /**
+     * Packs crisp bright white surf color (R=250, G=253, B=255) with sharp alpha
+     * threshold
+     * so the surf ribbon reads as an opaque white line on top of the water rather
+     * than a dark-blue tint.
+     */
+    private static int packSurfFoamColor(float strength) {
+        if (strength <= 0.01f) {
+            return 0;
+        }
+        // Sharpen contrast so core of ribbon is bright opaque white
+        float crisp = Mth.clamp((strength - 0.12f) / 0.65f, 0.0f, 1.0f);
+        int a = (int) (crisp * 235.0f);
+        return ((a & 0xFF) << 24) | (250 << 16) | (253 << 8) | 255;
+    }
+
+    private static int computeBaseWaterColor(boolean isInterior, float h,
+            int br, int bg, int bb,
+            float lightDirX, float lightDirY, float lightDirZ,
+            double wx, double wz, double camX, double camZ,
+            double stormIntensity,
+            int vi, int vj, float[][] waveOffset) {
         float distFromCam = (float) Math.hypot(wx - camX, wz - camZ);
         float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
         if (distFade <= 0.005f) {
@@ -481,8 +832,7 @@ public class ClientWaveRenderer {
 
         if (!isInterior) {
             // Shoreline / Dock boundary vertex:
-            // Pure biome water color (NO permanent white tint!), smooth alpha (160 * distFade)
-            // Meets the shore seamlessly without jagged 1x1 sawtooth triangle teeth!
+            // Pure biome water color, smooth alpha (160 * distFade)
             int a = (int) (160.0f * distFade);
             return ((a & 0xFF) << 24) | ((br & 0xFF) << 16) | ((bg & 0xFF) << 8) | (bb & 0xFF);
         }
@@ -507,18 +857,9 @@ public class ClientWaveRenderer {
         int g = (int) Mth.clamp(bg * slopeFactor, 0, 255);
         int b = (int) Mth.clamp(bb * slopeFactor, 0, 255);
 
-        // Cohesive alpha across continuous ocean surface
         int a = (int) (185.0f * distFade);
 
-        // 1. Dynamic Rolling Surf Breaker White Foam Ribbon (2 to 6 blocks offshore)
-        if (breaker > 0.0f) {
-            r = (int) Mth.lerp(breaker, r, 245);
-            g = (int) Mth.lerp(breaker, g, 250);
-            b = (int) Mth.lerp(breaker, b, 255);
-            a = (int) Math.min(235, a + breaker * 45.0f);
-        }
-
-        // 2. Steep storm peak foam (only during active storms: stormIntensity > 0.5)
+        // Steep storm peak foam (only during active storms: stormIntensity > 0.5)
         if (stormIntensity > 0.5 && h > 0.36f) {
             float stormFoam = Mth.clamp((h - 0.36f) / 0.32f, 0.0f, 1.0f) * (float) ((stormIntensity - 0.5) / 0.5);
             r = (int) Mth.lerp(stormFoam, r, 230);
@@ -554,7 +895,6 @@ public class ClientWaveRenderer {
         waveState.update(level, gameTime);
 
         double stormIntensity = waveState.smoothedStormIntensity;
-        // Active wave and surf particles enabled in all active sailing/weather conditions (stormIntensity >= 0.10)
         if (stormIntensity < 0.10) {
             return;
         }
@@ -567,7 +907,7 @@ public class ClientWaveRenderer {
         int gridStartZ = cachedRadius > 0 ? (cachedCenterZ - cachedSteps * CELL_STEP) : 0;
 
         // --- Zone A & B: Shoreline Breaking Surf & Open-Ocean Whitecap Particles ---
-        int sampleCount = stormIntensity > 0.5 ? 40 : 25;
+        int sampleCount = stormIntensity > 0.5 ? 32 : 18;
         for (int i = 0; i < sampleCount; i++) {
             double angle = random.nextDouble() * (2.0 * Math.PI);
             double radius = 3.0 + random.nextDouble() * 38.0;
@@ -583,18 +923,18 @@ public class ClientWaveRenderer {
             int gz = Mth.floor(sampleZ - gridStartZ);
 
             float sDist = 99.0f;
-            if (cachedGridDim > 0 && gx >= 0 && gx < cachedGridDim && gz >= 0 && gz < cachedGridDim && isWaterSurface[gx][gz]) {
+            boolean shallowShoal = false;
+            if (cachedGridDim > 0 && gx >= 0 && gx < cachedGridDim && gz >= 0 && gz < cachedGridDim
+                    && isWaterSurface[gx][gz]) {
                 sDist = cachedShoreDist[gx][gz];
+                shallowShoal = isShallowWater[gx][gz];
             }
 
-            // Zone A: Shoreline Breaking Surf Particles (active on breaking surf crests near beach)
-            if (sDist >= 1.5f && sDist <= 5.0f) {
-                double spatialWarp = Math.sin(sampleX * 0.18 + sampleZ * 0.14) * 1.6;
-                double phase = sDist * 1.15 - timeSeconds * 2.6 + spatialWarp;
-                double crestFactor = Math.sin(phase);
-
-                if (crestFactor > 0.65) {
-                    // Shoreward direction calculated from cachedShoreDist gradient
+            // Zone A: Natural Beach Surf Particles (strictly on active crescent surf
+            // ribbons, never around docks!)
+            if (shallowShoal && sDist >= 0.8f && sDist <= 4.0f) {
+                float surfStrength = evaluateBeachSurfRibbon(sampleX, sampleZ, sDist, timeSeconds);
+                if (surfStrength > 0.65f && random.nextFloat() < 0.35f) {
                     int prevGX = Math.max(0, gx - 1);
                     int nextGX = Math.min(cachedGridDim - 1, gx + 1);
                     int prevGZ = Math.max(0, gz - 1);
@@ -614,25 +954,17 @@ public class ClientWaveRenderer {
 
                     double baseWave = GerstnerWaveEngine.evaluateWaveOffset(
                             sampleX, sampleZ, timeSeconds, stormIntensity, windDirX, windDirZ);
-                    double crestY = 62.95 + Math.max(0.0, baseWave + 0.10);
+                    double crestY = 62.93 + Math.max(0.0, baseWave + 0.06);
 
-                    double vx = shoreDirX * 0.08 + (random.nextDouble() - 0.5) * 0.04;
-                    double vy = 0.05 + random.nextDouble() * 0.06;
-                    double vz = shoreDirZ * 0.08 + (random.nextDouble() - 0.5) * 0.04;
+                    double vx = shoreDirX * 0.05 + (random.nextDouble() - 0.5) * 0.02;
+                    double vy = 0.02 + random.nextDouble() * 0.03;
+                    double vz = shoreDirZ * 0.05 + (random.nextDouble() - 0.5) * 0.02;
 
                     level.addParticle(ParticleTypes.SPLASH, sampleX, crestY, sampleZ, vx, vy, vz);
 
-                    if (random.nextFloat() < 0.45f) {
-                        level.addParticle(ParticleTypes.BUBBLE_POP, sampleX, crestY + 0.02, sampleZ,
-                                vx * 0.5, 0.02, vz * 0.5);
-                    }
-
-                    if (random.nextFloat() < 0.20f) {
-                        level.addParticle(ParticleTypes.CLOUD, sampleX, crestY + 0.03, sampleZ,
-                                shoreDirX * 0.03, 0.01, shoreDirZ * 0.03);
-                    } else if (random.nextFloat() < 0.25f) {
-                        level.addParticle(ParticleTypes.FISHING, sampleX, crestY + 0.02, sampleZ,
-                                shoreDirX * 0.02, 0.01, shoreDirZ * 0.02);
+                    if (random.nextFloat() < 0.30f) {
+                        level.addParticle(ParticleTypes.BUBBLE_POP, sampleX, crestY + 0.01, sampleZ,
+                                vx * 0.4, 0.01, vz * 0.4);
                     }
                     continue;
                 }
@@ -641,7 +973,7 @@ public class ClientWaveRenderer {
             // Zone B: Open-Ocean Whitecap Crest Particles
             double waveOffset = GerstnerWaveEngine.evaluateWaveOffset(
                     sampleX, sampleZ, timeSeconds, stormIntensity, windDirX, windDirZ);
-            double peakThreshold = stormIntensity > 0.5 ? 0.35 : 0.22;
+            double peakThreshold = stormIntensity > 0.5 ? 0.35 : 0.24;
 
             if (waveOffset > peakThreshold) {
                 double crestY = SEA_LEVEL_WATER_SURFACE + waveOffset;
@@ -664,7 +996,8 @@ public class ClientWaveRenderer {
             }
         }
 
-        // --- Zone C: Ship Hull & Bow Wave Spray around moving ships or in wave crests ---
+        // --- Zone C: Ship Hull & Bow Wave Spray around moving ships or in wave crests
+        // ---
         SubLevelContainer container = SubLevelContainer.getContainer(level);
         if (!(container instanceof ClientSubLevelContainer clientContainer)) {
             return;
@@ -683,8 +1016,7 @@ public class ClientWaveRenderer {
             double distSq = playerPos.distanceToSqr(
                     (bounds.minX() + bounds.maxX()) * 0.5,
                     (bounds.minY() + bounds.maxY()) * 0.5,
-                    (bounds.minZ() + bounds.maxZ()) * 0.5
-            );
+                    (bounds.minZ() + bounds.maxZ()) * 0.5);
             if (distSq > 64.0 * 64.0) {
                 continue;
             }
@@ -729,9 +1061,11 @@ public class ClientWaveRenderer {
                             .add(new Vector3d(starboardWorld).mul(s * halfBeam * 0.6))
                             .sub(new Vector3d(forwardWorld).mul(1.5));
 
-                    double sprayVx = s * starboardWorld.x * spraySpeed + forwardWorld.x * (speed * 0.5) + (random.nextDouble() - 0.5) * 0.04;
+                    double sprayVx = s * starboardWorld.x * spraySpeed + forwardWorld.x * (speed * 0.5)
+                            + (random.nextDouble() - 0.5) * 0.04;
                     double sprayVy = 0.06 + Math.min(0.12, speed * 0.20) + random.nextDouble() * 0.08;
-                    double sprayVz = s * starboardWorld.z * spraySpeed + forwardWorld.z * (speed * 0.5) + (random.nextDouble() - 0.5) * 0.04;
+                    double sprayVz = s * starboardWorld.z * spraySpeed + forwardWorld.z * (speed * 0.5)
+                            + (random.nextDouble() - 0.5) * 0.04;
 
                     level.addParticle(ParticleTypes.SPLASH, shoulder.x, sprayY, shoulder.z,
                             sprayVx, sprayVy, sprayVz);
@@ -750,5 +1084,82 @@ public class ClientWaveRenderer {
                 }
             }
         }
+    }
+
+    /**
+     * Checks if a world grid point (wx, wz) is inside an assembled ClientSubLevel ship hull,
+     * displaced cabin hold, or directly intersects hull planking at the waterline.
+     */
+    private static boolean isInsideShipHull(ClientSubLevel subLevel, Pose3dc pose,
+                                            Level subLevelWorld, double wx, double wz,
+                                            Vector3d worldProbe, Vector3d localProbe,
+                                            BlockPos.MutableBlockPos subProbePos) {
+        // 1. Waterline check: if there is a non-air block at the waterline (wy ~ 61.5 to 63.5)
+        for (double wy = 61.5; wy <= 63.5; wy += 0.5) {
+            worldProbe.set(wx, wy, wz);
+            pose.transformPositionInverse(worldProbe, localProbe);
+            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+            if (subLevelWorld.hasChunkAt(subProbePos)) {
+                BlockState state = subLevelWorld.getBlockState(subProbePos);
+                if (!state.isAir() && state.getFluidState().isEmpty()) {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Hull floor / displacement check: solid keel/floor below (wy ~ 57.0 to 61.5)
+        boolean hasSolidFloorBelow = false;
+        for (double wy = 57.0; wy <= 61.5; wy += 0.75) {
+            worldProbe.set(wx, wy, wz);
+            pose.transformPositionInverse(worldProbe, localProbe);
+            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+            if (subLevelWorld.hasChunkAt(subProbePos)) {
+                BlockState state = subLevelWorld.getBlockState(subProbePos);
+                if (!state.isAir() && state.getFluidState().isEmpty()) {
+                    hasSolidFloorBelow = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasSolidFloorBelow) {
+            return false;
+        }
+
+        // 3. Enclosed above by deck/roof (wy ~ 63.5 to 67.0)
+        for (double wy = 63.5; wy <= 67.0; wy += 1.0) {
+            worldProbe.set(wx, wy, wz);
+            pose.transformPositionInverse(worldProbe, localProbe);
+            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+            if (subLevelWorld.hasChunkAt(subProbePos)) {
+                BlockState state = subLevelWorld.getBlockState(subProbePos);
+                if (!state.isAir() && state.getFluidState().isEmpty()) {
+                    return true;
+                }
+            }
+        }
+
+        // 4. Enclosed horizontally by hull walls
+        worldProbe.set(wx, 62.5, wz);
+        pose.transformPositionInverse(worldProbe, localProbe);
+        int lx = Mth.floor(localProbe.x);
+        int ly = Mth.floor(localProbe.y);
+        int lz = Mth.floor(localProbe.z);
+
+        boolean wallNegX = false, wallPosX = false, wallNegZ = false, wallPosZ = false;
+        for (int d = 1; d <= 7; d++) {
+            if (!wallNegX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))) wallNegX = true;
+            if (!wallPosX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly, lz))) wallPosX = true;
+            if (!wallNegZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz - d))) wallNegZ = true;
+            if (!wallPosZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz + d))) wallPosZ = true;
+        }
+
+        return (wallNegX && wallPosX) || (wallNegZ && wallPosZ) || (wallNegX && wallPosZ) || (wallPosX && wallNegZ);
+    }
+
+    private static boolean isSolidSubBlock(Level level, BlockPos pos) {
+        if (!level.hasChunkAt(pos)) return false;
+        BlockState state = level.getBlockState(pos);
+        return !state.isAir() && state.getFluidState().isEmpty();
     }
 }
