@@ -1,6 +1,7 @@
 package com.serenesailing;
 
 import com.serenesailing.config.SailingConfig;
+import com.serenesailing.config.SereneSailingClientConfig;
 import com.serenesailing.registry.ModBlockEntities;
 import com.serenesailing.registry.ModBlocks;
 import com.serenesailing.registry.ModCreativeModeTabs;
@@ -29,6 +30,7 @@ public class SereneSailing {
 
         // Register configuration
         ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.COMMON, SailingConfig.SPEC);
+        ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.CLIENT, SereneSailingClientConfig.SPEC);
 
         modEventBus.addListener(this::commonSetup);
 
