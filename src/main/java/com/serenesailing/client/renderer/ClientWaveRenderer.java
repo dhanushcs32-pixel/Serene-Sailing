@@ -433,10 +433,11 @@ public class ClientWaveRenderer {
         double dirX2 = Math.cos(angle2), dirZ2 = Math.sin(angle2);
         double dirX3 = Math.cos(angle3), dirZ3 = Math.sin(angle3);
 
+        double activeWaveScale = GerstnerWaveEngine.getActiveWaveScale(stormIntensity);
         double stormScale = stormIntensity > 0.4 ? (1.0 + (stormIntensity - 0.4) * 0.8) : 1.0;
-        double amp1 = (0.12 * stormIntensity + 0.035) * stormScale;
-        double amp2 = (0.07 * stormIntensity + 0.020) * stormScale;
-        double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale;
+        double amp1 = (0.12 * stormIntensity + 0.035) * stormScale * activeWaveScale;
+        double amp2 = (0.07 * stormIntensity + 0.020) * stormScale * activeWaveScale;
+        double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale * activeWaveScale;
 
         // --- Sable Sub-Level Hull Masking ---
         // Identify all grid cells overlapping assembled ClientSubLevel ship hulls or interior displaced holds
@@ -644,7 +645,7 @@ public class ClientWaveRenderer {
         // Unlocked Full Wave Rise AND Drop (Troughs):
         // Elevated interior reference surface with safe floor prevents clipping underneath vanilla 62.88 water
         // while exhibiting deep drops into troughs and dramatic rises into peaks!
-        float interiorBaseY = VANILLA_WATER_TOP_Y + 0.18f + (float) (0.22 * stormIntensity);
+        float interiorBaseY = VANILLA_WATER_TOP_Y + (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
         float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
 
         for (int gx = 0; gx < cachedGridDim; gx++) {
