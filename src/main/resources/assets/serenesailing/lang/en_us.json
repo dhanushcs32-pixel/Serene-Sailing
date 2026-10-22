@@ -14,5 +14,13 @@
   "serenesailing.point_of_sail.close_hauled": "Close-Hauled",
   "serenesailing.point_of_sail.beam_reach": "Beam Reach",
   "serenesailing.point_of_sail.broad_reach": "Broad Reach",
-  "serenesailing.point_of_sail.running": "Running / Dead Downwind"
+  "serenesailing.point_of_sail.running": "Running / Dead Downwind",
+  "serenesailing.options.calmWaveAggressiveness": "Calm Wave Aggressiveness: %s%%",
+  "serenesailing.options.stormWaveAggressiveness": "Storm Wave Aggressiveness: %s%%",
+  "serenesailing.configuration.title": "Serene Sailing Configuration",
+  "serenesailing.configuration.section.wave_settings": "Wave Settings",
+  "serenesailing.configuration.calmWaveAggressiveness": "Calm Wave Aggressiveness",
+  "serenesailing.configuration.calmWaveAggressiveness.tooltip": "Linearly scales wave amplitude, choppiness, and crest-to-trough variation during calm and normal sailing weather.",
+  "serenesailing.configuration.stormWaveAggressiveness": "Storm Wave Aggressiveness",
+  "serenesailing.configuration.stormWaveAggressiveness.tooltip": "Linearly scales wave amplitude, choppiness, crest sharpness, and rogue-wave variation during stormy weather."
 }
