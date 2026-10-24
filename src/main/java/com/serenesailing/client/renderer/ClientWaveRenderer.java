@@ -17,6 +17,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
@@ -28,6 +29,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
@@ -40,6 +42,8 @@ import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -86,6 +90,8 @@ public class ClientWaveRenderer {
     private static float[][] cachedShoreDist = new float[0][0];
     private static int[][] cachedBiomeColor = new int[0][0];
     private static float[][] cachedBiomeMultiplier = new float[0][0];
+    private static byte[][] cachedSkyLight = new byte[0][0];
+    private static byte[][] cachedBlockLight = new byte[0][0];
 
     private static int cachedCenterX = Integer.MIN_VALUE;
     private static int cachedCenterZ = Integer.MIN_VALUE;
@@ -136,6 +142,8 @@ public class ClientWaveRenderer {
             cachedShoreDist = new float[cachedGridDim][cachedGridDim];
             cachedBiomeColor = new int[cachedGridDim][cachedGridDim];
             cachedBiomeMultiplier = new float[cachedGridDim][cachedGridDim];
+            cachedSkyLight = new byte[cachedGridDim][cachedGridDim];
+            cachedBlockLight = new byte[cachedGridDim][cachedGridDim];
             cachedCenterX = Integer.MIN_VALUE;
             cachedCenterZ = Integer.MIN_VALUE;
             lastCacheUpdateTick = -1L;
@@ -181,6 +189,8 @@ public class ClientWaveRenderer {
                             isShallowWater[gx][gz] = false;
                             cachedShoreDist[gx][gz] = 99.0f;
                             cachedBiomeMultiplier[gx][gz] = 1.0f;
+                            cachedSkyLight[gx][gz] = 15;
+                            cachedBlockLight[gx][gz] = 0;
                         }
                     }
                     continue;
@@ -198,6 +208,8 @@ public class ClientWaveRenderer {
                             isShallowWater[gx][gz] = false;
                             cachedShoreDist[gx][gz] = 99.0f;
                             cachedBiomeMultiplier[gx][gz] = 1.0f;
+                            cachedSkyLight[gx][gz] = 15;
+                            cachedBlockLight[gx][gz] = 0;
 
                             // Check if this non-water column at Y=62 is natural beach terrain
                             BlockState state62 = level.getBlockState(probe);
@@ -215,12 +227,18 @@ public class ClientWaveRenderer {
                             isNaturalBeachSeed[gx][gz] = isNaturalShoreBlock(above);
                             cachedShoreDist[gx][gz] = 99.0f;
                             cachedBiomeMultiplier[gx][gz] = 1.0f;
+                            cachedSkyLight[gx][gz] = 15;
+                            cachedBlockLight[gx][gz] = 0;
                             continue;
                         }
 
                         isWaterSurface[gx][gz] = true;
                         isNaturalBeachSeed[gx][gz] = false;
                         cachedBiomeColor[gx][gz] = BiomeColors.getAverageWaterColor(level, probe);
+
+                        // Sample ambient sky and block light factor at water surface (Y = 63)
+                        cachedSkyLight[gx][gz] = (byte) level.getBrightness(LightLayer.SKY, probe);
+                        cachedBlockLight[gx][gz] = (byte) level.getBrightness(LightLayer.BLOCK, probe);
 
                         // Ocean & Deep Ocean 1.25x swell boost (1.0x in coastal/rivers)
                         var biomeHolder = level.getBiome(probe);
@@ -439,8 +457,10 @@ public class ClientWaveRenderer {
         double amp2 = (0.07 * stormIntensity + 0.020) * stormScale * activeWaveScale;
         double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale * activeWaveScale;
 
-        // --- Sable Sub-Level Hull Masking ---
-        // Identify all grid cells overlapping assembled ClientSubLevel ship hulls or interior displaced holds
+        // --- Sable Sub-Level Hull Masking & Wave Attenuation ---
+        // Scan assembled ClientSubLevels and distinguish enclosed ship hulls (hasEnclosedHold)
+        // from flat open rafts (isOpenRaft)
+        List<SubLevelTrack> activeSubLevels = new ArrayList<>();
         boolean[][] maskedByShipHull = new boolean[cachedGridDim][cachedGridDim];
         SubLevelContainer subContainer = SubLevelContainer.getContainer(level);
         if (subContainer instanceof ClientSubLevelContainer clientContainer) {
@@ -457,8 +477,8 @@ public class ClientWaveRenderer {
                 var bounds = subLevel.boundingBox();
                 if (bounds == null) continue;
 
-                if (bounds.maxX() < gridMinX || bounds.minX() > gridMaxX
-                        || bounds.maxZ() < gridMinZ || bounds.minZ() > gridMaxZ) {
+                if (bounds.maxX() < gridMinX - 8.0 || bounds.minX() > gridMaxX + 8.0
+                        || bounds.maxZ() < gridMinZ - 8.0 || bounds.minZ() > gridMaxZ + 8.0) {
                     continue;
                 }
 
@@ -475,19 +495,36 @@ public class ClientWaveRenderer {
                 Level subLevelWorld = subLevel.getLevel();
                 if (subLevelWorld == null) continue;
 
-                int minGX = Math.max(0, (int) Math.floor((bounds.minX() - startX) / CELL_STEP));
-                int maxGX = Math.min(cachedGridDim - 1, (int) Math.floor((bounds.maxX() - startX) / CELL_STEP));
-                int minGZ = Math.max(0, (int) Math.floor((bounds.minZ() - startZ) / CELL_STEP));
-                int maxGZ = Math.min(cachedGridDim - 1, (int) Math.floor((bounds.maxZ() - startZ) / CELL_STEP));
+                double minX = bounds.minX(), maxX = bounds.maxX();
+                double minY = bounds.minY(), maxY = bounds.maxY();
+                double minZ = bounds.minZ(), maxZ = bounds.maxZ();
 
-                for (int gx = minGX; gx <= maxGX; gx++) {
-                    double wx = startX + gx * CELL_STEP + 0.5 * CELL_STEP;
-                    for (int gz = minGZ; gz <= maxGZ; gz++) {
-                        if (maskedByShipHull[gx][gz]) continue;
-                        double wz = startZ + gz * CELL_STEP + 0.5 * CELL_STEP;
+                boolean hasEnclosedHold = checkHasEnclosedHold(subLevel, pose, subLevelWorld,
+                        minX, maxX, minY, maxY, minZ, maxZ,
+                        worldProbe, localProbe, subProbePos);
 
-                        if (isInsideShipHull(subLevel, pose, subLevelWorld, wx, wz, worldProbe, localProbe, subProbePos)) {
-                            maskedByShipHull[gx][gz] = true;
+                activeSubLevels.add(new SubLevelTrack(subLevel, pose, subLevelWorld,
+                        minX, maxX, minY, maxY, minZ, maxZ,
+                        hasEnclosedHold, pose.position()));
+
+                // Strictly for Enclosed Ship Hulls (hasEnclosedHold): mask interior cells so cabin stays 100% dry.
+                // Open rafts NEVER cut quad holes!
+                if (hasEnclosedHold) {
+                    int minGX = Math.max(0, (int) Math.floor((minX - startX) / CELL_STEP));
+                    int maxGX = Math.min(cachedGridDim - 1, (int) Math.floor((maxX - startX) / CELL_STEP));
+                    int minGZ = Math.max(0, (int) Math.floor((minZ - startZ) / CELL_STEP));
+                    int maxGZ = Math.min(cachedGridDim - 1, (int) Math.floor((maxZ - startZ) / CELL_STEP));
+
+                    for (int gx = minGX; gx <= maxGX; gx++) {
+                        double wx = startX + gx * CELL_STEP + 0.5 * CELL_STEP;
+                        for (int gz = minGZ; gz <= maxGZ; gz++) {
+                            if (maskedByShipHull[gx][gz]) continue;
+                            double wz = startZ + gz * CELL_STEP + 0.5 * CELL_STEP;
+
+                            if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, wx, wz,
+                                    worldProbe, localProbe, subProbePos)) {
+                                maskedByShipHull[gx][gz] = true;
+                            }
                         }
                     }
                 }
@@ -497,9 +534,7 @@ public class ClientWaveRenderer {
         int vertDim = cachedGridDim + 1;
 
         // Boundary Vertex Pinning: A corner vertex is interior ONLY if all 4 adjacent
-        // 1x1 cells are open water AND not masked by a ship hull!
-        // Vertices adjacent to masked ship hull cells become pinned boundary vertices (height 62.890f),
-        // preventing wave mesh penetration into the wooden hull planks.
+        // 1x1 cells are open water AND not masked by an enclosed ship cabin!
         boolean[][] isInterior = new boolean[vertDim][vertDim];
         for (int vi = 1; vi < cachedGridDim; vi++) {
             for (int vj = 1; vj < cachedGridDim; vj++) {
@@ -509,6 +544,18 @@ public class ClientWaveRenderer {
                         && isWaterSurface[vi][vj] && !maskedByShipHull[vi][vj]) {
                     isInterior[vi][vj] = true;
                 }
+            }
+        }
+
+        // Sample ambient sky and block light at water surface (Y = 63) to match vanilla water lighting
+        int skyDarken = level.getSkyDarken();
+        float[][] cellLightFactor = new float[cachedGridDim][cachedGridDim];
+        for (int gx = 0; gx < cachedGridDim; gx++) {
+            for (int gz = 0; gz < cachedGridDim; gz++) {
+                int sky = Math.max(0, (cachedSkyLight[gx][gz] & 0xFF) - skyDarken);
+                int rawLight = Math.max(cachedBlockLight[gx][gz] & 0xFF, sky);
+                float bright = LightTexture.getBrightness(level.dimensionType(), rawLight);
+                cellLightFactor[gx][gz] = Mth.clamp(bright, 0.18f, 1.0f);
             }
         }
 
@@ -573,14 +620,80 @@ public class ClientWaveRenderer {
         }
 
         float[][] waveOffset = new float[vertDim][vertDim];
+        float[][] vertFinalY = new float[vertDim][vertDim];
+        float[][] vertLight = new float[vertDim][vertDim];
+        float[][] vertHullFeather = new float[vertDim][vertDim];
+        boolean[][] vertRaftControlled = new boolean[vertDim][vertDim];
+
+        float interiorBaseY = VANILLA_WATER_TOP_Y + (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
+        float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
 
         for (int vi = 0; vi < vertDim; vi++) {
             double vx = startX + vi * CELL_STEP;
             for (int vj = 0; vj < vertDim; vj++) {
-                if (!isInterior[vi][vj]) {
+                double vz = startZ + vj * CELL_STEP;
+
+                // Vertex ambient light factor
+                float l00 = (vi > 0 && vj > 0) ? cellLightFactor[vi - 1][vj - 1] : 1.0f;
+                float l01 = (vi > 0 && vj < cachedGridDim) ? cellLightFactor[vi - 1][vj] : 1.0f;
+                float l10 = (vi < cachedGridDim && vj > 0) ? cellLightFactor[vi][vj - 1] : 1.0f;
+                float l11 = (vi < cachedGridDim && vj < cachedGridDim) ? cellLightFactor[vi][vj] : 1.0f;
+                vertLight[vi][vj] = (l00 + l01 + l10 + l11) * 0.25f;
+
+                // Hull feather factor & raft waterline targeting
+                float hullFeather = 1.0f;
+                float targetWaterlineY = Float.NaN;
+                boolean isRaftControlled = false;
+
+                for (SubLevelTrack track : activeSubLevels) {
+                    double dx = Math.max(0.0, Math.max(track.minX - vx, vx - track.maxX));
+                    double dz = Math.max(0.0, Math.max(track.minZ - vz, vz - track.maxZ));
+                    double distOutside = Math.hypot(dx, dz);
+
+                    if (track.hasEnclosedHold) {
+                        // Enclosed Ship Hull: smooth feather ramp (0.25 at hull plank to 1.0 at 3.0 blocks away)
+                        if (distOutside < 3.0) {
+                            float f = Mth.clamp(0.25f + 0.75f * (float) (distOutside / 3.0), 0.25f, 1.0f);
+                            if (f < hullFeather) {
+                                hullFeather = f;
+                            }
+                        }
+                    } else {
+                        // Flat Open Raft: feather from 0.0 at raft center to 1.0 at 3.5 blocks outside raft footprint
+                        if (distOutside < 3.5) {
+                            double centerX = (track.minX + track.maxX) * 0.5;
+                            double centerZ = (track.minZ + track.maxZ) * 0.5;
+                            double halfExtX = Math.max(0.5, (track.maxX - track.minX) * 0.5);
+                            double halfExtZ = Math.max(0.5, (track.maxZ - track.minZ) * 0.5);
+                            double maxHalf = Math.max(halfExtX, halfExtZ);
+                            double distCenter = Math.hypot(vx - centerX, vz - centerZ);
+
+                            float f;
+                            if (distOutside > 0.0) {
+                                f = (float) (0.35 + 0.65 * (distOutside / 3.5));
+                            } else {
+                                float normInside = Mth.clamp((float) (distCenter / maxHalf), 0.0f, 1.0f);
+                                f = 0.35f * normInside;
+                            }
+                            f = Mth.clamp(f, 0.0f, 1.0f);
+
+                            if (f < hullFeather) {
+                                hullFeather = f;
+                                targetWaterlineY = (float) (track.shipPos.y() - 0.12);
+                                isRaftControlled = true;
+                            }
+                        }
+                    }
+                }
+
+                vertHullFeather[vi][vj] = hullFeather;
+                vertRaftControlled[vi][vj] = isRaftControlled;
+
+                if (!isInterior[vi][vj] && !isRaftControlled) {
+                    vertFinalY[vi][vj] = PINNED_WATER_Y;
                     continue; // Pinned boundary vertex, height stays 62.890f
                 }
-                double vz = startZ + vj * CELL_STEP;
+
                 double baseWave = GerstnerWaveEngine.evaluateWaveOffset(
                         vx, vz, renderTime, stormIntensity, windDirX, windDirZ);
                 double chop1 = Math.sin(0.5712 * (dirX1 * vx + dirZ1 * vz) - 2.367 * renderTime) * amp1;
@@ -603,7 +716,17 @@ public class ClientWaveRenderer {
                     h += 0.065f * surfRibbon;
                 }
 
+                // Attenuate local wave height h near rafts and enclosed hulls
+                h *= hullFeather;
                 waveOffset[vi][vj] = (float) h;
+
+                float openWaterY = Math.max(safeFloor, interiorBaseY + (float) h);
+                if (isRaftControlled) {
+                    // Linearly blend between raft deck waterline and open water over the 3.5 block radius
+                    vertFinalY[vi][vj] = Mth.lerp(hullFeather, targetWaterlineY, openWaterY);
+                } else {
+                    vertFinalY[vi][vj] = openWaterY;
+                }
             }
         }
 
@@ -642,12 +765,6 @@ public class ClientWaveRenderer {
         lightDirY /= lLen;
         lightDirZ /= lLen;
 
-        // Unlocked Full Wave Rise AND Drop (Troughs):
-        // Elevated interior reference surface with safe floor prevents clipping underneath vanilla 62.88 water
-        // while exhibiting deep drops into troughs and dramatic rises into peaks!
-        float interiorBaseY = VANILLA_WATER_TOP_Y + (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
-        float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
-
         for (int gx = 0; gx < cachedGridDim; gx++) {
             for (int gz = 0; gz < cachedGridDim; gz++) {
                 if (!isWaterSurface[gx][gz] || maskedByShipHull[gx][gz]) {
@@ -669,31 +786,34 @@ public class ClientWaveRenderer {
                 boolean int11 = isInterior[gx + 1][gz + 1];
                 boolean int10 = isInterior[gx + 1][gz];
 
-                // Interior water vertices undulate smoothly above and below interiorBaseY; boundary vertices pin to 62.890f
-                float y00 = int00 ? Math.max(safeFloor, interiorBaseY + h00) : PINNED_WATER_Y;
-                float y01 = int01 ? Math.max(safeFloor, interiorBaseY + h01) : PINNED_WATER_Y;
-                float y11 = int11 ? Math.max(safeFloor, interiorBaseY + h11) : PINNED_WATER_Y;
-                float y10 = int10 ? Math.max(safeFloor, interiorBaseY + h10) : PINNED_WATER_Y;
+                boolean raft00 = vertRaftControlled[gx][gz];
+                boolean raft01 = vertRaftControlled[gx][gz + 1];
+                boolean raft11 = vertRaftControlled[gx + 1][gz + 1];
+                boolean raft10 = vertRaftControlled[gx + 1][gz];
+
+                float y00 = (int00 || raft00) ? vertFinalY[gx][gz] : PINNED_WATER_Y;
+                float y01 = (int01 || raft01) ? vertFinalY[gx][gz + 1] : PINNED_WATER_Y;
+                float y11 = (int11 || raft11) ? vertFinalY[gx + 1][gz + 1] : PINNED_WATER_Y;
+                float y10 = (int10 || raft10) ? vertFinalY[gx + 1][gz] : PINNED_WATER_Y;
 
                 int biomeColor = cachedBiomeColor[gx][gz];
                 int br = (biomeColor >> 16) & 0xFF;
                 int bg = (biomeColor >> 8) & 0xFF;
                 int bb = biomeColor & 0xFF;
 
-                // 1. Base Ocean Surface Quad (clean ocean water color — no blurry white vertex
-                // halo!)
-                int c00 = computeBaseWaterColor(int00, h00, br, bg, bb,
+                // 1. Base Ocean Surface Quad (clean ocean water color with night light & hull feather)
+                int c00 = computeBaseWaterColor(int00 || raft00, h00, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz0, camPos.x, camPos.z, stormIntensity,
-                        gx, gz, waveOffset);
-                int c01 = computeBaseWaterColor(int01, h01, br, bg, bb,
+                        gx, gz, waveOffset, vertLight[gx][gz], vertHullFeather[gx][gz]);
+                int c01 = computeBaseWaterColor(int01 || raft01, h01, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz1, camPos.x, camPos.z, stormIntensity,
-                        gx, gz + 1, waveOffset);
-                int c11 = computeBaseWaterColor(int11, h11, br, bg, bb,
+                        gx, gz + 1, waveOffset, vertLight[gx][gz + 1], vertHullFeather[gx][gz + 1]);
+                int c11 = computeBaseWaterColor(int11 || raft11, h11, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz1, camPos.x, camPos.z, stormIntensity,
-                        gx + 1, gz + 1, waveOffset);
-                int c10 = computeBaseWaterColor(int10, h10, br, bg, bb,
+                        gx + 1, gz + 1, waveOffset, vertLight[gx + 1][gz + 1], vertHullFeather[gx + 1][gz + 1]);
+                int c10 = computeBaseWaterColor(int10 || raft10, h10, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz0, camPos.x, camPos.z, stormIntensity,
-                        gx + 1, gz, waveOffset);
+                        gx + 1, gz, waveOffset, vertLight[gx + 1][gz], vertHullFeather[gx + 1][gz]);
 
                 if (((c00 | c01 | c11 | c10) >>> 24) == 0) {
                     continue;
@@ -712,8 +832,7 @@ public class ClientWaveRenderer {
                         .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
                         .setUv(u1, v0).setColor(c10);
 
-                // 2. Detached High-Contrast Beach Surf Ribbon Overlay (0.5m sub-quad resolution
-                // for thin crisp lines)
+                // 2. Detached High-Contrast Beach Surf Ribbon Overlay
                 float sd00 = vertShoreDist[gx][gz];
                 float sd01 = vertShoreDist[gx][gz + 1];
                 float sd11 = vertShoreDist[gx + 1][gz + 1];
@@ -723,8 +842,11 @@ public class ClientWaveRenderer {
                     float distFromCam = (float) Math.hypot(wx0 - camPos.x, wz0 - camPos.z);
                     float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
                     if (distFade > 0.02f) {
-                        // Subdivide into 2x2 half-block sub-quads so the surf ribbon is thin (0.5m) and
-                        // curved
+                        float l00 = vertLight[gx][gz];
+                        float l01 = vertLight[gx][gz + 1];
+                        float l11 = vertLight[gx + 1][gz + 1];
+                        float l10 = vertLight[gx + 1][gz];
+
                         for (int sx = 0; sx < 2; sx++) {
                             float fx0 = sx * 0.5f;
                             float fx1 = (sx + 1) * 0.5f;
@@ -751,10 +873,15 @@ public class ClientWaveRenderer {
                                 double swz0 = wz0 + fz0;
                                 double swz1 = wz0 + fz1;
 
-                                int fc00 = packSurfFoamColor(f00 * distFade);
-                                int fc01 = packSurfFoamColor(f01 * distFade);
-                                int fc11 = packSurfFoamColor(f11 * distFade);
-                                int fc10 = packSurfFoamColor(f10 * distFade);
+                                float subLight00 = bilerp(l00, l10, l01, l11, fx0, fz0);
+                                float subLight01 = bilerp(l00, l10, l01, l11, fx0, fz1);
+                                float subLight11 = bilerp(l00, l10, l01, l11, fx1, fz1);
+                                float subLight10 = bilerp(l00, l10, l01, l11, fx1, fz0);
+
+                                int fc00 = packSurfFoamColor(f00 * distFade, subLight00);
+                                int fc01 = packSurfFoamColor(f01 * distFade, subLight01);
+                                int fc11 = packSurfFoamColor(f11 * distFade, subLight11);
+                                int fc10 = packSurfFoamColor(f10 * distFade, subLight10);
 
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy00 - camPos.y),
@@ -804,19 +931,20 @@ public class ClientWaveRenderer {
     }
 
     /**
-     * Packs crisp bright white surf color (R=250, G=253, B=255) with sharp alpha
-     * threshold
-     * so the surf ribbon reads as an opaque white line on top of the water rather
-     * than a dark-blue tint.
+     * Packs crisp white surf color scaled by ambient light factor so breaking surf ribbons
+     * blend naturally into night ambient darkness rather than glowing unnaturally.
      */
-    private static int packSurfFoamColor(float strength) {
+    private static int packSurfFoamColor(float strength, float lightFactor) {
         if (strength <= 0.01f) {
             return 0;
         }
         // Sharpen contrast so core of ribbon is bright opaque white
         float crisp = Mth.clamp((strength - 0.12f) / 0.65f, 0.0f, 1.0f);
         int a = (int) (crisp * 235.0f);
-        return ((a & 0xFF) << 24) | (250 << 16) | (253 << 8) | 255;
+        int r = (int) Mth.clamp(250.0f * lightFactor, 0.0f, 255.0f);
+        int g = (int) Mth.clamp(253.0f * lightFactor, 0.0f, 255.0f);
+        int b = (int) Mth.clamp(255.0f * lightFactor, 0.0f, 255.0f);
+        return ((a & 0xFF) << 24) | (r << 16) | (g << 8) | b;
     }
 
     private static int computeBaseWaterColor(boolean isInterior, float h,
@@ -824,7 +952,8 @@ public class ClientWaveRenderer {
             float lightDirX, float lightDirY, float lightDirZ,
             double wx, double wz, double camX, double camZ,
             double stormIntensity,
-            int vi, int vj, float[][] waveOffset) {
+            int vi, int vj, float[][] waveOffset,
+            float lightFactor, float hullFeather) {
         float distFromCam = (float) Math.hypot(wx - camX, wz - camZ);
         float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
         if (distFade <= 0.005f) {
@@ -833,9 +962,12 @@ public class ClientWaveRenderer {
 
         if (!isInterior) {
             // Shoreline / Dock boundary vertex:
-            // Pure biome water color, smooth alpha (160 * distFade)
-            int a = (int) (160.0f * distFade);
-            return ((a & 0xFF) << 24) | ((br & 0xFF) << 16) | ((bg & 0xFF) << 8) | (bb & 0xFF);
+            // Biome water color multiplied by ambient lightFactor, smooth alpha (150 * distFade)
+            int a = (int) (150.0f * distFade);
+            int r = (int) Mth.clamp(br * lightFactor, 0, 255);
+            int g = (int) Mth.clamp(bg * lightFactor, 0, 255);
+            int b = (int) Mth.clamp(bb * lightFactor, 0, 255);
+            return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
         }
 
         // Compute local slope normal
@@ -852,20 +984,23 @@ public class ClientWaveRenderer {
         float nz = -dh_dz / normLen;
 
         float dot = nx * lightDirX + ny * lightDirY + nz * lightDirZ;
-        float slopeFactor = Mth.clamp(0.85f + 0.30f * dot, 0.78f, 1.18f);
+        // Calibrated baseline from 0.78f down to 0.72f for zero color seam against vanilla water
+        float slopeFactor = Mth.clamp(0.85f + 0.30f * dot, 0.72f, 1.18f);
 
-        int r = (int) Mth.clamp(br * slopeFactor, 0, 255);
-        int g = (int) Mth.clamp(bg * slopeFactor, 0, 255);
-        int b = (int) Mth.clamp(bb * slopeFactor, 0, 255);
+        int r = (int) Mth.clamp(br * slopeFactor * lightFactor, 0, 255);
+        int g = (int) Mth.clamp(bg * slopeFactor * lightFactor, 0, 255);
+        int b = (int) Mth.clamp(bb * slopeFactor * lightFactor, 0, 255);
 
-        int a = (int) (185.0f * distFade);
+        // Alpha smoothly blends from 150 near hull boundaries (hullFeather -> 0) up to 185 in open ocean
+        float baseAlpha = Mth.lerp(hullFeather, 150.0f, 185.0f);
+        int a = (int) (baseAlpha * distFade);
 
         // Steep storm peak foam (only during active storms: stormIntensity > 0.5)
         if (stormIntensity > 0.5 && h > 0.36f) {
             float stormFoam = Mth.clamp((h - 0.36f) / 0.32f, 0.0f, 1.0f) * (float) ((stormIntensity - 0.5) / 0.5);
-            r = (int) Mth.lerp(stormFoam, r, 230);
-            g = (int) Mth.lerp(stormFoam, g, 245);
-            b = (int) Mth.lerp(stormFoam, b, 255);
+            r = (int) Mth.lerp(stormFoam, r, (int) (230 * lightFactor));
+            g = (int) Mth.lerp(stormFoam, g, (int) (245 * lightFactor));
+            b = (int) Mth.lerp(stormFoam, b, (int) (255 * lightFactor));
             a = (int) Math.min(235, a + stormFoam * 40.0f);
         }
 
@@ -1088,29 +1223,55 @@ public class ClientWaveRenderer {
     }
 
     /**
-     * Checks if a world grid point (wx, wz) is inside an assembled ClientSubLevel ship hull,
-     * displaced cabin hold, or directly intersects hull planking at the waterline.
+     * Helper record tracking an active ClientSubLevel overlapping the render grid,
+     * whether it has a fully enclosed below-waterline hold, and its current world position.
      */
-    private static boolean isInsideShipHull(ClientSubLevel subLevel, Pose3dc pose,
-                                            Level subLevelWorld, double wx, double wz,
-                                            Vector3d worldProbe, Vector3d localProbe,
-                                            BlockPos.MutableBlockPos subProbePos) {
-        // 1. Waterline check: if there is a non-air block at the waterline (wy ~ 61.5 to 63.5)
-        for (double wy = 61.5; wy <= 63.5; wy += 0.5) {
-            worldProbe.set(wx, wy, wz);
-            pose.transformPositionInverse(worldProbe, localProbe);
-            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-            if (subLevelWorld.hasChunkAt(subProbePos)) {
-                BlockState state = subLevelWorld.getBlockState(subProbePos);
-                if (!state.isAir() && state.getFluidState().isEmpty()) {
+    private record SubLevelTrack(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
+                                 double minX, double maxX, double minY, double maxY, double minZ, double maxZ,
+                                 boolean hasEnclosedHold, Vector3dc shipPos) {}
+
+    /**
+     * Determines if a sub-level has an enclosed interior hold by checking vertical height span >= 2.8 blocks
+     * and presence of an enclosed cavity below waterline with solid floor, deck/ceiling, and 4 enclosing walls.
+     */
+    private static boolean checkHasEnclosedHold(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
+                                                double minX, double maxX, double minY, double maxY, double minZ, double maxZ,
+                                                Vector3d worldProbe, Vector3d localProbe,
+                                                BlockPos.MutableBlockPos subProbePos) {
+        double heightSpan = maxY - minY;
+        if (heightSpan < 2.8) {
+            return false;
+        }
+        int minSampleX = (int) Math.floor(minX + 1.0);
+        int maxSampleX = (int) Math.floor(maxX - 1.0);
+        int minSampleZ = (int) Math.floor(minZ + 1.0);
+        int maxSampleZ = (int) Math.floor(maxZ - 1.0);
+        if (maxSampleX < minSampleX || maxSampleZ < minSampleZ) {
+            return false;
+        }
+        for (int sx = minSampleX; sx <= maxSampleX; sx += 2) {
+            for (int sz = minSampleZ; sz <= maxSampleZ; sz += 2) {
+                if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, sx + 0.5, sz + 0.5,
+                        worldProbe, localProbe, subProbePos)) {
                     return true;
                 }
             }
         }
+        return false;
+    }
 
-        // 2. Hull floor / displacement check: solid keel/floor below (wy ~ 57.0 to 61.5)
+    /**
+     * Checks if a world grid point (wx, wz) is strictly inside an assembled ClientSubLevel enclosed ship hold.
+     * Requires solid floor below (wy ~ 57.0 to 61.2), solid ceiling/deck above (wy ~ 63.8 to 68.0),
+     * and solid enclosing hull walls in all 4 cardinal directions.
+     */
+    private static boolean isInsideShipEnclosedHold(ClientSubLevel subLevel, Pose3dc pose,
+                                                    Level subLevelWorld, double wx, double wz,
+                                                    Vector3d worldProbe, Vector3d localProbe,
+                                                    BlockPos.MutableBlockPos subProbePos) {
+        // 1. Keel/Floor check: solid floor below (wy ~ 57.0 to 61.2)
         boolean hasSolidFloorBelow = false;
-        for (double wy = 57.0; wy <= 61.5; wy += 0.75) {
+        for (double wy = 57.0; wy <= 61.2; wy += 0.75) {
             worldProbe.set(wx, wy, wz);
             pose.transformPositionInverse(worldProbe, localProbe);
             subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
@@ -1122,25 +1283,29 @@ public class ClientWaveRenderer {
                 }
             }
         }
-
         if (!hasSolidFloorBelow) {
             return false;
         }
 
-        // 3. Enclosed above by deck/roof (wy ~ 63.5 to 67.0)
-        for (double wy = 63.5; wy <= 67.0; wy += 1.0) {
+        // 2. Ceiling / deck check: enclosed above by deck/roof (wy ~ 63.8 to 68.0)
+        boolean hasSolidCeilingAbove = false;
+        for (double wy = 63.8; wy <= 68.0; wy += 0.75) {
             worldProbe.set(wx, wy, wz);
             pose.transformPositionInverse(worldProbe, localProbe);
             subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
             if (subLevelWorld.hasChunkAt(subProbePos)) {
                 BlockState state = subLevelWorld.getBlockState(subProbePos);
                 if (!state.isAir() && state.getFluidState().isEmpty()) {
-                    return true;
+                    hasSolidCeilingAbove = true;
+                    break;
                 }
             }
         }
+        if (!hasSolidCeilingAbove) {
+            return false;
+        }
 
-        // 4. Enclosed horizontally by hull walls
+        // 3. Enclosed horizontally on all 4 sides by hull walls at wy = 62.5
         worldProbe.set(wx, 62.5, wz);
         pose.transformPositionInverse(worldProbe, localProbe);
         int lx = Mth.floor(localProbe.x);
@@ -1148,14 +1313,14 @@ public class ClientWaveRenderer {
         int lz = Mth.floor(localProbe.z);
 
         boolean wallNegX = false, wallPosX = false, wallNegZ = false, wallPosZ = false;
-        for (int d = 1; d <= 7; d++) {
+        for (int d = 1; d <= 8; d++) {
             if (!wallNegX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))) wallNegX = true;
             if (!wallPosX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly, lz))) wallPosX = true;
             if (!wallNegZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz - d))) wallNegZ = true;
             if (!wallPosZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz + d))) wallPosZ = true;
         }
 
-        return (wallNegX && wallPosX) || (wallNegZ && wallPosZ) || (wallNegX && wallPosZ) || (wallPosX && wallNegZ);
+        return wallNegX && wallPosX && wallNegZ && wallPosZ;
     }
 
     private static boolean isSolidSubBlock(Level level, BlockPos pos) {
