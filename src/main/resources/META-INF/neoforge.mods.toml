@@ -8,6 +8,7 @@ issueTrackerURL = ""
 modId = "${mod_id}"
 version = "${mod_version}"
 displayName = "${mod_name}"
+authors = "${mod_authors}"
 description = '''
 Adds sails, rudders, and wind-driven propulsion for ship-building on top of
 Sable's physics sub-levels and Create Aeronautics' contraption framework.
@@ -19,14 +20,14 @@ Part of the Serene Sailing modpack project.
 [[mixins]]
     config = "serenesailing.mixins.json"
 
-[[dependencies.'${mod_id}']]
+[[dependencies.serenesailing]]
     modId = "neoforge"
     type = "required"
-    versionRange = "${loader_version_range}"
+    versionRange = "${neo_version_range}"
     ordering = "NONE"
     side = "BOTH"
 
-[[dependencies.'${mod_id}']]
+[[dependencies.serenesailing]]
     modId = "minecraft"
     type = "required"
     versionRange = "${minecraft_version_range}"
@@ -34,25 +35,33 @@ Part of the Serene Sailing modpack project.
     side = "BOTH"
 
 # Hard dependency: Sable sub-level physics drives Aeronautics vessels.
-[[dependencies.'${mod_id}']]
+[[dependencies.serenesailing]]
     modId = "sable"
     type = "required"
     versionRange = "[2.0.0,)"
-    ordering = "AFTER"
+    ordering = "NONE"
     side = "BOTH"
 
 # Hard dependency: base Create.
-[[dependencies.'${mod_id}']]
+[[dependencies.serenesailing]]
     modId = "create"
     type = "required"
     versionRange = "[6.0.0,)"
-    ordering = "AFTER"
+    ordering = "NONE"
     side = "BOTH"
 
 # Hard dependency: Aeronautics Physics Assembler assembles our ships.
-[[dependencies.'${mod_id}']]
+[[dependencies.serenesailing]]
     modId = "aeronautics"
     type = "required"
     versionRange = "[1.0.0,)"
-    ordering = "AFTER"
+    ordering = "NONE"
+    side = "BOTH"
+
+# Optional: Weather2 wind and storms integration
+[[dependencies.serenesailing]]
+    modId = "weather2"
+    type = "optional"
+    versionRange = "[1.21.0,)"
+    ordering = "NONE"
     side = "BOTH"
