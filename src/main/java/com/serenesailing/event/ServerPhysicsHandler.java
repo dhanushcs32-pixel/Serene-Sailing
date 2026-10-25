@@ -366,6 +366,21 @@ public class ServerPhysicsHandler {
         double rawMeanWaveOffset = (offsetBow + offsetStern + offsetPort + offsetStarboard) * 0.25;
         double attenuatedWaveOffset = isCalmWeather ? 0.0 : (rawMeanWaveOffset * heaveAttenuation);
 
+        // 3-point longitudinal keel slope sampling (Bow, Midships, Stern) for surge/sway wave slope dynamics
+        var waveState = GerstnerWaveEngine.getDimensionState(level);
+        Vector3d slopeBow = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
+                bowPos.x, bowPos.z, time * 0.05, stormIntensity,
+                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
+        Vector3d slopeMid = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
+                hullCenterWorld.x, hullCenterWorld.z, time * 0.05, stormIntensity,
+                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
+        Vector3d slopeStern = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
+                sternPos.x, sternPos.z, time * 0.05, stormIntensity,
+                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
+
+        double avgSlopeX = (slopeBow.x + slopeMid.x + slopeStern.x) / 3.0;
+        double avgSlopeZ = (slopeBow.z + slopeMid.z + slopeStern.z) / 3.0;
+
         double meanWaterSurfaceY = baseWaterSurfaceY;
         if (isCalmWeather) {
             // Calm-Weather Deadzone: static integer water surface (63.0) when afloat
@@ -527,18 +542,64 @@ public class ServerPhysicsHandler {
                     !hasActiveThrust, activeHelmAngle, dt, massScale, dragForceMag, localRight);
         }
 
+        // ---- Wave-Slope Surge/Sway Decomposition & Anti-Stall Decoupling ----
+        if (!anchored && afloat && hasActiveWaves) {
+            Vector3d waveSlopeForceWorld = new Vector3d(
+                    -totalMass * 9.81 * avgSlopeX * heaveAttenuation,
+                    0.0,
+                    -totalMass * 9.81 * avgSlopeZ * heaveAttenuation
+            );
+            Vector3d waveSlopeForceLocal = pose.transformNormalInverse(waveSlopeForceWorld, new Vector3d());
+            double surgeForce = waveSlopeForceLocal.dot(localForward); // positive = forward push, negative = opposing
+            double swayForce = waveSlopeForceLocal.dot(localRight);
+
+            // Never allow opposing wave slopes to act as a brick wall against forward motion
+            if (surgeForce < 0.0) {
+                if ((hasActiveThrust && thrustMag > 1.0) || fwdSpeed > 0.15) {
+                    // Attenuate opposing longitudinal wave-slope force by 88%
+                    surgeForce *= 0.12;
+                    // Hard-clamp maximum opposing wave-slope retardation to at most 15% of active forward sail thrust
+                    double maxRetardation = Math.max(0.0, 0.15 * thrustMag);
+                    if (-surgeForce > maxRetardation) {
+                        surgeForce = -maxRetardation;
+                    }
+                }
+            }
+            // Downhill / surfing assistance (surgeForce >= 0) is fully preserved
+
+            Vector3d filteredSlopeForceLocal = new Vector3d(localForward).mul(surgeForce)
+                    .add(new Vector3d(localRight).mul(swayForce));
+            Vector3d slopeImpulseLocal = filteredSlopeForceLocal.mul(dt * massScale);
+            body.applyLinearAndAngularImpulse(slopeImpulseLocal, new Vector3d(), true);
+        }
+
         // ---- Storm Wave Orbital Push (Stokes Drift) -------------------------
         // During storms (S > 0.4), apply a horizontal Stokes wave drift force along wave propagation direction
         if (!anchored && stormIntensity > 0.4 && afloat) {
-            var waveState = GerstnerWaveEngine.getDimensionState(level);
             double stokesForceMag = (stormIntensity - 0.4) * 350.0 * Math.sqrt(totalMass / 1000.0);
             Vector3d stokesForceWorld = new Vector3d(
                     waveState.smoothedWindDirX * stokesForceMag,
                     0.0,
                     waveState.smoothedWindDirZ * stokesForceMag
             );
-            Vector3d stokesImpulseLocal = pose.transformNormalInverse(stokesForceWorld, new Vector3d())
-                    .mul(dt * massScale);
+            Vector3d stokesLocal = pose.transformNormalInverse(stokesForceWorld, new Vector3d());
+            double stokesSurge = stokesLocal.dot(localForward);
+            double stokesSway = stokesLocal.dot(localRight);
+
+            // Attenuate opposing Stokes drift when the vessel is actively under sail (> 1.0 N thrust)
+            if (hasActiveThrust && thrustMag > 1.0) {
+                if (stokesSurge < 0.0) {
+                    stokesSurge *= 0.12; // 88% attenuation of opposing drift
+                    double maxStokesBrake = 0.10 * thrustMag;
+                    if (-stokesSurge > maxStokesBrake) {
+                        stokesSurge = -maxStokesBrake;
+                    }
+                }
+            }
+
+            Vector3d filteredStokesLocal = new Vector3d(localForward).mul(stokesSurge)
+                    .add(new Vector3d(localRight).mul(stokesSway));
+            Vector3d stokesImpulseLocal = filteredStokesLocal.mul(dt * massScale);
             body.applyLinearAndAngularImpulse(stokesImpulseLocal, new Vector3d(), true);
         }
 
@@ -1434,6 +1495,19 @@ public class ServerPhysicsHandler {
         body.addLinearAndAngularVelocity(
                 new Vector3d(vel.x * (keep - 1.0), 0.0, vel.z * (keep - 1.0)),
                 angVel.mul(keep - 1.0, new Vector3d()));
+    }
+
+    @SubscribeEvent
+    public static void onLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
+        if (event.getLevel() instanceof ServerLevel) {
+            STEERING_CACHE.clear();
+            STEERING_CACHE_STEP.clear();
+            CREAK_COOLDOWN.clear();
+            HELM_ANGLE_CACHE.clear();
+            VESSEL_VELOCITY_CACHE.clear();
+            FORWARD_SPEED_CACHE.clear();
+            PHYS_DEBUG_TICK.clear();
+        }
     }
 }
 
