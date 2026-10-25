@@ -1,5 +1,6 @@
 package com.serenesailing.physics;
 
+import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -146,5 +147,129 @@ public class RaftPropagationUnitTest {
                 "Rudder must produce non-zero turning torque at low speeds via inflow floor.");
         System.out.printf("[JUnit Propagation] Low-Speed Yaw Torque: %.2f Nm | Force: %.2f N%n",
                 result.torque().y, result.force().length());
+    }
+
+    @Test
+    @DisplayName("Task 4: Vessel maintains forward speed and never stalls through normal and severe storm waves")
+    public void testVesselMaintainsForwardSpeedThroughStormWaves() {
+        // Test configurations: [mass, sailCount, hullLength, baseThrust]
+        double[][] vessels = {
+                { 1500.0, 3.0, 5.0, 1200.0 },   // Light Raft
+                { 12000.0, 12.0, 24.0, 4800.0 } // Multi-sail Ship
+        };
+
+        // Storm conditions: [stormIntensity, activeWaveScale]
+        double[][] waveConditions = {
+                { 0.25, 1.0 }, // Normal active waves
+                { 1.00, 1.0 }, // Severe storm waves (1.0x scale)
+                { 1.00, 2.0 }  // Severe storm waves (2.0x aggressiveness)
+        };
+
+        // Wave propagation directions:
+        // Heading is North (0, 0, -1)
+        // 1. Oncoming waves: waves propagating South (windDir = 0, 1) directly opposing ship
+        // 2. Cross waves: waves propagating West (windDir = -1, 0)
+        // 3. Following waves: waves propagating North (windDir = 0, -1) with ship
+        Vector3d[] waveDirections = {
+                new Vector3d(0.0, 0.0, 1.0),  // Oncoming
+                new Vector3d(-1.0, 0.0, 0.0), // Cross
+                new Vector3d(0.0, 0.0, -1.0)  // Following
+        };
+
+        double linearMu = 85.0;
+        double quadMu = 35.0;
+
+        for (double[] vessel : vessels) {
+            double mass = vessel[0];
+            double hullLength = vessel[2];
+            double thrust = vessel[3];
+            double hullDragScale = Math.pow(mass / 10000.0, 0.33);
+            double halfLength = hullLength * 0.5;
+
+            // 1. Calculate flat-water cruising speed benchmark over 200 ticks
+            double flatSpeed = 0.0;
+            for (int t = 0; t < 200; t++) {
+                double drag = (linearMu * flatSpeed + quadMu * flatSpeed * flatSpeed) * hullDragScale;
+                double netF = thrust - drag;
+                flatSpeed += (netF / mass) * DELTA_TIME;
+            }
+
+            Assertions.assertTrue(flatSpeed > 2.0, "Flat water cruising speed must be positive.");
+
+            // 2. Test each wave condition and direction
+            for (double[] waveCond : waveConditions) {
+                double stormIntensity = waveCond[0];
+                double waveScale = waveCond[1];
+
+                for (Vector3d waveDir : waveDirections) {
+                    double speed = 0.0;
+                    Vector3d pos = new Vector3d(0.0, 63.0, 0.0);
+                    Vector3d fwd = new Vector3d(0.0, 0.0, -1.0); // Heading North
+
+                    for (int t = 0; t < 200; t++) {
+                        double timeSec = t * DELTA_TIME;
+
+                        // 3-point keel slope sampling (Bow, Mid, Stern)
+                        Vector3d bow = new Vector3d(pos).add(new Vector3d(fwd).mul(halfLength));
+                        Vector3d stern = new Vector3d(pos).sub(new Vector3d(fwd).mul(halfLength));
+
+                        Vector3d sBow = GerstnerWaveEngine.evaluateWaveSlopeAndDrift(bow.x, bow.z, timeSec, stormIntensity, waveDir.x, waveDir.z);
+                        Vector3d sMid = GerstnerWaveEngine.evaluateWaveSlopeAndDrift(pos.x, pos.z, timeSec, stormIntensity, waveDir.x, waveDir.z);
+                        Vector3d sStern = GerstnerWaveEngine.evaluateWaveSlopeAndDrift(stern.x, stern.z, timeSec, stormIntensity, waveDir.x, waveDir.z);
+
+                        double avgSlopeX = (sBow.x + sMid.x + sStern.x) / 3.0 * waveScale;
+                        double avgSlopeZ = (sBow.z + sMid.z + sStern.z) / 3.0 * waveScale;
+
+                        double heaveAtten = 1.0 / (1.0 + (mass / 3200.0));
+                        Vector3d slopeForce = new Vector3d(-mass * 9.81 * avgSlopeX * heaveAtten, 0.0, -mass * 9.81 * avgSlopeZ * heaveAtten);
+
+                        // Decompose into surge (along fwd)
+                        double surgeForce = slopeForce.dot(fwd);
+                        if (surgeForce < 0.0) {
+                            if (thrust > 1.0 || speed > 0.15) {
+                                surgeForce *= 0.12;
+                                double maxRetardation = Math.max(0.0, 0.15 * thrust);
+                                if (-surgeForce > maxRetardation) {
+                                    surgeForce = -maxRetardation;
+                                }
+                            }
+                        }
+
+                        // Stokes drift
+                        double stokesSurge = 0.0;
+                        if (stormIntensity > 0.4) {
+                            double stokesMag = (stormIntensity - 0.4) * 350.0 * Math.sqrt(mass / 1000.0);
+                            Vector3d stokesForce = new Vector3d(waveDir.x * stokesMag, 0.0, waveDir.z * stokesMag);
+                            stokesSurge = stokesForce.dot(fwd);
+                            if (thrust > 1.0 && stokesSurge < 0.0) {
+                                stokesSurge *= 0.12;
+                                double maxStokesBrake = 0.10 * thrust;
+                                if (-stokesSurge > maxStokesBrake) {
+                                    stokesSurge = -maxStokesBrake;
+                                }
+                            }
+                        }
+
+                        double drag = (linearMu * speed + quadMu * speed * speed) * hullDragScale;
+                        double netThrust = thrust + surgeForce + stokesSurge - drag;
+                        speed += (netThrust / mass) * DELTA_TIME;
+
+                        pos.add(new Vector3d(fwd).mul(speed * DELTA_TIME));
+
+                        // Assert speed accelerates and never stalls once underway
+                        if (t > 40) {
+                            Assertions.assertTrue(speed > 0.5,
+                                    String.format("Vessel stalled at tick %d (speed=%.3f m/s) under storm=%.2f", t, speed, stormIntensity));
+                        }
+                    }
+
+                    // Must retain at least 80% of flat-water cruising speed
+                    double speedRatio = speed / flatSpeed;
+                    Assertions.assertTrue(speedRatio >= 0.80,
+                            String.format("Vessel speed ratio %.2f was below 80%% benchmark (speed=%.2f, flat=%.2f) under storm=%.2f",
+                                    speedRatio, speed, flatSpeed, stormIntensity));
+                }
+            }
+        }
     }
 }

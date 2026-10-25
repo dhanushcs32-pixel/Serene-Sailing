@@ -64,7 +64,12 @@ public final class RudderHydrodynamics {
         double effectiveForwardFlow = Math.copySign(Math.max(Math.abs(forwardFlow), floor), forwardFlow);
 
         // Port/Starboard unit vector
-        Vector3d starboardDir = new Vector3d(shipForwardDir).cross(0, 1, 0).normalize();
+        Vector3d starboardDir = new Vector3d(shipForwardDir).cross(0, 1, 0);
+        if (starboardDir.lengthSquared() < 1.0e-6) {
+            starboardDir.set(1.0, 0.0, 0.0);
+        } else {
+            starboardDir.normalize();
+        }
 
         double deflectionRad = Math.toRadians(steeringAngleDeg);
         // Soft direction factor instead of a hard Math.signum: ramps smoothly

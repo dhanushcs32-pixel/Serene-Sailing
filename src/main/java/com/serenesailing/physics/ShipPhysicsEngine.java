@@ -153,9 +153,9 @@ public class ShipPhysicsEngine {
         // (pitchpoling). Lateral heeling torque is computed from the real
         // sail height but clamped so it cannot exceed the righting moment
         // at ~12 degrees of heel, preventing knockdown.
-        if (sailArea > 0 && windVector.lengthSquared() > 0) {
+        if (sailArea > 0 && windVector.lengthSquared() > 1.0e-8) {
             double windSpeed = windVector.length();
-            Vector3d windDir = new Vector3d(windVector).normalize();
+            Vector3d windDir = new Vector3d(windVector).div(windSpeed);
 
             // Align force with sail normal vector: cos(windAngle) clamped to non-negative
             double alignment = Math.max(0.0, windDir.dot(sailNormal));
