@@ -275,6 +275,32 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
     }
 
     @Override
+    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean isMoving) {
+        super.onPlace(state, level, pos, oldState, isMoving);
+        if (!state.is(oldState.getBlock()) && level instanceof ServerLevel serverLevel) {
+            invalidateSubLevelCache(serverLevel, pos);
+        }
+    }
+
+    @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        super.onRemove(state, level, pos, newState, isMoving);
+        if (!state.is(newState.getBlock()) && level instanceof ServerLevel serverLevel) {
+            invalidateSubLevelCache(serverLevel, pos);
+        }
+    }
+
+    private static void invalidateSubLevelCache(ServerLevel serverLevel, BlockPos pos) {
+        SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+        if (container instanceof ServerSubLevelContainer serverContainer) {
+            LevelPlot plot = serverContainer.getPlot(new ChunkPos(pos));
+            if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                com.serenesailing.event.ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+            }
+        }
+    }
+
+    @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
         builder.add(FACING, WATERLOGGED, SAIL_STATE, CANVAS);
     }
