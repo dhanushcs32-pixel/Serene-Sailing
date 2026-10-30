@@ -820,6 +820,70 @@ public class HydrodynamicsFossenMmgTest {
         double crestWaterSurfaceY = staticWaterSurfaceY + clampedCrestOffset;
         assertEquals(64.8, crestWaterSurfaceY, DELTA, "Ship must heave up to Y=64.8 on crest");
     }
+
+    @Test
+    @DisplayName("Task 2: Vessel retains momentum during sharp 35-degree rudder turn and tacking without jerking")
+    public void testVesselRetainsMomentumDuringSharpTurnAndTack() {
+        double entrySpeed = 5.0; // 5.0 m/s (~9.7 knots)
+        Vector3d vel = new Vector3d(0.0, 0.0, -entrySpeed);
+        Vector3d heading = new Vector3d(0.0, 0.0, -1.0); // North
+        float rudderAngle = 35.0f; // Full 35 deg rudder turn
+        double dt = 0.05; // 20 Hz tick
+        double massScale = 1.0;
+        double yawRate = 0.35; // ~20 deg/s
+
+        double currentAngleRad = 0.0;
+        double speedAt90Deg = -1.0;
+        double speedAt180Deg = -1.0;
+
+        // Simulate turn through 180 degrees (3.14 rad)
+        // Passes through wind where sail thrust momentarily drops to 0
+        for (int tick = 0; tick < 200; tick++) {
+            double prevSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+            Vector3d prevHeading = new Vector3d(heading);
+
+            // Rotate heading by yawRate * dt
+            currentAngleRad += yawRate * dt;
+            heading.set(Math.sin(currentAngleRad), 0.0, -Math.cos(currentAngleRad)).normalize();
+
+            // When between 60 deg and 120 deg, simulate head-to-wind tacking (sail thrust = 0.0 N)
+            double thrustMag = (currentAngleRad >= Math.toRadians(60.0) && currentAngleRad <= Math.toRadians(120.0))
+                    ? 0.0 : 450.0;
+
+            vel = ServerPhysicsHandler.updateTurningMomentum(
+                    vel, prevHeading, heading, rudderAngle, yawRate, dt, massScale, thrustMag, false
+            );
+
+            double currentSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+
+            // Momentum Inertia Guard Assertion: Speed must NEVER drop by more than 2.5% per tick
+            double maxAllowedLoss = 0.0250001 * prevSpeed;
+            double actualLoss = prevSpeed - currentSpeed;
+            assertTrue(actualLoss <= maxAllowedLoss,
+                    String.format("Tick %d: Abrupt deceleration detected! Loss: %.4f > allowed: %.4f (speed: %.3f -> %.3f)",
+                            tick, actualLoss, maxAllowedLoss, prevSpeed, currentSpeed));
+
+            // Record speed at 90 degrees
+            if (speedAt90Deg < 0.0 && currentAngleRad >= Math.PI * 0.5) {
+                speedAt90Deg = currentSpeed;
+            }
+
+            // Record speed at 180 degrees
+            if (speedAt180Deg < 0.0 && currentAngleRad >= Math.PI) {
+                speedAt180Deg = currentSpeed;
+                break;
+            }
+        }
+
+        // Assert at least 70% speed retained through a 90-degree turn
+        assertTrue(speedAt90Deg >= 0.70 * entrySpeed,
+                String.format("Vessel must retain >= 70%% speed through 90-deg turn, got: %.3f m/s (expected >= %.3f m/s)",
+                        speedAt90Deg, 0.70 * entrySpeed));
+
+        // Assert vessel successfully tacked through 180 degrees without stalling to a dead stop
+        assertTrue(speedAt180Deg > 2.0,
+                String.format("Vessel must retain momentum through 180-deg tack, got: %.3f m/s", speedAt180Deg));
+    }
 }
 
 
