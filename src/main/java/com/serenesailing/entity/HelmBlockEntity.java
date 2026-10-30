@@ -87,6 +87,9 @@ public class HelmBlockEntity extends BlockEntity {
      * serverbound steer payload handler.
      */
     public void setSteeringInput(float rudderAngle, boolean held) {
+        if (Float.isNaN(rudderAngle) || Float.isInfinite(rudderAngle)) {
+            rudderAngle = 0.0f;
+        }
         this.targetRudderAngle = Mth.clamp(rudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
         this.activelyHeld = held;
         setChanged();
@@ -99,6 +102,9 @@ public class HelmBlockEntity extends BlockEntity {
      * Client-side prediction setter on the targeted block entity for 60+ FPS responsiveness.
      */
     public void setTargetRudderAngleClient(float angle) {
+        if (Float.isNaN(angle) || Float.isInfinite(angle)) {
+            angle = 0.0f;
+        }
         this.targetRudderAngle = Mth.clamp(angle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
         this.activelyHeld = true;
     }
@@ -108,6 +114,9 @@ public class HelmBlockEntity extends BlockEntity {
      * compatibility with existing rudder propagation code).
      */
     public void setSteeringAngle(float angle) {
+        if (Float.isNaN(angle) || Float.isInfinite(angle)) {
+            angle = 0.0f;
+        }
         this.targetRudderAngle = Mth.clamp(angle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
         this.currentRudderAngle = this.targetRudderAngle;
         this.activelyHeld = false;
@@ -262,6 +271,12 @@ public class HelmBlockEntity extends BlockEntity {
             this.targetRudderAngle = Mth.clamp(oldAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
             this.currentRudderAngle = this.targetRudderAngle;
             this.activelyHeld = false;
+        }
+        if (Float.isNaN(this.targetRudderAngle) || Float.isInfinite(this.targetRudderAngle)) {
+            this.targetRudderAngle = 0.0f;
+        }
+        if (Float.isNaN(this.currentRudderAngle) || Float.isInfinite(this.currentRudderAngle)) {
+            this.currentRudderAngle = 0.0f;
         }
     }
 

@@ -41,8 +41,8 @@ public class TaffrailLogBlock extends Block implements EntityBlock {
 
     public static final DirectionProperty FACING = HorizontalDirectionalBlock.FACING;
 
-    /** Slim horizontal rotor housing streaming aft. */
-    protected static final VoxelShape SHAPE = Block.box(0.0, 6.0, 6.0, 16.0, 10.0, 10.0);
+    /** 17th-century taffrail log reel mounting stanchions and line spool. */
+    protected static final VoxelShape SHAPE = Block.box(4.0, 0.0, 4.0, 12.0, 10.0, 12.0);
 
     public TaffrailLogBlock(BlockBehaviour.Properties properties) {
         super(properties);

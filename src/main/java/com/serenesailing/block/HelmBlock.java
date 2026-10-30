@@ -43,7 +43,7 @@ public class HelmBlock extends Block implements EntityBlock, SimpleWaterloggedBl
     public static final DirectionProperty FACING = HorizontalDirectionalBlock.FACING;
     public static final BooleanProperty WATERLOGGED = BlockStateProperties.WATERLOGGED;
 
-    protected static final VoxelShape PEDESTAL_SHAPE = Block.box(4.0, 0.0, 2.0, 12.0, 14.0, 12.0);
+    protected static final VoxelShape PEDESTAL_SHAPE = Block.box(2.0, 0.0, 2.0, 14.0, 16.0, 14.0);
 
     public HelmBlock(BlockBehaviour.Properties properties) {
         super(properties);
