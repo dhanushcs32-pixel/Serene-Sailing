@@ -514,37 +514,57 @@ public class ClientWaveRenderer {
                 int maxGZ = Math.min(cachedGridDim - 1, (int) Math.floor((maxZ - startZ) / CELL_STEP));
 
                 for (int gx = minGX; gx <= maxGX; gx++) {
-                    double wx = startX + gx * CELL_STEP + 0.5 * CELL_STEP;
+                    double cellMinX = startX + gx * CELL_STEP;
+                    double cellMaxX = cellMinX + CELL_STEP;
+                    double wxCenter = cellMinX + 0.5 * CELL_STEP;
+
                     for (int gz = minGZ; gz <= maxGZ; gz++) {
                         if (maskedByShipHull[gx][gz]) continue;
-                        double wz = startZ + gz * CELL_STEP + 0.5 * CELL_STEP;
+                        double cellMinZ = startZ + gz * CELL_STEP;
+                        double cellMaxZ = cellMinZ + CELL_STEP;
+                        double wzCenter = cellMinZ + 0.5 * CELL_STEP;
 
-                        // Approximate open water level at this column
-                        double bw = GerstnerWaveEngine.evaluateWaveOffset(wx, wz, renderTime, stormIntensity, windDirX, windDirZ);
-                        double cp1 = Math.sin(0.5712 * (dirX1 * wx + dirZ1 * wz) - 2.367 * renderTime) * amp1;
-                        double cp2 = Math.sin(1.0833 * (dirX2 * wx + dirZ2 * wz) - 3.259 * renderTime) * amp2;
-                        double cp3 = Math.sin(1.8480 * (dirX3 * wx + dirZ3 * wz) - 4.150 * renderTime) * amp3;
+                        // Approximate open water level at cell center
+                        double bw = GerstnerWaveEngine.evaluateWaveOffset(wxCenter, wzCenter, renderTime, stormIntensity, windDirX, windDirZ);
+                        double cp1 = Math.sin(0.5712 * (dirX1 * wxCenter + dirZ1 * wzCenter) - 2.367 * renderTime) * amp1;
+                        double cp2 = Math.sin(1.0833 * (dirX2 * wxCenter + dirZ2 * wzCenter) - 3.259 * renderTime) * amp2;
+                        double cp3 = Math.sin(1.8480 * (dirX3 * wxCenter + dirZ3 * wzCenter) - 4.150 * renderTime) * amp3;
                         float colOpenWaterY = Math.max(safeFloor, interiorBaseY + (float) (bw + cp1 + cp2 + cp3));
 
-                        ColumnContactResult contact = checkColumnWaterContact(subLevel, pose, subLevelWorld,
-                                wx, wz, colOpenWaterY, worldProbe, localProbe, subProbePos);
+                        // Test all 4 corners (with 0.15 cell-step inset) and the center
+                        double[][] probePoints = new double[][] {
+                                { cellMinX + 0.15 * CELL_STEP, cellMinZ + 0.15 * CELL_STEP },
+                                { cellMinX + 0.15 * CELL_STEP, cellMaxZ - 0.15 * CELL_STEP },
+                                { cellMaxX - 0.15 * CELL_STEP, cellMinZ + 0.15 * CELL_STEP },
+                                { cellMaxX - 0.15 * CELL_STEP, cellMaxZ - 0.15 * CELL_STEP },
+                                { wxCenter, wzCenter }
+                        };
 
-                        boolean maskCell = false;
-                        float edgeWaterlineY = PINNED_WATER_Y + 0.05f;
+                        int coveredCount = 0;
+                        float minEdgeWaterlineY = PINNED_WATER_Y + 0.05f;
 
-                        if (contact.inContact) {
-                            maskCell = true;
-                            edgeWaterlineY = contact.edgeWaterlineY;
-                        } else if (hasEnclosedHold && isInsideShipEnclosedHold(subLevel, pose, subLevelWorld,
-                                wx, wz, worldProbe, localProbe, subProbePos)) {
-                            maskCell = true;
-                            edgeWaterlineY = PINNED_WATER_Y + 0.05f;
+                        for (double[] pt : probePoints) {
+                            ColumnContactResult contact = checkColumnWaterContact(subLevel, pose, subLevelWorld,
+                                    pt[0], pt[1], colOpenWaterY, worldProbe, localProbe, subProbePos);
+                            if (contact.inContact) {
+                                coveredCount++;
+                                minEdgeWaterlineY = Math.min(minEdgeWaterlineY, contact.edgeWaterlineY);
+                            } else if (hasEnclosedHold && isInsideShipEnclosedHold(subLevel, pose, subLevelWorld,
+                                    pt[0], pt[1], worldProbe, localProbe, subProbePos)) {
+                                coveredCount++;
+                            }
                         }
 
-                        if (maskCell) {
+                        // Only mask cell if ALL 4 corners and center are strictly covered/inside hull footprint
+                        if (coveredCount == probePoints.length) {
                             maskedByShipHull[gx][gz] = true;
-                            cellEdgeWaterlineY[gx][gz] = edgeWaterlineY;
-                            maskedCells.add(new MaskedCellInfo(gx, gz, edgeWaterlineY));
+                            cellEdgeWaterlineY[gx][gz] = minEdgeWaterlineY;
+                            maskedCells.add(new MaskedCellInfo(gx, gz, minEdgeWaterlineY));
+                        } else if (coveredCount > 0) {
+                            // Perimeter partially-overlapping cell: NOT masked out so wave quad is drawn!
+                            // Register waterline contact so vertices clamp smoothly below deck face
+                            cellEdgeWaterlineY[gx][gz] = minEdgeWaterlineY;
+                            maskedCells.add(new MaskedCellInfo(gx, gz, minEdgeWaterlineY));
                         }
                     }
                 }
@@ -621,14 +641,23 @@ public class ClientWaveRenderer {
         }
 
         // Sample ambient sky and block light at water surface (Y = 63) to match vanilla water lighting
-        int skyDarken = level.getSkyDarken();
+        // Compute true client-side sky brightness (1.0f at noon, 0.20f at midnight)
+        float clientSkyBrightness = (level instanceof net.minecraft.client.multiplayer.ClientLevel cl)
+                ? cl.getSkyDarken(partialTick)
+                : (1.0f - level.getRainLevel(partialTick) * (5.0f / 16.0f)) * (1.0f - level.getThunderLevel(partialTick) * (5.0f / 16.0f));
+
+        // Vanilla water drops to ~0.12f - 0.16f at midnight
+        float skySunFactor = 0.14f + 0.86f * Mth.clamp((clientSkyBrightness - 0.20f) / 0.80f, 0.0f, 1.0f);
+
         float[][] cellLightFactor = new float[cachedGridDim][cachedGridDim];
         for (int gx = 0; gx < cachedGridDim; gx++) {
             for (int gz = 0; gz < cachedGridDim; gz++) {
-                int sky = Math.max(0, (cachedSkyLight[gx][gz] & 0xFF) - skyDarken);
-                int rawLight = Math.max(cachedBlockLight[gx][gz] & 0xFF, sky);
-                float bright = LightTexture.getBrightness(level.dimensionType(), rawLight);
-                cellLightFactor[gx][gz] = Mth.clamp(bright, 0.0f, 1.0f);
+                int sky = cachedSkyLight[gx][gz] & 0xFF;
+                int block = cachedBlockLight[gx][gz] & 0xFF;
+                float blockFactor = LightTexture.getBrightness(level.dimensionType(), block);
+                float cellSky = skySunFactor * (sky / 15.0f);
+                float cellBright = Math.max(blockFactor, cellSky);
+                cellLightFactor[gx][gz] = Mth.clamp(cellBright, 0.0f, 1.0f);
             }
         }
 
@@ -827,16 +856,16 @@ public class ClientWaveRenderer {
                 // 1. Base Ocean Surface Quad (clean ocean water color with night light & hull feather)
                 int c00 = computeBaseWaterColor(int00, h00, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz0, camPos.x, camPos.z, stormIntensity,
-                        gx, gz, waveOffset, vertLight[gx][gz], vertHullFeather[gx][gz]);
+                        gx, gz, waveOffset, vertLight[gx][gz], vertHullFeather[gx][gz], clientSkyBrightness);
                 int c01 = computeBaseWaterColor(int01, h01, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx0, wz1, camPos.x, camPos.z, stormIntensity,
-                        gx, gz + 1, waveOffset, vertLight[gx][gz + 1], vertHullFeather[gx][gz + 1]);
+                        gx, gz + 1, waveOffset, vertLight[gx][gz + 1], vertHullFeather[gx][gz + 1], clientSkyBrightness);
                 int c11 = computeBaseWaterColor(int11, h11, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz1, camPos.x, camPos.z, stormIntensity,
-                        gx + 1, gz + 1, waveOffset, vertLight[gx + 1][gz + 1], vertHullFeather[gx + 1][gz + 1]);
+                        gx + 1, gz + 1, waveOffset, vertLight[gx + 1][gz + 1], vertHullFeather[gx + 1][gz + 1], clientSkyBrightness);
                 int c10 = computeBaseWaterColor(int10, h10, br, bg, bb,
                         lightDirX, lightDirY, lightDirZ, wx1, wz0, camPos.x, camPos.z, stormIntensity,
-                        gx + 1, gz, waveOffset, vertLight[gx + 1][gz], vertHullFeather[gx + 1][gz]);
+                        gx + 1, gz, waveOffset, vertLight[gx + 1][gz], vertHullFeather[gx + 1][gz], clientSkyBrightness);
 
                 if (((c00 | c01 | c11 | c10) >>> 24) == 0) {
                     continue;
@@ -977,7 +1006,8 @@ public class ClientWaveRenderer {
             double wx, double wz, double camX, double camZ,
             double stormIntensity,
             int vi, int vj, float[][] waveOffset,
-            float lightFactor, float hullFeather) {
+            float lightFactor, float hullFeather,
+            float skyDarken) {
         float distFromCam = (float) Math.hypot(wx - camX, wz - camZ);
         float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
         if (distFade <= 0.005f) {
@@ -1012,6 +1042,12 @@ public class ClientWaveRenderer {
         float lightRatio = Mth.clamp(lightFactor * 1.5f, 0.0f, 1.0f);
         float rawSlope = Mth.clamp(0.85f + 0.30f * dot, 0.72f, 1.18f);
         float slopeFactor = Mth.lerp(lightRatio, 1.0f, rawSlope);
+
+        // At night (skyDarken < 0.5f), reduce slopeFactor contrast to 1.0f (flat shading matching vanilla water)
+        if (skyDarken < 0.5f) {
+            float contrast = Mth.clamp((skyDarken - 0.20f) / 0.30f, 0.0f, 1.0f);
+            slopeFactor = Mth.lerp(contrast, 1.0f, slopeFactor);
+        }
 
         int r = (int) Mth.clamp(br * slopeFactor * lightFactor, 0, 255);
         int g = (int) Mth.clamp(bg * slopeFactor * lightFactor, 0, 255);
@@ -1295,7 +1331,7 @@ public class ClientWaveRenderer {
 
         // Contact Gate: hullBottomWorldY <= colOpenWaterY + 0.15f AND edgeTopWorldY >= 62.0f
         if (hullBottomWorldY <= colOpenWaterY + 0.15f && edgeTopWorldY >= 62.0f) {
-            float edgeWaterlineY = Math.max(PINNED_WATER_Y, Math.min(edgeTopWorldY - 0.08f, PINNED_WATER_Y + 0.12f));
+            float edgeWaterlineY = edgeTopWorldY - 0.10f;
             return new ColumnContactResult(true, hullBottomWorldY, edgeTopWorldY, edgeWaterlineY);
         }
 

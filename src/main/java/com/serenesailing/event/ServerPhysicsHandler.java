@@ -127,6 +127,8 @@ public class ServerPhysicsHandler {
     private static final Map<UUID, Vector3d> VESSEL_VELOCITY_CACHE = new ConcurrentHashMap<>();
     /** Forward speed [m/s] along vessel heading cached per sub-level UUID. */
     private static final Map<UUID, Double> FORWARD_SPEED_CACHE = new ConcurrentHashMap<>();
+    /** Previous tick forward heading cached per sub-level UUID for momentum turning redirection. */
+    private static final Map<UUID, Vector3d> PREV_HEADING_CACHE = new ConcurrentHashMap<>();
 
     /** Cached wind speed and angle sampled on the main server thread. */
     public record CachedWind(float angle, float speed) {
@@ -221,6 +223,7 @@ public class ServerPhysicsHandler {
                 HELM_ANGLE_CACHE.remove(id);
                 VESSEL_VELOCITY_CACHE.remove(id);
                 FORWARD_SPEED_CACHE.remove(id);
+                PREV_HEADING_CACHE.remove(id);
                 PHYS_DEBUG_TICK.remove(id);
                 continue;
             }
@@ -312,6 +315,29 @@ public class ServerPhysicsHandler {
         for (TaffrailLogBlockEntity taffrail : steering.taffrails()) {
             taffrail.setSpeedTelemetry((float) fwdSpeed);
         }
+
+        // Record initial forward velocity for momentum inertia guard
+        double initialFwdSpeed = fwdSpeed;
+
+        // Redirect Forward Momentum When Turning (Keel Hydrodynamic Lift):
+        // When the ship's heading rotates by dYaw while underway, rotate the horizontal
+        // velocity vector toward the new forwardHeading by 80% (75%-85%) of dYaw.
+        // This prevents artificial sway drag from destroying forward momentum on direction change!
+        Vector3d prevHeading = PREV_HEADING_CACHE.get(subLevelId);
+        if (prevHeading != null && initialFwdSpeed > 0.05) {
+            Vector3d cross = new Vector3d(prevHeading).cross(forwardWorld);
+            double dYaw = Math.atan2(cross.y, prevHeading.dot(forwardWorld));
+            if (Math.abs(dYaw) > 1.0e-5) {
+                Vector3d horizontalVel = new Vector3d(shipVelWorld.x, 0.0, shipVelWorld.z);
+                horizontalVel.rotateY(dYaw * 0.80);
+                Vector3d redirectDelta = new Vector3d(horizontalVel.x - shipVelWorld.x, 0.0, horizontalVel.z - shipVelWorld.z);
+                body.addLinearAndAngularVelocity(redirectDelta, new Vector3d());
+                shipVelWorld.x = horizontalVel.x;
+                shipVelWorld.z = horizontalVel.z;
+                fwdSpeed = shipVelWorld.dot(forwardWorld);
+            }
+        }
+        PREV_HEADING_CACHE.put(subLevelId, new Vector3d(forwardWorld));
 
         // ---- Buoyancy / ride height (Keel Tracking & Hollow Hull Draft) ---
         // Upright vertical offset from SubLevel's local rotation origin (pose.rotationPoint()) to keel bottom:
@@ -662,6 +688,27 @@ public class ServerPhysicsHandler {
                         ModSounds.WIND_BILLOW.get(), SoundSource.AMBIENT, 0.7f, 1.0f);
             }
         }
+
+        // ---- Momentum Inertia Guard (Maximum Per-Tick Deceleration Clamp) ----
+        // Unless the Capstan Anchor is locked or the ship collides with solid world terrain,
+        // horizontal forward speed (fwdSpeed) must NEVER be reduced by hydrodynamic/wave/damping
+        // forces by more than 2.5% per tick (maxDeltaV = -0.025 * currentForwardSpeed).
+        // This mathematically guarantees the vessel can NEVER jerk to a sudden stop.
+        if (!anchored && initialFwdSpeed > 0.05) {
+            Vector3d currentVelWorld = new Vector3d(body.getLinearVelocity());
+            double currentFwdSpeed = currentVelWorld.dot(forwardWorld);
+            double deltaFwd = currentFwdSpeed - initialFwdSpeed;
+            double maxLoss = 0.025 * initialFwdSpeed * (dt / 0.05);
+            if (deltaFwd < -maxLoss) {
+                double clampedFwdSpeed = initialFwdSpeed - maxLoss;
+                double restore = clampedFwdSpeed - currentFwdSpeed;
+                Vector3d restoreImpulse = new Vector3d(forwardWorld).mul(restore);
+                body.addLinearAndAngularVelocity(restoreImpulse, new Vector3d());
+                shipVelWorld.add(restoreImpulse);
+                fwdSpeed = clampedFwdSpeed;
+                FORWARD_SPEED_CACHE.put(subLevelId, fwdSpeed);
+            }
+        }
     }
 
     /**
@@ -711,16 +758,18 @@ public class ServerPhysicsHandler {
         Vector3d localVel = pose.transformNormalInverse(shipVelWorld, new Vector3d());
         double vLateral = localVel.dot(localRight);
         if (Math.abs(vLateral) > 1.0e-9) {
-            Vector3d swayImpulse = new Vector3d(localRight).mul(-KEEL_LATERAL_DAMPING * vLateral * dt * massScale);
+            double lateralDamping = KEEL_LATERAL_DAMPING;
+            if (Math.abs(activeHelmAngle) >= 0.5f || Math.abs(omegaWorld.y) > 0.01) {
+                lateralDamping *= 0.30; // 70% reduction during active turning to preserve speed
+            }
+            Vector3d swayImpulse = new Vector3d(localRight).mul(-lateralDamping * vLateral * dt * massScale);
             body.applyLinearAndAngularImpulse(swayImpulse, new Vector3d(), true);
         }
 
         // ---- Zero-thrust glide-to-stop ---------------------------------------
-        // With no sail force present, water resistance must actively bring the
-        // hull completely to rest instead of letting it glide forever on the
-        // residual quadratic-drag tail. Exponential planar decay, then a hard
-        // snap below walking pace.
-        if (zeroThrust) {
+        // When planarSpeed > 0.05 m/s, an unpowered ship coasts with low longitudinal drag through turns/tacks.
+        // Exponential stopping decay only engages when the hull has already slowed to near-rest (<= 0.05 m/s).
+        if (zeroThrust && planarSpeed <= 0.05) {
             double keep = Math.exp(-2.0 * dt);
             Vector3d planarDelta = new Vector3d(
                     shipVelWorld.x * (keep - 1.0), 0.0, shipVelWorld.z * (keep - 1.0));
@@ -1497,6 +1546,80 @@ public class ServerPhysicsHandler {
                 angVel.mul(keep - 1.0, new Vector3d()));
     }
 
+    /**
+     * Simulates a single physics tick of turning dynamics and momentum retention
+     * for unit testing and numerical verification.
+     */
+    public static Vector3d updateTurningMomentum(
+            Vector3d vel,
+            Vector3d prevHeading,
+            Vector3d currentHeading,
+            float activeHelmAngle,
+            double omegaY,
+            double dt,
+            double massScale,
+            double thrustMag,
+            boolean anchored
+    ) {
+        if (anchored) {
+            double keep = Math.exp(-ANCHOR_DAMPING_RATE * dt);
+            return new Vector3d(vel.x * keep, vel.y, vel.z * keep);
+        }
+
+        Vector3d resultVel = new Vector3d(vel);
+        double initialFwdSpeed = resultVel.x * currentHeading.x + resultVel.z * currentHeading.z;
+
+        // 1. Keel Hydrodynamic Lift / Momentum Redirection (80% of dYaw)
+        if (prevHeading != null && initialFwdSpeed > 0.05) {
+            Vector3d cross = new Vector3d(prevHeading).cross(currentHeading);
+            double dYaw = Math.atan2(cross.y, prevHeading.dot(currentHeading));
+            if (Math.abs(dYaw) > 1.0e-5) {
+                Vector3d horizontalVel = new Vector3d(resultVel.x, 0.0, resultVel.z);
+                horizontalVel.rotateY(dYaw * 0.80);
+                resultVel.x = horizontalVel.x;
+                resultVel.z = horizontalVel.z;
+            }
+        }
+
+        // 2. Lateral Keel Resistance / Sway Damping (reduced by 70% during active turns)
+        Vector3d localRight = new Vector3d(currentHeading).cross(0.0, 1.0, 0.0).normalize();
+        double vLateral = resultVel.dot(localRight);
+        if (Math.abs(vLateral) > 1.0e-9) {
+            double lateralDamping = KEEL_LATERAL_DAMPING;
+            if (Math.abs(activeHelmAngle) >= 0.5f || Math.abs(omegaY) > 0.01) {
+                lateralDamping *= 0.30;
+            }
+            Vector3d swayImpulse = new Vector3d(localRight).mul(-lateralDamping * vLateral * dt * massScale);
+            resultVel.add(swayImpulse);
+        }
+
+        // 3. Low-Speed Stopping Damping (Karnopp model): only when nearly stationary
+        double planarSpeed = Math.sqrt(resultVel.x * resultVel.x + resultVel.z * resultVel.z);
+        if (thrustMag <= 1.0 && planarSpeed <= 0.05) {
+            double keep = Math.exp(-2.0 * dt);
+            resultVel.x *= keep;
+            resultVel.z *= keep;
+            if (planarSpeed < 0.02) {
+                resultVel.x = 0.0;
+                resultVel.z = 0.0;
+            }
+        }
+
+        // 4. Momentum Inertia Guard: forward speed never drops by > 2.5% per tick
+        if (initialFwdSpeed > 0.05) {
+            double currentFwdSpeed = resultVel.x * currentHeading.x + resultVel.z * currentHeading.z;
+            double deltaFwd = currentFwdSpeed - initialFwdSpeed;
+            double maxLoss = 0.025 * initialFwdSpeed * (dt / 0.05);
+            if (deltaFwd < -maxLoss) {
+                double clampedFwdSpeed = initialFwdSpeed - maxLoss;
+                double restore = clampedFwdSpeed - currentFwdSpeed;
+                resultVel.add(new Vector3d(currentHeading).mul(restore));
+            }
+        }
+
+        return resultVel;
+    }
+
     @SubscribeEvent
     public static void onLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
         if (event.getLevel() instanceof ServerLevel) {
@@ -1506,6 +1629,7 @@ public class ServerPhysicsHandler {
             HELM_ANGLE_CACHE.clear();
             VESSEL_VELOCITY_CACHE.clear();
             FORWARD_SPEED_CACHE.clear();
+            PREV_HEADING_CACHE.clear();
             PHYS_DEBUG_TICK.clear();
         }
     }
