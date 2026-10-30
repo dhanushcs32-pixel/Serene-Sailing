@@ -38,9 +38,15 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
                     ByteBufCodecs.FLOAT, SetHelmAnglePayload::angle,
                     SetHelmAnglePayload::new);
 
-    /** Defence-in-depth clamp so a hacked client cannot exceed the rudder stop. */
+    /** Defence-in-depth clamp and NaN guard so a hacked client cannot crash physics or exceed the rudder stop. */
     public SetHelmAnglePayload {
-        angle = Math.max(-45.0f, Math.min(45.0f, angle));
+        if (pos == null) {
+            pos = BlockPos.ZERO;
+        }
+        if (Float.isNaN(angle) || Float.isInfinite(angle)) {
+            angle = 0.0f;
+        }
+        angle = Mth.clamp(angle, -45.0f, 45.0f);
     }
 
     @Override
@@ -51,6 +57,9 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
     /** Server-side handler: must run on the main thread. */
     public static void handle(final SetHelmAnglePayload payload, final IPayloadContext context) {
         context.enqueueWork(() -> {
+            if (payload.pos() == null) {
+                return;
+            }
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
                 SereneSailing.LOGGER.debug("[HELM-NET] Received angle: {} for pos: {}", payload.angle(), payload.pos());
@@ -87,7 +96,7 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
                     if (helm == null || helmSubLevel == null) {
                         for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
                             LevelPlot subPlot = ssl.getPlot();
-                            if (subPlot != null) {
+                            if (subPlot != null && subPlot.contains(new ChunkPos(payload.pos()))) {
                                 for (PlotChunkHolder holder : subPlot.getLoadedChunks()) {
                                     LevelChunk chunk = holder.getChunk();
                                     if (chunk != null) {
@@ -105,16 +114,29 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
                     }
                 }
 
-                if (helm != null) {
-                    helm.setSteeringAngle(payload.angle());
+                // Security Check 1: If no HelmBlockEntity exists at pos, drop packet immediately.
+                // Do NOT fall back to setting steering on arbitrary or all sublevels.
+                if (helm == null) {
+                    return;
                 }
+
+                // Security Check 2: Player reach & interaction distance check (max 10 blocks)
+                net.minecraft.world.phys.Vec3 helmWorldCenter;
+                if (helmSubLevel != null) {
+                    helmWorldCenter = helmSubLevel.logicalPose().transformPosition(
+                            net.minecraft.world.phys.Vec3.atCenterOf(payload.pos()));
+                } else {
+                    helmWorldCenter = net.minecraft.world.phys.Vec3.atCenterOf(payload.pos());
+                }
+
+                if (serverPlayer.distanceToSqr(helmWorldCenter) > 100.0) {
+                    return;
+                }
+
+                helm.setSteeringAngle(payload.angle());
 
                 if (helmSubLevel != null) {
                     com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(helmSubLevel.getUniqueId(), payload.angle());
-                } else if (container instanceof ServerSubLevelContainer serverContainer) {
-                    for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
-                        com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(ssl.getUniqueId(), payload.angle());
-                    }
                 }
             }
         });

@@ -39,8 +39,14 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
                     ByteBufCodecs.BOOL, ServerboundSteerPayload::activelyHeld,
                     ServerboundSteerPayload::new);
 
-    /** Defence-in-depth clamp so a hacked client cannot exceed the rudder stop. */
+    /** Defence-in-depth clamp and NaN guard so a hacked client cannot crash physics or exceed the rudder stop. */
     public ServerboundSteerPayload {
+        if (pos == null) {
+            pos = BlockPos.ZERO;
+        }
+        if (Float.isNaN(rudderAngle) || Float.isInfinite(rudderAngle)) {
+            rudderAngle = 0.0f;
+        }
         rudderAngle = Mth.clamp(rudderAngle, -HelmBlockEntity.MAX_RUDDER_ANGLE, HelmBlockEntity.MAX_RUDDER_ANGLE);
     }
 
@@ -52,6 +58,9 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
     /** Server-side handler: must run on the main thread. */
     public static void handle(final ServerboundSteerPayload payload, final IPayloadContext context) {
         context.enqueueWork(() -> {
+            if (payload.pos() == null) {
+                return;
+            }
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
                 SereneSailing.LOGGER.debug("[HELM-NET] Received rudder: {} held: {} for pos: {}",
@@ -89,7 +98,7 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
                     if (helm == null || helmSubLevel == null) {
                         for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
                             LevelPlot subPlot = ssl.getPlot();
-                            if (subPlot != null) {
+                            if (subPlot != null && subPlot.contains(new ChunkPos(payload.pos()))) {
                                 for (PlotChunkHolder holder : subPlot.getLoadedChunks()) {
                                     LevelChunk chunk = holder.getChunk();
                                     if (chunk != null) {
@@ -107,18 +116,30 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
                     }
                 }
 
-                if (helm != null) {
-                    helm.setSteeringInput(payload.rudderAngle(), payload.activelyHeld());
+                // Security Check 1: If no HelmBlockEntity exists at pos, drop packet immediately.
+                // Do NOT fall back to setting steering on arbitrary or all sublevels.
+                if (helm == null) {
+                    return;
                 }
+
+                // Security Check 2: Player reach & interaction distance check (max 10 blocks)
+                net.minecraft.world.phys.Vec3 helmWorldCenter;
+                if (helmSubLevel != null) {
+                    helmWorldCenter = helmSubLevel.logicalPose().transformPosition(
+                            net.minecraft.world.phys.Vec3.atCenterOf(payload.pos()));
+                } else {
+                    helmWorldCenter = net.minecraft.world.phys.Vec3.atCenterOf(payload.pos());
+                }
+
+                if (serverPlayer.distanceToSqr(helmWorldCenter) > 100.0) {
+                    return;
+                }
+
+                helm.setSteeringInput(payload.rudderAngle(), payload.activelyHeld());
 
                 if (helmSubLevel != null) {
                     com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(
                             helmSubLevel.getUniqueId(), payload.rudderAngle());
-                } else if (container instanceof ServerSubLevelContainer serverContainer) {
-                    for (ServerSubLevel ssl : serverContainer.getAllSubLevels()) {
-                        com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(
-                                ssl.getUniqueId(), payload.rudderAngle());
-                    }
                 }
             }
         });

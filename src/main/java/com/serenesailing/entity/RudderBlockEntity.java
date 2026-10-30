@@ -21,6 +21,9 @@ public class RudderBlockEntity extends BlockEntity {
     }
 
     public void setSteeringAngle(float angle) {
+        if (Float.isNaN(angle) || Float.isInfinite(angle)) {
+            angle = 0.0f;
+        }
         // Clamp to the physical stop [-45, +45]
         this.steeringAngle = Math.max(-45.0f, Math.min(45.0f, angle));
         // Sync contract (prevents client/server angle desync & visual stutter):
@@ -48,6 +51,9 @@ public class RudderBlockEntity extends BlockEntity {
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
         this.steeringAngle = tag.getFloat("SteeringAngle");
+        if (Float.isNaN(this.steeringAngle) || Float.isInfinite(this.steeringAngle)) {
+            this.steeringAngle = 0.0f;
+        }
     }
 
     @Override

@@ -53,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Drives vessels assembled through the Aeronautics Physics Assembler / Sable,
@@ -66,7 +67,7 @@ public class ServerPhysicsHandler {
 
     private static final Logger LOGGER = SereneSailing.LOGGER;
     private static final Map<UUID, Long> PHYS_DEBUG_TICK = new ConcurrentHashMap<>();
-    private static long stepCounter = 0L;
+    private static final AtomicLong stepCounter = new AtomicLong(0L);
 
     // --- Runaway guardrails & Fossen / MMG Hydrodynamics ---
     private static final double FORCE_PER_FULL_SAIL_N = 750.0;
@@ -139,22 +140,40 @@ public class ServerPhysicsHandler {
     private static final Map<ResourceKey<Level>, CachedWind> DIMENSION_WIND_CACHE = new ConcurrentHashMap<>();
 
     public static CachedWind getDimensionWind(ResourceKey<Level> dimension) {
+        if (dimension == null) {
+            return CachedWind.ZERO;
+        }
         return DIMENSION_WIND_CACHE.getOrDefault(dimension, CachedWind.ZERO);
     }
 
     public static void setHelmAngle(UUID subLevelId, float angle) {
+        if (subLevelId == null) {
+            return;
+        }
+        if (Float.isNaN(angle) || Float.isInfinite(angle)) {
+            angle = 0.0f;
+        }
         HELM_ANGLE_CACHE.put(subLevelId, angle);
     }
 
     public static float getHelmAngle(UUID subLevelId) {
+        if (subLevelId == null) {
+            return 0.0f;
+        }
         return HELM_ANGLE_CACHE.getOrDefault(subLevelId, 0.0f);
     }
 
     public static Vector3d getVesselVelocity(UUID subLevelId) {
+        if (subLevelId == null) {
+            return new Vector3d(0.0, 0.0, 0.0);
+        }
         return VESSEL_VELOCITY_CACHE.getOrDefault(subLevelId, new Vector3d(0.0, 0.0, 0.0));
     }
 
     public static double getForwardSpeed(UUID subLevelId) {
+        if (subLevelId == null) {
+            return 0.0;
+        }
         return FORWARD_SPEED_CACHE.getOrDefault(subLevelId, 0.0);
     }
 
@@ -201,7 +220,7 @@ public class ServerPhysicsHandler {
 
     @SubscribeEvent
     public static void onPrePhysicsTick(ForgeSablePrePhysicsTickEvent event) {
-        stepCounter++;
+        stepCounter.incrementAndGet();
         SubLevelPhysicsSystem system = event.getPhysicsSystem();
         ServerLevel level = system.getLevel();
         double dt = event.getTimeStep();
@@ -641,8 +660,8 @@ public class ServerPhysicsHandler {
         // rather than a constant loop.
         if (!anchored && (Math.abs(omegaWorld.x) > 0.05 || Math.abs(omegaWorld.y) > 0.05 || Math.abs(omegaWorld.z) > 0.05)) {
             Long lastCreak = CREAK_COOLDOWN.get(subLevel.getUniqueId());
-            if (lastCreak == null || stepCounter - lastCreak >= 60L) {
-                CREAK_COOLDOWN.put(subLevel.getUniqueId(), stepCounter);
+            if (lastCreak == null || stepCounter.get() - lastCreak >= 60L) {
+                CREAK_COOLDOWN.put(subLevel.getUniqueId(), stepCounter.get());
                 level.playSound(null,
                         BlockPos.containing(worldPos.x(), worldPos.y(), worldPos.z()),
                         ModSounds.SHIP_CREAK.get(), SoundSource.AMBIENT,
@@ -674,7 +693,7 @@ public class ServerPhysicsHandler {
         // ---- Wind vanes ----------------------------------------------------------
         updateWindVanes(steering.vanes(), forwardWorld, trueWindWorld, shipVelWorld);
 
-        if (stepCounter % 20L == 0L && thrustMag > 1.0e-9) {
+        if (stepCounter.get() % 20L == 0L && thrustMag > 1.0e-9) {
             SereneSailing.LOGGER.debug(String.format(
                     "[SereneSailing] %s | wind %.2f m/s @ %.0f deg | thrust %.0f N | speed %.2f m/s",
                     subLevel.getName(), effectiveWindSpeed, rawWindAngle,
@@ -682,7 +701,7 @@ public class ServerPhysicsHandler {
 
             // Wind billow while the sails generate near-maximum lift.
             double maxAeroRef = steering.sailAreaEfficiency() * FORCE_PER_FULL_SAIL_N;
-            if (!anchored && maxAeroRef > 0.0 && thrustMag >= maxAeroRef * 0.75 && stepCounter % 100L == 0L) {
+            if (!anchored && maxAeroRef > 0.0 && thrustMag >= maxAeroRef * 0.75 && stepCounter.get() % 100L == 0L) {
                 level.playSound(null,
                         BlockPos.containing(worldPos.x(), worldPos.y(), worldPos.z()),
                         ModSounds.WIND_BILLOW.get(), SoundSource.AMBIENT, 0.7f, 1.0f);
@@ -960,7 +979,7 @@ public class ServerPhysicsHandler {
         }
 
         // ---- Diagnostic telemetry (throttled ~1 Hz) -------------------------
-        if (stepCounter % 20 == 0 && Math.abs(unifiedSteeringAngle) >= 0.5f) {
+        if (stepCounter.get() % 20 == 0 && Math.abs(unifiedSteeringAngle) >= 0.5f) {
             Vector3d angVelAfter = new Vector3d(body.getAngularVelocity());
             SereneSailing.LOGGER.debug(String.format(
                     "[STEER-DIAG] SubLevel: %s | HelmAngle: %.1f deg | SubmergedRudders: %d | "
@@ -1011,6 +1030,9 @@ public class ServerPhysicsHandler {
     }
 
     public static void invalidateSteeringCache(UUID subLevelId) {
+        if (subLevelId == null) {
+            return;
+        }
         STEERING_CACHE.remove(subLevelId);
         STEERING_CACHE_STEP.remove(subLevelId);
     }
@@ -1034,12 +1056,12 @@ public class ServerPhysicsHandler {
         // of rudder count. The old condition `!cached.rudders().isEmpty()` caused
         // every physics step to rescan O(chunks×16³) on rudderless vessels.
         if (cached != null && stamp != null
-                && (stepCounter - stamp) < STEERING_RESCAN_STEPS) {
+                && (stepCounter.get() - stamp) < STEERING_RESCAN_STEPS) {
             return cached;
         }
         SteeringCache scanned = scanSteering(subLevel);
         STEERING_CACHE.put(id, scanned);
-        STEERING_CACHE_STEP.put(id, stepCounter);
+        STEERING_CACHE_STEP.put(id, stepCounter.get());
         return scanned;
     }
 
@@ -1148,33 +1170,37 @@ public class ServerPhysicsHandler {
             if (chunk == null) {
                 continue;
             }
-            for (var entry : chunk.getBlockEntities().entrySet()) {
-                BlockPos p = entry.getKey();
-                if (entry.getValue() instanceof RudderBlockEntity rudder) {
-                    BlockState rs = entry.getValue().getBlockState();
-                    Direction facing = rs.hasProperty(RudderBlock.FACING)
-                            ? rs.getValue(RudderBlock.FACING) : Direction.NORTH;
-                    // FIX: Use block BOTTOM Y (p.getY()) for the rudder's
-                    // local point so the submergence water check reliably
-                    // finds water even with shallow TARGET_HULL_DRAFT.
-                    rudders.add(new RudderInfo(rudder,
-                            new Vector3d(p.getX() + 0.5, p.getY(), p.getZ() + 0.5),
-                            facing));
-                } else if (entry.getValue() instanceof HelmBlockEntity helm) {
-                    helms.add(helm);
-                } else if (entry.getValue() instanceof WindVaneBlockEntity vane) {
-                    vanes.add(vane);
-                } else if (entry.getValue() instanceof CapstanBlockEntity capstan) {
-                    capstans.add(capstan);
-                    BlockState cs = capstan.getBlockState();
-                    if (cs.getBlock() instanceof CapstanBlock
-                            && cs.hasProperty(CapstanBlock.ANCHORED)
-                            && cs.getValue(CapstanBlock.ANCHORED)) {
-                        anchorState = true;
+            try {
+                for (var entry : new ArrayList<>(chunk.getBlockEntities().entrySet())) {
+                    BlockPos p = entry.getKey();
+                    if (entry.getValue() instanceof RudderBlockEntity rudder) {
+                        BlockState rs = entry.getValue().getBlockState();
+                        Direction facing = rs.hasProperty(RudderBlock.FACING)
+                                ? rs.getValue(RudderBlock.FACING) : Direction.NORTH;
+                        // FIX: Use block BOTTOM Y (p.getY()) for the rudder's
+                        // local point so the submergence water check reliably
+                        // finds water even with shallow TARGET_HULL_DRAFT.
+                        rudders.add(new RudderInfo(rudder,
+                                new Vector3d(p.getX() + 0.5, p.getY(), p.getZ() + 0.5),
+                                facing));
+                    } else if (entry.getValue() instanceof HelmBlockEntity helm) {
+                        helms.add(helm);
+                    } else if (entry.getValue() instanceof WindVaneBlockEntity vane) {
+                        vanes.add(vane);
+                    } else if (entry.getValue() instanceof CapstanBlockEntity capstan) {
+                        capstans.add(capstan);
+                        BlockState cs = capstan.getBlockState();
+                        if (cs.getBlock() instanceof CapstanBlock
+                                && cs.hasProperty(CapstanBlock.ANCHORED)
+                                && cs.getValue(CapstanBlock.ANCHORED)) {
+                            anchorState = true;
+                        }
+                    } else if (entry.getValue() instanceof TaffrailLogBlockEntity taffrail) {
+                        taffrails.add(taffrail);
                     }
-                } else if (entry.getValue() instanceof TaffrailLogBlockEntity taffrail) {
-                    taffrails.add(taffrail);
                 }
+            } catch (java.util.ConcurrentModificationException ignored) {
+                // Main thread may be mutating chunk block entities during off-thread scan
             }
 
             LevelChunkSection[] sections = chunk.getSections();
@@ -1622,7 +1648,8 @@ public class ServerPhysicsHandler {
 
     @SubscribeEvent
     public static void onLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
-        if (event.getLevel() instanceof ServerLevel) {
+        if (event.getLevel() instanceof ServerLevel serverLevel) {
+            DIMENSION_WIND_CACHE.remove(serverLevel.dimension());
             STEERING_CACHE.clear();
             STEERING_CACHE_STEP.clear();
             CREAK_COOLDOWN.clear();

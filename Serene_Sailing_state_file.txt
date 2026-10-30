@@ -699,3 +699,265 @@ Session 91: scanSteering() Audit & Naval Mass-to-Thrust Acceleration Calibration
   - Increased DEFAULT_SAIL_AREA in SailAerodynamics.java from 8.0 m^2 to 12.0 m^2 so 10 m/s wind yields ~735 N per sail.
   - Resulting acceleration: 16,000 kg ship with 10 sails achieves 0.47 m/s^2 (cruising speed in ~7.5s); 2,000 kg raft with 2 sails achieves 0.75 m/s^2 (cruising speed in ~4s).
 - Updated HydrodynamicsFossenMmgTest.java assertions and verified: compileJava and test passed (24/24 unit tests).
+Session 92: Gerstner Ocean Wave Mesh Pipeline, 1x1 World-Locked Water UVs & Airtight Boundary Pinning (Oct 20 2026):
+- Fixed Water Texture Sliding & UV Distortion (ClientWaveRenderer.java):
+  * Eliminated driftU / driftV runtime wind drifting and 0.25 UV stretching.
+  * Statically mapped quad corner UVs to exact [u0, u1] x [v0, v1] coordinates of vanilla block/water_still sprite on the block atlas.
+  * Every 1x1 block quad now displays authentic, crisp, un-stretched vanilla water texture that shimmers with the block atlas animation without sliding conveyor-belt artifacts.
+- Fixed 2x2 Water Mesh Dock Planks Overlap (ClientWaveRenderer.java):
+  * Replaced 2x2 coarse cell sampling with exact 1x1 block surface mask (CELL_STEP = 1).
+  * Gated valid surface water cells strictly to: level.getFluidState(bx, 62, bz).is(FluidTags.WATER) AND level.getBlockState(bx, 63, bz).isAir().
+  * Any non-air blocks at Y=63 (wooden dock planks, slabs, stairs) are completely excluded from surface water generation, preventing water quads from rendering on top of docks.
+- Boundary Vertex Pinning & Hollow Underside Gap Elimination (ClientWaveRenderer.java):
+  * Evaluated vertex interior status: a corner vertex (vi, vj) is interior ONLY if all 4 adjacent 1x1 cells sharing that corner are valid open-water cells.
+  * If any adjacent cell is a solid block, dock, or shoreline, the vertex height is pinned strictly to vanilla water plane (Y = 62.890f).
+  * Swells undulate smoothly across open water with 62.890f + max(0.0f, h + swellBaseline) and taper down to an airtight sealed seam against any dock or shore block with zero hollow underside gap.
+- Offline Verification:
+  * Compiled via ./gradlew.bat compileJava --offline and passed all tests via ./gradlew.bat test --offline.
+
+Session 93: Rolling Offshore Surf Breakers, Shoreline Sawtooth Elimination & Active Multi-Zone Wave Particles (Oct 21 2026):
+- Shoreline Boundary Alpha & Sawtooth Elimination (ClientWaveRenderer.java):
+  * Removed alpha = 0 from shoreline/dock boundary vertices, which had created a 1x1 dark jagged sawtooth grid along diagonal shores.
+  * Set boundary vertex height to 62.890f with pure biome water color (no permanent white tint) and smooth alpha = (int)(160.0f * distFade), blending seamlessly into adjacent interior water (alpha = 185) with zero hollow gaps or triangle teeth.
+- Distance-to-Shore Field & Dynamic Shoaling Surf Breakers (ClientWaveRenderer.java):
+  * Added cachedShoreDist in updateWaterCache using an 8-way multi-source BFS computing Chebyshev distance to nearest non-water shoreline block in [1..8] blocks (or 99.0f in open sea).
+  * Smoothly interpolated vertex shore distance into vertShoreDist.
+  * Inside the active surf zone (1.2 <= sDist <= 5.5 blocks from shore), added a shore-directed shoaling wave phase: phase = sDist * 1.15 - renderTime * 2.6 + spatialWarp (spatialWarp = Math.sin(vx * 0.18 + vz * 0.14) * 1.6).
+  * When crestFactor = Math.sin(phase) > 0.55, curls wave height (+0.12f * strength) and blends vertex color into crisp bright surf white (R=245, G=250, B=255, Alpha=235).
+  * Detached crescent surf lines form 2 to 6 blocks off the beach, roll shoreward toward the coast, and dissolve before reaching the sand, matching reference swell photography (03-surf-along-a-sand-beach).
+- Multi-Zone Active Wave & Surf Particles (ClientWaveRenderer.java):
+  * Lowered particle activation threshold in onClientTick from stormIntensity > 0.35 to stormIntensity >= 0.10, enabling water effects in all sailing weather.
+  * Zone A (Shoreline Breaking Surf): Spawns ParticleTypes.SPLASH, ParticleTypes.BUBBLE_POP, and low-velocity ParticleTypes.CLOUD / ParticleTypes.FISHING foam ripples moving shoreward when surf crests peak (crestFactor > 0.65).
+  * Zone B (Open-Ocean Whitecaps): Spawns splashes and bubbles along wave crests (h > 0.22 in normal swell, h > 0.35 in storms) drifting with the wind.
+  * Zone C (Ship Hull & Bow Wave Spray): Tracks sublevel velocity via lastShipPos map and emits bow wake splashes/spray around active ships when moving (speed > 0.05) or when wave crests hit the hull.
+- Project Verification & Build Status:
+  * ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL.
+  * ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 24 unit tests passing).
+  * ./gradlew.bat runClient --offline: Successfully launched and verified runtime client initialization and wave renderer registration.
+Session 94: Gerstner Wave Swell Scaling, Trough Unlocking, Biome Multiplier & Sable Sub-Level Hull Masking (Oct 21 2026):
+- Baseline Swell Boost & Aggressive Storm Dynamics (GerstnerWaveEngine.java):
+  * Upgraded evaluateWaveOffset with a dual-stage effectiveIntensity mapping curve:
+    - Calm clear weather (stormIntensity <= 0.03) stays strictly clamped (<= 0.05m), maintaining gentle dockside conditions.
+    - Normal sailing weather (stormIntensity ~ 0.10 to 0.25) now generates 0.45m - 0.75m crest-to-trough variation (matching what previously required stormIntensity = 1.0).
+    - Storm weather (stormIntensity > 0.4) scales up to 1.2m - 1.8m+ crest-to-trough variation.
+  * Added low-frequency Wave Group Envelope Modulation for rogue wave sets:
+    - groupWave = 0.65 + 0.55 * sin(wx * 0.03 + wz * 0.025 - timeSeconds * 0.4 + pi/2), smoothly blended in when stormIntensity > 0.35 to form realistic alternating sets of deep troughs and towering peaks.
+  * Trochoidal / Gerstner Crest Sharpening:
+    - Scaled steepnessQ up to 0.35 in storms and blended in an exponential crest sharpening curve (Math.pow(u, sharpness) * 2.2 - 0.85) to produce tall, peaked crests and wide, flat troughs.
+  * Synchronized analytical derivatives in evaluateWaveSlopeAndDrift and evaluateStokesDriftVector to use effectiveIntensity and envelope.
+- Unlocked Full Wave Rise AND Drop (Troughs) (ClientWaveRenderer.java):
+  * Removed the flattening Math.max(0.0f, h + swellBaseline) clamp on interior vertices.
+  * Raised the interior reference surface to interiorBaseY = VANILLA_WATER_TOP_Y + 0.18f + 0.22f * stormIntensity.
+  * Set safeFloor = VANILLA_WATER_TOP_Y + 0.015f to allow waves to drop deeply into realistic wave troughs without dipping below Minecraft's native 62.88 water plane or causing z-fighting.
+  * Added 3rd high-frequency cross-chop harmonic (chop3 at lambda ~ 3.4m, angle +42 deg off the wind vector) to heighten visible ocean turbulence during storms.
+  * Added Ocean & Deep Ocean Biome Multiplier:
+    - Checked BiomeTags.IS_OCEAN / BiomeTags.IS_DEEP_OCEAN per grid cell in updateWaterCache to populate cachedBiomeMultiplier (1.25x in ocean, 1.0x in coastal/rivers), smoothly interpolated across vertices.
+- Sable Sub-Level Hull Masking & Dry Ship Interior (ClientWaveRenderer.java):
+  * Resolved wave rendering inside Sable ClientSubLevel ship holds:
+    - Iterated nearby ClientSubLevel contraptions via SubLevelContainer.getContainer(level) during onRenderLevelStage.
+    - Transformed grid points (wx + 0.5, wy, wz + 0.5) into the ship's local coordinates via pose.transformPositionInverse(worldProbe, localProbe).
+    - Checked for waterline blocks (wy ~ 61.5 to 63.5) and displaced hull volumes (solid floor/keel below between 57.0 and 61.5, combined with solid deck/roof above or surrounding hull walls).
+    - Marked overlapping cells as maskedByShipHull[gx][gz] = true.
+  * Pinned Boundary Waterline:
+    - Cells adjacent to maskedByShipHull are marked as boundary vertices (isInterior = false), pinning them to PINNED_WATER_Y (62.890f) to seal exterior water cleanly against the outside hull planking without clipping inside the cabin.
+  * Skipped Interior Quads:
+    - Excluded any quad where maskedByShipHull[gx][gz] == true from rendering, eliminating 100% of custom wave geometry inside ship holds.
+- Offline Verification:
+  * Compiled via ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 errors).
+  * Tested via ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 24/24 unit tests passing).
+
+Session 95: Calm & Storm Wave Aggressiveness Sliders (NeoForge Config & Video Settings Injection) (Oct 22 2026):
+- Client Configuration Architecture (SereneSailingClientConfig.java & SereneSailing.java):
+  * Created SereneSailingClientConfig with ModConfigSpec.Builder defining two linear DoubleValue settings:
+    - calmWaveAggressiveness: range [0.0, 3.0], default 1.0 (0% - 300% linear scaling for calm/normal weather).
+    - stormWaveAggressiveness: range [0.0, 3.0], default 1.0 (0% - 300% linear scaling for stormy weather).
+  * Provided robust fallback getters getCalmAggressiveness() and getStormAggressiveness() guarded with SPEC.isLoaded() and try-catch defaulting to 1.0 during headless unit test execution.
+  * Registered ModConfig.Type.CLIENT in SereneSailing.java with SereneSailingClientConfig.SPEC.
+  * Registered NeoForge's built-in IConfigScreenFactory (ConfigurationScreen::new) in ClientSetup.java to enable the in-game "Config" button in the Mods menu.
+- Video Settings Screen Injection (ClientSetup.java):
+  * Subscribed to ScreenEvent.Init.Post on the Game Event Bus.
+  * Detected VideoSettingsScreen instances and located the active OptionsList child widget.
+  * Built two OptionInstance<Double> sliders with OptionInstance.UnitDouble.INSTANCE.xmap (snapping to 0.05 step increments from 0.0 to 3.0, displayed as 0% to 300%):
+    - Slider 1: serenesailing.options.calmWaveAggressiveness ("Calm Wave Aggressiveness: %s%%").
+    - Slider 2: serenesailing.options.stormWaveAggressiveness ("Storm Wave Aggressiveness: %s%%").
+  * Added options side-by-side using optionsList.addSmall(calmSlider, stormSlider).
+  * Added all matching localization keys to src/main/resources/assets/serenesailing/lang/en_us.json.
+- Dynamic Wave Scaling & Visual Chop Integration (GerstnerWaveEngine.java & ClientWaveRenderer.java):
+  * Added getActiveWaveScale(stormIntensity) smoothly interpolating calm and storm scales:
+    - stormBlend = Mth.clamp((stormIntensity - 0.15) / 0.55, 0.0, 1.0).
+    - activeWaveScale = Mth.lerp(stormBlend, calmScale, stormScale).
+  * Linearly multiplied wave amplitudes (BASE_AMPLITUDES[i]), trochoidal steepnessQ, trochoidal crest sharpness, and wave group envelope variations by activeWaveScale across evaluateWaveOffset, evaluateWaveSlopeAndDrift, and evaluateStokesDriftVector.
+  * In ClientWaveRenderer.java, multiplied visual chop harmonics (amp1, amp2, amp3) by activeWaveScale.
+  * Linearly scaled interiorBaseY offset by activeWaveScale while retaining the safeFloor (VANILLA_WATER_TOP_Y + 0.015f) to ensure troughs never clip below 62.88f water even at 300% slider values.
+- Build & Unit Test Verification:
+  * Compiled via ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 errors).
+  * Tested via ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 37 unit tests across all 4 test classes passing, 0 failures, 0 errors).
+Session 96: Production Release Jar Packaging & Multi-Mod Verification (Oct 23 2026):
+- Manifest & Dependency Specification (gradle.properties, build.gradle, neoforge.mods.toml):
+  * Added neo_version_range=[21.1.228,) to gradle.properties.
+  * Exposed neo_version_range into ProcessResources replaceProperties in build.gradle.
+  * Updated neoforge dependency in src/main/resources/META-INF/neoforge.mods.toml to use ${neo_version_range} ([21.1.228,)), strictly targeting NeoForge 21.1.228+.
+  * Verified mod ID (serenesailing), mod version (1.0.0), and dependencies for minecraft ([1.21.1]), sable ([2.0.0,)), create ([6.0.0,)), and aeronautics ([1.0.0,)).
+- Full Build & Packaging Pipeline (Serene Sailing):
+  * Executed ./gradlew.bat build --offline: BUILD SUCCESSFUL (0 compilation errors, all 37 unit tests passing).
+  * Generated production mod jar: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar (191,805 bytes / ~187 KB).
+  * Verified jar archive contents: META-INF/neoforge.mods.toml properly expands all tokens with clean mod and dependency version ranges.
+- Companion Worldgen Mod Verification (Serene Ocean Worldgen):
+  * Re-packaged D:\Worldgen via ./gradlew.bat jar --offline --rerun-tasks: BUILD SUCCESSFUL.
+  * Verified jar output: D:\Worldgen\build\libs\sereneworldgen-1.0.0.jar (19,257 bytes / ~19 KB).
+
+Session 97: Wave Color & Night Ambient Lighting Calibration, Raft/Hull Smooth Wave Attenuation & Platform Packaging Compliance (Oct 23 2026):
+- Fix 1: Wave Color & Night Brightness Mismatch Against Vanilla Water (ClientWaveRenderer.java):
+  * Sampled ambient sky and block light at the water surface (Y = 63) in updateWaterCache using level.getBrightness(LightLayer.SKY/BLOCK, pos).
+  * In onRenderLevelStage, computed cell ambient brightness using LightTexture.getBrightness(level.dimensionType(), rawLight) with rawLight = max(blockLight, max(0, skyLight - skyDarken)), clamped between 0.18f and 1.0f.
+  * Interpolated vertex ambient light factors (vertLight) and modulated base water colors and surf ribbon foam colors by vertLight, ensuring the custom wave mesh naturally dims at night and during storms to match vanilla water.
+  * Calibrated base RGB slopeFactor baseline from 0.78f down to 0.72f and boundary alpha from 165 to 150 (smoothly ramping up to 185 in open water), eliminating color seams against vanilla block/water_still.
+- Fix 2: Elimination of Vertical Wave Walls Around Rafts vs. Enclosed Hulls (ClientWaveRenderer.java):
+  * Differentiated Enclosed Ship Hulls (hasEnclosedHold) from Flat Open Rafts (isOpenRaft):
+    - When scanning ClientSubLevels, identified open rafts by bounding box height < 2.8 blocks or absence of an enclosed below-waterline hold.
+  * Flat Open Rafts (isOpenRaft):
+    - Prevented quad masking (maskedByShipHull = false) and prevented hard-pinning vertices to PINNED_WATER_Y (62.890f).
+    - Computed smooth hullFeather factor ranging from 0.0 at the raft center to 1.0 at 3.5 blocks outside the raft footprint.
+    - Linearly blended vertex wave height between the raft deck waterline (shipPos.y() - 0.12f) and open-water swell height over the 3.5-block radius, eliminating the vertical waterfall drop and rectangular cutout around rafts.
+  * Enclosed Ship Hulls (hasEnclosedHold):
+    - Restated isInsideShipEnclosedHold with strict 4-wall enclosure and solid floor/ceiling checks so maskedByShipHull applies strictly to interior cabin holds, keeping the inside 100% dry.
+    - For exterior water within 3.0 blocks outside hull walls, applied smooth hullFeather distance ramp (0.25 at the hull plank up to 1.0 at 3.0 blocks away) so exterior waves lap gently against the ship sides rather than dropping off a vertical cliff.
+- Fix 3: CurseForge & Modrinth Packaging Compliance (neoforge.mods.toml, build.gradle, gradle.properties):
+  * Added mod_authors=Dhanush, mod_name=Serene Sailing, mod_license=MIT, and minecraft_version_range=[1.21.1,1.22) in gradle.properties.
+  * Updated build.gradle ProcessResources to expand mod_authors.
+  * Standardized [[dependencies.serenesailing]] with type="required"/"optional" and ordering="NONE" for neoforge ([21.1.228,)), minecraft ([1.21.1,1.22)), sable ([2.0.0,)), create ([6.0.0,)), aeronautics ([1.0.0,)), and weather2 ([1.21.0,)).
+- Verification & Test Results:
+  * ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 compilation errors).
+  * ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 37 unit tests across all 4 test suites passing, 0 failures, 0 errors).
+  * ./gradlew.bat build --offline: BUILD SUCCESSFUL.
+  * Verified output: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar (196,006 bytes).
+
+================================================================================
+SESSION 98 (2026-10-24):
+================================================================================
+- Fix Raft/Vessel Wave Dome & Deck-Flooding Bug (ClientWaveRenderer.java):
+  * Root Cause: In Session 97, setting maskedByShipHull = false for rafts and lerping vertex heights unconditionally toward shipPos.y() - 0.12f caused ocean water to pull upward into a blue dome poking through the deck and render blue water quads across wooden deck planks, because shipPos.y() was the sub-level's center of mass (elevated by masts and rigging).
+  * Strict Water-Contact Gate (checkColumnWaterContact):
+    - For each column (wx, wz), inverse-transforms world probes across wy in [58.0, 66.0] into local sub-level coordinates.
+    - Accurately captures actual world-space Y of the lowest solid block bottom (hullBottomWorldY) and edge block top (edgeTopWorldY).
+    - Contact Gate: Evaluated as contacting water ONLY when hullBottomWorldY <= colOpenWaterY + 0.15f AND edgeTopWorldY >= 62.0f. Vessels or sections floating above waves have zero influence on the wave mesh below.
+  * Universal Hull & Deck Masking:
+    - Any cell (gx, gz) with contacting hull/deck blocks (flat rafts or enclosed hulls) or inside an enclosed hold sets maskedByShipHull[gx][gz] = true.
+    - Prevents water quads from ever rendering on top of wooden deck planks, keeping decks 100% dry.
+  * One-Way Downward Swell Feathering:
+    - At hull contact perimeter, computes edge clamping level: edgeWaterlineY = max(PINNED_WATER_Y, min(edgeTopWorldY - 0.08f, PINNED_WATER_Y + 0.12f)).
+    - For vertices within 3.5 blocks outside maskedByShipHull, applies feathering strictly when open-water swells exceed the edge waterline (openWaterY > edgeWaterlineY via lerp(hullFeather, edgeWaterlineY, openWaterY)).
+    - Vertices directly on the hull boundary (hullFeather == 0.0f) clamp to min(openWaterY, edgeWaterlineY), cleanly sealing against the raft plank edge without dropping below the hull or rising over the deck.
+  * Verification & Test Results:
+    - ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 errors).
+    - ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 37 unit tests across all 4 suites passing: HydrodynamicsFossenMmgTest [22], ShipPhysicsEngineTest [9], RaftPropagationUnitTest [5], PhysicsUnitTest [1]).
+    - ./gradlew.bat build --offline: BUILD SUCCESSFUL.
+    - Verified output: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar (197,854 bytes).
+
+================================================================================
+SESSION 99 (2026-10-24):
+================================================================================
+- Comprehensive Bug Audit & Wave-Slowing / Anti-Stall Fix:
+  * Part 1: Fix Vessels Slowing Down or Stopping Against Ocean Waves (ServerPhysicsHandler.java):
+    - 3-Point Longitudinal Keel Wavelength Filtering: Sampled wave elevations and slopes at Bow, Midships, and Stern keel points using GerstnerWaveEngine.evaluateWaveSlopeAndDrift.
+    - Decoupled Forward Surge Momentum from Opposing Wave-Slope Braking: Decomposed wave slope gravity forces into body-fixed surge (longitudinal) and sway (transverse) axes. When underway (speed > 0.15 m/s) or under active sail thrust (> 1.0 N), attenuated opposing longitudinal wave-slope retardation by 88% and hard-clamped maximum opposing retardation to <= 15% of active sail thrust. Downhill wave-slope surfing acceleration is 100% preserved.
+    - Anti-Stall Stokes Drift Attenuation: Decomposed Stokes drift into surge and sway, attenuating opposing drift by 88% and capping retarding force under active sail thrust so upwind / close-hauled sailing never stalls against oncoming storm seas.
+    - Frozen Surge Drag Draft: Ensured longitudinal surge drag uses mean hydrostatic equilibrium displacement rather than spiking on instantaneous wave crests.
+  * Part 2: Full Physics, Rigging & BlockEntity Audit:
+    - RudderHydrodynamics.java: Added zero-length vector guard on starboardDir cross product to prevent potential NaN vector normalization.
+    - ShipPhysicsEngine.java: Added length check on windVector before division to prevent near-zero vector division.
+    - SailBlock.java: Implemented onPlace and onRemove overrides to immediately invalidate ServerPhysicsHandler sub-level steering cache when sails are broken or placed on assembled contraptions.
+    - ServerPhysicsHandler.java: Added LevelEvent.Unload event listener to purge static caches (steering, creak, helm, velocity, telemetry) and prevent memory leaks.
+  * Part 3: Client Rendering, Cache & Memory Leak Audit (ClientWaveRenderer.java):
+    - Night-Time Water Masking Glow Removal: Removed artificial 0.18f floor clamp on cellLightFactor, allowing water brightness to smoothly track night ambient levels down to ~0.05. Faded directional wave slope highlights at night so wave crests do not glow in darkness, perfectly matching vanilla block/water_still.
+    - Sub-Level Map Leak Prevention: Added removeIf cleanup on lastShipPos map, plus ClientPlayerNetworkEvent.LoggingOut and LevelEvent.Unload handlers to clear stale ClientSubLevel references.
+    - Blaze3D Render State Hygiene: Enclosed quad buffering and shader upload in a try-finally block to guarantee prompt restoration of Cull, DepthMask, Blend, and PoseStack.
+  * Part 4: Automated Regression Test for Wave Traversal:
+    - Added testVesselMaintainsForwardSpeedThroughStormWaves in RaftPropagationUnitTest: Simulates light rafts and multi-sail ships over 200 ticks across normal waves and severe storm waves (1.0x and 2.0x scale) across oncoming, cross, and following wave headings. Asserts vessels accelerate smoothly, never drop below 0.5 m/s once underway, and retain >= 80% of flat-water cruising speed.
+  * Verification & Test Results:
+    - ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 errors).
+    - ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 38 unit tests across all 4 suites passing: HydrodynamicsFossenMmgTest [22], ShipPhysicsEngineTest [9], RaftPropagationUnitTest [6], PhysicsUnitTest [1]).
+    - ./gradlew.bat build --offline: BUILD SUCCESSFUL.
+    - Verified output: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar (199,683 bytes).
+
+================================================================================
+SESSION 100 (2026-10-30):
+================================================================================
+- Comprehensive Security Audit & Defense-in-Depth Hardening:
+  * Network Payload Security & Injection Prevention (ServerboundSteerPayload & SetHelmAnglePayload):
+    - NaN & Infinity Injection Guards: In compact record constructors, explicitly sanitized Float.NaN and Float.isInfinite to 0.0f. Clamped rudder angle to [-35.0, 35.0] and helm angle to [-45.0, 45.0], preventing malicious clients from injecting NaN floats that corrupt rigid body transformation matrices and erase vessels from the physics world.
+    - Null Coordinate Guards: Defaulted null BlockPos to BlockPos.ZERO and added early return on null payload coordinates.
+    - Player Reach & Interaction Distance Validation: Verified that the sender player is in the same dimension and within 10 blocks (distanceSquared <= 100.0) of the helm's world-space position (transformed via subLevel.logicalPose() for assembled vessels). Dropped packets from out-of-reach players to prevent remote vessel hijacking across the server.
+    - Elimination of Global Steering Override: Removed fallback that looped over serverContainer.getAllSubLevels() and steered every ship in the world when helmSubLevel was null. If no valid HelmBlockEntity exists at pos, the packet is safely dropped.
+  * Thread Safety & Concurrency Hardening:
+    - AtomicLong Step Counter: Replaced non-atomic long stepCounter with java.util.concurrent.atomic.AtomicLong to guarantee atomic 64-bit updates across high-frequency physics sub-steps and server threads.
+    - ConcurrentModificationException Protection: In scanSteering(), wrapped block entity iteration in a defensive copy (new ArrayList<>(chunk.getBlockEntities().entrySet())) and added CME handling, preventing off-thread physics sub-steps from crashing if block entities are modified concurrently on the main thread.
+    - Null-Safe Concurrent HashMaps: Added null guards on subLevelId and dimension across ServerPhysicsHandler.getDimensionWind, setHelmAngle, getHelmAngle, getVesselVelocity, getForwardSpeed, and invalidateSteeringCache, preventing ConcurrentHashMap NullPointerException crashes.
+    - Wind Cache Lifecycle Cleanup: Cleared DIMENSION_WIND_CACHE on level unload to prevent dimension resource key leaks.
+    - GerstnerWaveEngine Dimension Safety: Added null check on level.dimension() in getDimensionState.
+    - BlockEntity NBT Deserialization Hardening: Added NaN/Infinity guards on HelmBlockEntity and RudderBlockEntity setters and loadAdditional() methods.
+  * Supply Chain & Dependency Security Review:
+    - Verified build.gradle uses exclusiveContent filtering for Modrinth, preventing dependency confusion or repository poisoning.
+    - Confirmed all external repositories use HTTPS (https://api.modrinth.com/maven); no plaintext HTTP repositories or unpinned dynamic release dependencies.
+    - Verified absence of credentials, secrets, tokens, or private keys across build scripts, properties, and configuration files.
+  * Automated Security Test Suite:
+    - Created NetworkSecurityPayloadTest.java with 7 comprehensive unit tests validating NaN/Infinity rejection, angle clamping, null coordinate safety, and ServerPhysicsHandler cache guards.
+  * Verification & Test Results:
+    - ./gradlew.bat compileJava --offline: BUILD SUCCESSFUL (0 errors).
+    - ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 46 unit tests across all 5 test suites passing with 100% success rate).
+    - ./gradlew.bat build --offline: BUILD SUCCESSFUL.
+    - Output jar: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar.
+
+================================================================================
+SESSION 101 (2026-10-30):
+================================================================================
+- Playtest Screenshot Visual Quality Overhaul & Mesh Polish:
+  * Issue 1: Shoreline "Waterfall Cliff" & Ship Hull Mesh Tear Fixes (ClientWaveRenderer.java):
+    - Smooth Shoreline Taper: Replaced hard-pinned shoreline cliff with smooth distance-based cubic hermite taper `shoreTaper = Mth.clamp((vertShoreDist - 0.5f) / 5.5f, 0.0f, 1.0f); shoreTaper = shoreTaper * shoreTaper * (3.0f - 2.0f * shoreTaper);` smoothly fading wave displacement and elevation boost toward the shore without vertical drops or floating waterfall ledges.
+    - Tear-Free Ship Hull Feathering & Normal Continuity: Computed raw Gerstner wave offsets across all vertices prior to hull clamping so normal finite differences never drop to 0.0 at hull edges. Expanded hull masking search radius to 4.5 blocks with 3x3 box smoothing, applying continuous feathering `openWaterY = Mth.lerp(smoothHullFeather, Math.min(openWaterY, edgeWaterlineY), openWaterY)`.
+  * Issue 2: Night-Time Water Slit Artifacts (ClientWaveRenderer.java):
+    - Inset water sprite texture UV sampling by 0.25 texels (`getU(0.25f)` to `getU(15.75f)`) to eliminate texture atlas bleeding and dark horizontal slits at tile seams under night lighting.
+  * Issue 3: Sail Slit & Gap Elimination (canvas_sail_full.json & canvas_sail_half.json):
+    - Redesigned full and half canvas sails with a solid continuous canvas sheet spanning X = 0.0..16.0 and Y = 0.0..16.0.
+    - Removed side battens and bulky clew corner blocks that left X=0..1 and X=15..16 empty.
+    - Added continuous cambered billowing front panels with 1.0-1.5px vertical and depth overlaps so sails connect seamlessly side-to-side and top-to-bottom without gaps.
+  * Issue 4: Ship's Wheel Shading & Contrast Enhancement (HelmBlockEntityRenderer.java):
+    - Replaced flat silhouette with dynamic directional per-face shading (Top = 1.0, Bottom = 0.55, North/South = 0.95/0.70, East/West = 0.68) and true vertex normal vectors.
+    - Applied high-contrast maritime palette: rich warm oak rim base (135, 92, 52) with lighter beveled front faces (165, 118, 70), birch spokes (185, 142, 88), polished brass boss hub and inner ring (235, 195, 75) with top specular highlight (255, 225, 110), and turned grip handles (145, 100, 58).
+  * Issue 5: Patent Taffrail Log Model & Collision Redesign (taffrail_log.json & TaffrailLogBlock.java):
+    - Redesigned broken floating beam into an authentic Age-of-Sail brass patent log featuring a wooden mounting base [4, 0, 4] to [12, 3, 12], iron pedestal [5.5, 3, 5.5] to [10.5, 9, 10.5], brass dial housing [4.5, 9, 4.5] to [11.5, 12.5, 11.5], smooth quartz dial face [5.5, 12.5, 5.5] to [10.5, 12.75, 10.5], iron indicator needle [7.5, 12.75, 6.0] to [8.5, 13.0, 9.5], and trailing stern rotor [6.5, 9.5, 11.5] to [9.5, 11.5, 15.0].
+    - Updated TaffrailLogBlock.SHAPE to Block.box(4.0, 0.0, 4.0, 12.0, 13.0, 15.0).
+  * Issue 6: Masthead Wind Vane Simplification (wind_vane.json, item model, & WindVaneRenderer.java):
+    - Stripped bulky crossbars, copper cubes, and oversized markers from static block and item models. Simplified to sleek deck plate [6, 0, 6] to [10, 1.5, 10] and slender spindle rod [7.5, 1.5, 7.5] to [8.5, 13.0, 8.5].
+    - Redesigned WindVaneRenderer to render a slender aerodynamic brass pointer with pivot ring, 0.8px horizontal boom, pointed windward arrowhead with barbs, and stabilizing tail fin with directional per-face shading.
+  * Issue 7: Verification & Release Packaging:
+    - ./gradlew.bat test --offline: BUILD SUCCESSFUL (all 46 unit tests passing across all suites).
+    - ./gradlew.bat build --offline: BUILD SUCCESSFUL.
+    - Verified output release jar: D:\SereneSailing\build\libs\serenesailing-1.0.0.jar (209,276 bytes).
+
+================================================================================
+SESSION 102 (2026-10-30):
+================================================================================
+- Playtest Screenshot Fixes (Screenshots 230406.jpg - 230507.jpg):
+  * Issue 1: Yellow Shoreline Surf Ribbon Color & Taper Fix (ClientWaveRenderer.java):
+    - Replaced packed integer vertex color packing (`packSurfFoamColor` / `.setColor(int)`) with explicit 4-channel RGBA calls `.setColor(int r, int g, int b, int a)` on BufferBuilder for both ocean water quads and surf foam ribbons, eliminating ARGB/ABGR byte-order mismatch and blue-channel zeroing.
+    - Surf foam vertices now emit pure neutral white scaled by vertex lighting: `foamR = (int)(248 * vertLight)`, `foamG = (int)(252 * vertLight)`, `foamB = (int)(255 * vertLight)`, and alpha `(int)(crisp * 225.0f * distFade)`.
+    - Restricted surf ribbon evaluation strictly to sandy/gravel beaches with `0.9f <= sDist <= 4.0f` and crest range `3.9f - cycle * 2.95f`, preventing foam generation on grass/dirt blocks at `sDist < 0.8f`.
+  * Issue 2: Below-Waterline Ship Hold Waterlogging & Vanilla Water Culling (ClientWaveRenderer.java & ShipHullAirPocketHelper.java):
+    - Visual Occlusion: Subscribed to `RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES` (which runs after solid ship hull blocks are rendered to depth buffer, but before vanilla translucent chunk water at Y = 62.88f / 61.88f). Implemented `renderEnclosedHoldDepthOcclusion` emitting depth-only invisible quads at Y = 62.92f and 61.92f with `RenderSystem.colorMask(false, false, false, false)` and `RenderSystem.depthMask(true)`, occluding vanilla translucent water inside enclosed ship holds without altering visible wooden hull blocks.
+    - Physical Dry-Hold: Created `ShipHullAirPocketHelper.java` with `isEntityInDryShipHold(Level, Vec3)` checking floor below, ceiling above, and 4-wall solid boundary in nearby Sable SubLevels below Y = 63.2.
+    - Subscribed to `PlayerTickEvent.Pre`, `PlayerTickEvent.Post`, `EntityTickEvent.Pre`, `EntityTickEvent.Post`: clears `entity.wasTouchingWater`, `entity.wasEyeInWater`, `entity.setSwimming(false)`, resets fall distance, restores air supply (`entity.setAirSupply(entity.getMaxAirSupply())`), and cancels water movement drag so below-waterline ship holds feel 100% like dry land with no swimming animations or splashing sounds.
+  * Issue 3: Restyle Canvas Sails to Authentic 1600s-1700s Age-of-Sail Aesthetic (models/block/ & models/item/):
+    - Removed all horizontal brown wooden bars from the front and middle faces of canvas sails (`canvas_sail_full.json`, `canvas_sail_half.json`, `canvas_sail_rolled.json`, `canvas_sail_empty.json`).
+    - Positioned wooden yardarm spar and brackets strictly behind the canvas sheet (Z <= 2.2).
+    - Canvas sheet spans X = 0.0..16.0, Y = 0.0..16.0, Z = 2.2..3.5 using `minecraft:block/white_wool` with zero gaps or slits.
+    - Added two subtle vertical light-gray seam strips running top-to-bottom from Y = 0.0 to 16.0 at X = 5.1..5.5 and X = 10.5..10.9 (protruding 0.05px at Z = 2.15..3.55) using `minecraft:block/light_gray_wool` to reproduce authentic 17th-century canvas cloth seams.
+  * Issue 4: Taffrail Log Missing Texture Fix & 1600s-1700s Maritime Model Simplification:
+    - Fixed missing texture in `taffrail_log.json` and `models/item/taffrail_log.json` caused by non-existent `minecraft:block/quartz_block`. Redesigned to an authentic 17th-century wooden and brass log-line reel with spruce plank rail mount [4, 0, 4] to [12, 2, 12], oak side stanchions [4.5, 2, 5.5] to [6, 9, 10.5] and [10, 2, 5.5] to [11.5, 9, 10.5], stripped oak log-line spool drum [6, 4.5, 6] to [10, 8.5, 10], gold index dial plate [6.5, 8.5, 6.5] to [9.5, 9.0, 9.5], and iron needle [7.7, 9.0, 6.8] to [8.3, 9.2, 8.8].
+    - Updated `TaffrailLogBlock.SHAPE` bounding box to `Block.box(4.0, 0.0, 4.0, 12.0, 10.0, 12.0)`.
+    - Simplified Helm Pedestal (`helm.json`) and wheel palette (`HelmBlockEntityRenderer.java`): clean wooden pedestal (`spruce_planks`, `oak_planks`), spruce wheel outer rim, oak spokes, and small brass center hub.
+    - Simplified Wind Vane (`wind_vane.json`, `models/item/wind_vane.json`, `WindVaneRenderer.java`): simple spruce base plate, 1px iron spindle rod, wrought-iron pointer arrow, and copper tail pennant. Verified all block and item models strictly use existing vanilla 1.21.1 textures.
+  * Issue 5: Build, Test & Packaging:
+    - `./gradlew.bat test --offline`: BUILD SUCCESSFUL (all 46 unit tests passing across all test suites).
+    - `./gradlew.bat build --offline`: BUILD SUCCESSFUL.
+    - Generated release jar: `D:\SereneSailing\build\libs\serenesailing-1.0.0.jar` (214,714 bytes).

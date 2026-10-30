@@ -329,7 +329,7 @@ public class ClientWaveRenderer {
      * crescent breaker.
      */
     private static float evaluateBeachSurfRibbon(double wx, double wz, float sDist, double renderTime) {
-        if (sDist < 0.45f || sDist > 4.4f) {
+        if (sDist < 0.9f || sDist > 4.0f) {
             return 0.0f;
         }
 
@@ -341,20 +341,18 @@ public class ClientWaveRenderer {
         if (waveSetMask <= 0.01f) {
             return 0.0f;
         }
-        // Smoothstep the along-shore crescent tips so each ribbon tapers into a thin
-        // point
+        // Smoothstep the along-shore crescent tips so each ribbon tapers into a thin point
         waveSetMask = waveSetMask * waveSetMask * (3.0f - 2.0f * waveSetMask);
 
-        // 2. Shoreward phase propagation (waves roll toward sDist -> 0)
+        // 2. Shoreward phase propagation (waves roll toward sDist -> 0.9)
         double curveWarp = Math.sin(wx * 0.21 + wz * 0.19) * 0.75;
-        // Center of the crest travels from sDist = 4.0 down to sDist = 0.6
+        // Center of the crest travels from sDist = 3.9 down to sDist = 0.95
         double cycle = (renderTime * 0.38 + curveWarp * 0.15) % 1.0;
         if (cycle < 0.0)
             cycle += 1.0;
-        float crestCenterDist = 4.0f - (float) cycle * 3.4f;
+        float crestCenterDist = 3.9f - (float) cycle * 2.95f;
 
-        // Asymmetric cross-shore ribbon profile: sharp leading shoreward edge, short
-        // frothy trail behind
+        // Asymmetric cross-shore ribbon profile: sharp leading shoreward edge, short frothy trail behind
         float distFromCrest = sDist - crestCenterDist;
         float ribbonHalfWidth = 0.34f * (0.55f + 0.45f * waveSetMask);
 
@@ -373,21 +371,19 @@ public class ClientWaveRenderer {
             profile = (1.0f - norm) * (1.0f - norm);
         }
 
-        // 3. Distance envelope: fade in smoothly offshore (3.3..4.2) and wash out on
-        // sand (0.45..1.05)
+        // 3. Distance envelope: fade in smoothly offshore (3.2..4.0) and wash out on sand (0.9..1.4)
         float distEnvelope = 1.0f;
-        if (sDist < 1.05f) {
-            distEnvelope = Mth.clamp((sDist - 0.45f) / 0.60f, 0.0f, 1.0f);
+        if (sDist < 1.4f) {
+            distEnvelope = Mth.clamp((sDist - 0.9f) / 0.50f, 0.0f, 1.0f);
         } else if (sDist > 3.2f) {
-            distEnvelope = Mth.clamp((4.2f - sDist) / 1.0f, 0.0f, 1.0f);
+            distEnvelope = Mth.clamp((4.0f - sDist) / 0.80f, 0.0f, 1.0f);
         }
 
-        // Secondary staggered wave train so neighboring beach segments have offset
-        // timing
+        // Secondary staggered wave train so neighboring beach segments have offset timing
         float secondaryCycle = (float) ((renderTime * 0.38 + 0.5 + Math.cos(wx * 0.12 - wz * 0.14) * 0.18) % 1.0);
         if (secondaryCycle < 0.0f)
             secondaryCycle += 1.0f;
-        float crest2Dist = 3.8f - secondaryCycle * 3.2f;
+        float crest2Dist = 3.7f - secondaryCycle * 2.7f;
         float d2 = Math.abs(sDist - crest2Dist) / (ribbonHalfWidth * 0.85f);
         float profile2 = d2 < 1.0f ? (1.0f - d2 * d2) * (1.0f - waveSetMask * 0.5f) : 0.0f;
 
@@ -402,6 +398,10 @@ public class ClientWaveRenderer {
      */
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
+        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES) {
+            renderEnclosedHoldDepthOcclusion(event);
+            return;
+        }
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
             return;
         }
@@ -458,7 +458,8 @@ public class ClientWaveRenderer {
         double amp2 = (0.07 * stormIntensity + 0.020) * stormScale * activeWaveScale;
         double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale * activeWaveScale;
 
-        float interiorBaseY = VANILLA_WATER_TOP_Y + (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
+        float elevationBoost = (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
+        float interiorBaseY = VANILLA_WATER_TOP_Y + elevationBoost;
         float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
 
         // --- Sable Sub-Level Hull Masking & Wave Attenuation ---
@@ -590,10 +591,12 @@ public class ClientWaveRenderer {
         // Compute distance field to nearest contacting masked hull cell
         float[][] vertDistToMaskedHull = new float[vertDim][vertDim];
         float[][] vertEdgeWaterlineY = new float[vertDim][vertDim];
+        float[][] rawVertHullFeather = new float[vertDim][vertDim];
 
         for (int vi = 0; vi < vertDim; vi++) {
             Arrays.fill(vertDistToMaskedHull[vi], 99.0f);
             Arrays.fill(vertEdgeWaterlineY[vi], PINNED_WATER_Y + 0.05f);
+            Arrays.fill(rawVertHullFeather[vi], 1.0f);
         }
 
         if (!maskedCells.isEmpty()) {
@@ -607,12 +610,12 @@ public class ClientWaveRenderer {
                 if (info.gz > maxMaskedGZ) maxMaskedGZ = info.gz;
             }
 
-            int checkMinVI = Math.max(0, minMaskedGX - 4);
-            int checkMaxVI = Math.min(vertDim - 1, maxMaskedGX + 5);
-            int checkMinVJ = Math.max(0, minMaskedGZ - 4);
-            int checkMaxVJ = Math.min(vertDim - 1, maxMaskedGZ + 5);
+            int checkMinVI = Math.max(0, minMaskedGX - 5);
+            int checkMaxVI = Math.min(vertDim - 1, maxMaskedGX + 6);
+            int checkMinVJ = Math.max(0, minMaskedGZ - 5);
+            int checkMaxVJ = Math.min(vertDim - 1, maxMaskedGZ + 6);
 
-            double maxDistSq = 3.5 * 3.5 + 0.001;
+            double maxDistSq = 4.5 * 4.5 + 0.001;
 
             for (int vi = checkMinVI; vi <= checkMaxVI; vi++) {
                 for (int vj = checkMinVJ; vj <= checkMaxVJ; vj++) {
@@ -633,10 +636,35 @@ public class ClientWaveRenderer {
                     }
 
                     if (minDistSq < maxDistSq) {
-                        vertDistToMaskedHull[vi][vj] = (float) Math.sqrt(minDistSq);
+                        float dist = (float) Math.sqrt(minDistSq);
+                        vertDistToMaskedHull[vi][vj] = dist;
                         vertEdgeWaterlineY[vi][vj] = nearestEdgeY;
+                        rawVertHullFeather[vi][vj] = Mth.clamp(dist / 4.5f, 0.0f, 1.0f);
                     }
                 }
+            }
+        }
+
+        // 3x3 spatial smoothing filter over vertHullFeather to eliminate mesh tears around ships
+        float[][] vertHullFeather = new float[vertDim][vertDim];
+        for (int vi = 0; vi < vertDim; vi++) {
+            for (int vj = 0; vj < vertDim; vj++) {
+                if (rawVertHullFeather[vi][vj] >= 0.999f) {
+                    vertHullFeather[vi][vj] = 1.0f;
+                    continue;
+                }
+                float sum = 0.0f;
+                float weightSum = 0.0f;
+                for (int di = -1; di <= 1; di++) {
+                    for (int dj = -1; dj <= 1; dj++) {
+                        int ni = Mth.clamp(vi + di, 0, vertDim - 1);
+                        int nj = Mth.clamp(vj + dj, 0, vertDim - 1);
+                        float w = (di == 0 && dj == 0) ? 2.0f : 1.0f;
+                        sum += rawVertHullFeather[ni][nj] * w;
+                        weightSum += w;
+                    }
+                }
+                vertHullFeather[vi][vj] = weightSum > 0.0f ? (sum / weightSum) : rawVertHullFeather[vi][vj];
             }
         }
 
@@ -724,7 +752,6 @@ public class ClientWaveRenderer {
         float[][] waveOffset = new float[vertDim][vertDim];
         float[][] vertFinalY = new float[vertDim][vertDim];
         float[][] vertLight = new float[vertDim][vertDim];
-        float[][] vertHullFeather = new float[vertDim][vertDim];
 
         for (int vi = 0; vi < vertDim; vi++) {
             double vx = startX + vi * CELL_STEP;
@@ -738,16 +765,7 @@ public class ClientWaveRenderer {
                 float l11 = (vi < cachedGridDim && vj < cachedGridDim) ? cellLightFactor[vi][vj] : 1.0f;
                 vertLight[vi][vj] = (l00 + l01 + l10 + l11) * 0.25f;
 
-                float dist = vertDistToMaskedHull[vi][vj];
-                float hullFeather = (dist <= 3.5f) ? (dist / 3.5f) : 1.0f;
-                float edgeWaterlineY = vertEdgeWaterlineY[vi][vj];
-                vertHullFeather[vi][vj] = hullFeather;
-
-                if (!isWorldWaterInterior[vi][vj]) {
-                    vertFinalY[vi][vj] = PINNED_WATER_Y;
-                    continue; // Pinned boundary vertex on overworld shoreline/dock
-                }
-
+                // Un-clamped continuous Gerstner + Trochoidal wave displacement for EVERY vertex
                 double baseWave = GerstnerWaveEngine.evaluateWaveOffset(
                         vx, vz, renderTime, stormIntensity, windDirX, windDirZ);
                 double chop1 = Math.sin(0.5712 * (dirX1 * vx + dirZ1 * vz) - 2.367 * renderTime) * amp1;
@@ -770,16 +788,27 @@ public class ClientWaveRenderer {
                     h += 0.065f * surfRibbon;
                 }
 
+                // Raw un-clamped waveOffset populated for EVERY vertex for smooth tear-free slope normals
                 waveOffset[vi][vj] = (float) h;
-                float openWaterY = Math.max(safeFloor, interiorBaseY + (float) h);
 
-                // One-Way Downward Swell Feathering ONLY When Swells Exceed the Edge Block Level
-                if (hullFeather <= 0.0001f) {
-                    openWaterY = Math.min(openWaterY, edgeWaterlineY);
-                } else if (hullFeather < 1.0f) {
-                    if (openWaterY > edgeWaterlineY) {
-                        openWaterY = Mth.lerp(hullFeather, edgeWaterlineY, openWaterY);
-                    }
+                if (!isWorldWaterInterior[vi][vj]) {
+                    vertFinalY[vi][vj] = PINNED_WATER_Y;
+                    continue; // Pinned boundary vertex on overworld shoreline/dock
+                }
+
+                // Smooth shoreline taper: tapers both elevation boost and wave displacement to 0 at shore
+                float shoreTaper = Mth.clamp((sDist - 0.5f) / 5.5f, 0.0f, 1.0f);
+                shoreTaper = shoreTaper * shoreTaper * (3.0f - 2.0f * shoreTaper); // smoothstep
+
+                float taperedBoost = elevationBoost * shoreTaper;
+                float taperedH = (float) h * shoreTaper;
+                float openWaterY = Math.max(safeFloor, VANILLA_WATER_TOP_Y + taperedBoost + taperedH);
+
+                // Continuous Ship Wave Feathering: smooth transition near ship hull/deck
+                float smoothHullFeather = vertHullFeather[vi][vj];
+                float edgeWaterlineY = vertEdgeWaterlineY[vi][vj];
+                if (smoothHullFeather < 1.0f) {
+                    openWaterY = Mth.lerp(smoothHullFeather, Math.min(openWaterY, edgeWaterlineY), openWaterY);
                 }
 
                 vertFinalY[vi][vj] = openWaterY;
@@ -787,13 +816,13 @@ public class ClientWaveRenderer {
         }
 
         // Texture sprite for animated native water - statically locked to 1x1 block
-        // coordinates
+        // coordinates with 0.25px inset to eliminate texture-atlas edge bleeding
         TextureAtlasSprite waterSprite = mc.getTextureAtlas(InventoryMenu.BLOCK_ATLAS)
                 .apply(ResourceLocation.withDefaultNamespace("block/water_still"));
-        float u0 = waterSprite.getU0();
-        float u1 = waterSprite.getU1();
-        float v0 = waterSprite.getV0();
-        float v1 = waterSprite.getV1();
+        float u0 = waterSprite.getU(0.25f);
+        float u1 = waterSprite.getU(15.75f);
+        float v0 = waterSprite.getV(0.25f);
+        float v1 = waterSprite.getV(15.75f);
         float uMid = (u0 + u1) * 0.5f;
         float vMid = (v0 + v1) * 0.5f;
 
@@ -871,18 +900,23 @@ public class ClientWaveRenderer {
                     continue;
                 }
 
+                int a00 = (c00 >> 24) & 0xFF, r00 = (c00 >> 16) & 0xFF, g00 = (c00 >> 8) & 0xFF, b00 = c00 & 0xFF;
+                int a01 = (c01 >> 24) & 0xFF, r01 = (c01 >> 16) & 0xFF, g01 = (c01 >> 8) & 0xFF, b01 = c01 & 0xFF;
+                int a11 = (c11 >> 24) & 0xFF, r11 = (c11 >> 16) & 0xFF, g11 = (c11 >> 8) & 0xFF, b11 = c11 & 0xFF;
+                int a10 = (c10 >> 24) & 0xFF, r10 = (c10 >> 16) & 0xFF, g10 = (c10 >> 8) & 0xFF, b10 = c10 & 0xFF;
+
                 bufferBuilder
                         .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y00 - camPos.y), (float) (wz0 - camPos.z))
-                        .setUv(u0, v0).setColor(c00);
+                        .setUv(u0, v0).setColor(r00, g00, b00, a00);
                 bufferBuilder
                         .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y01 - camPos.y), (float) (wz1 - camPos.z))
-                        .setUv(u0, v1).setColor(c01);
+                        .setUv(u0, v1).setColor(r01, g01, b01, a01);
                 bufferBuilder
                         .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y11 - camPos.y), (float) (wz1 - camPos.z))
-                        .setUv(u1, v1).setColor(c11);
+                        .setUv(u1, v1).setColor(r11, g11, b11, a11);
                 bufferBuilder
                         .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
-                        .setUv(u1, v0).setColor(c10);
+                        .setUv(u1, v0).setColor(r10, g10, b10, a10);
 
                 // 2. Detached High-Contrast Beach Surf Ribbon Overlay
                 float sd00 = vertShoreDist[gx][gz];
@@ -890,7 +924,7 @@ public class ClientWaveRenderer {
                 float sd11 = vertShoreDist[gx + 1][gz + 1];
                 float sd10 = vertShoreDist[gx + 1][gz];
 
-                if (isShallowWater[gx][gz] && (sd00 <= 4.5f || sd01 <= 4.5f || sd11 <= 4.5f || sd10 <= 4.5f)) {
+                if (isShallowWater[gx][gz] && (sd00 <= 4.0f || sd01 <= 4.0f || sd11 <= 4.0f || sd10 <= 4.0f)) {
                     float distFromCam = (float) Math.hypot(wx0 - camPos.x, wz0 - camPos.z);
                     float distFade = (float) Mth.clamp((cachedRadius - distFromCam) / 16.0, 0.0, 1.0);
                     if (distFade > 0.02f) {
@@ -930,27 +964,46 @@ public class ClientWaveRenderer {
                                 float subLight11 = bilerp(l00, l10, l01, l11, fx1, fz1);
                                 float subLight10 = bilerp(l00, l10, l01, l11, fx1, fz0);
 
-                                int fc00 = packSurfFoamColor(f00 * distFade, subLight00);
-                                int fc01 = packSurfFoamColor(f01 * distFade, subLight01);
-                                int fc11 = packSurfFoamColor(f11 * distFade, subLight11);
-                                int fc10 = packSurfFoamColor(f10 * distFade, subLight10);
+                                float crisp00 = Mth.clamp((f00 - 0.12f) / 0.65f, 0.0f, 1.0f);
+                                int fr00 = Mth.clamp((int) (248 * subLight00), 0, 255);
+                                int fg00 = Mth.clamp((int) (252 * subLight00), 0, 255);
+                                int fb00 = Mth.clamp((int) (255 * subLight00), 0, 255);
+                                int fa00 = Mth.clamp((int) (crisp00 * 225.0f * distFade), 0, 255);
+
+                                float crisp01 = Mth.clamp((f01 - 0.12f) / 0.65f, 0.0f, 1.0f);
+                                int fr01 = Mth.clamp((int) (248 * subLight01), 0, 255);
+                                int fg01 = Mth.clamp((int) (252 * subLight01), 0, 255);
+                                int fb01 = Mth.clamp((int) (255 * subLight01), 0, 255);
+                                int fa01 = Mth.clamp((int) (crisp01 * 225.0f * distFade), 0, 255);
+
+                                float crisp11 = Mth.clamp((f11 - 0.12f) / 0.65f, 0.0f, 1.0f);
+                                int fr11 = Mth.clamp((int) (248 * subLight11), 0, 255);
+                                int fg11 = Mth.clamp((int) (252 * subLight11), 0, 255);
+                                int fb11 = Mth.clamp((int) (255 * subLight11), 0, 255);
+                                int fa11 = Mth.clamp((int) (crisp11 * 225.0f * distFade), 0, 255);
+
+                                float crisp10 = Mth.clamp((f10 - 0.12f) / 0.65f, 0.0f, 1.0f);
+                                int fr10 = Mth.clamp((int) (248 * subLight10), 0, 255);
+                                int fg10 = Mth.clamp((int) (252 * subLight10), 0, 255);
+                                int fb10 = Mth.clamp((int) (255 * subLight10), 0, 255);
+                                int fa10 = Mth.clamp((int) (crisp10 * 225.0f * distFade), 0, 255);
 
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy00 - camPos.y),
                                                 (float) (swz0 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fc00);
+                                        .setUv(uMid, vMid).setColor(fr00, fg00, fb00, fa00);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy01 - camPos.y),
                                                 (float) (swz1 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fc01);
+                                        .setUv(uMid, vMid).setColor(fr01, fg01, fb01, fa01);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy11 - camPos.y),
                                                 (float) (swz1 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fc11);
+                                        .setUv(uMid, vMid).setColor(fr11, fg11, fb11, fa11);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy10 - camPos.y),
                                                 (float) (swz0 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fc10);
+                                        .setUv(uMid, vMid).setColor(fr10, fg10, fb10, fa10);
                             }
                         }
                     }
@@ -983,22 +1036,6 @@ public class ClientWaveRenderer {
         return evaluateBeachSurfRibbon(wx0 + tx, wz0 + tz, sDist, renderTime);
     }
 
-    /**
-     * Packs crisp white surf color scaled by ambient light factor so breaking surf ribbons
-     * blend naturally into night ambient darkness rather than glowing unnaturally.
-     */
-    private static int packSurfFoamColor(float strength, float lightFactor) {
-        if (strength <= 0.01f) {
-            return 0;
-        }
-        // Sharpen contrast so core of ribbon is bright opaque white
-        float crisp = Mth.clamp((strength - 0.12f) / 0.65f, 0.0f, 1.0f);
-        int a = (int) (crisp * 235.0f);
-        int r = (int) Mth.clamp(250.0f * lightFactor, 0.0f, 255.0f);
-        int g = (int) Mth.clamp(253.0f * lightFactor, 0.0f, 255.0f);
-        int b = (int) Mth.clamp(255.0f * lightFactor, 0.0f, 255.0f);
-        return ((a & 0xFF) << 24) | (r << 16) | (g << 8) | b;
-    }
 
     private static int computeBaseWaterColor(boolean isInterior, float h,
             int br, int bg, int bb,
@@ -1432,9 +1469,119 @@ public class ClientWaveRenderer {
     }
 
     private static boolean isSolidSubBlock(Level level, BlockPos pos) {
-        if (!level.hasChunkAt(pos)) return false;
+        if (level == null || !level.hasChunk(pos.getX() >> 4, pos.getZ() >> 4)) return false;
         BlockState state = level.getBlockState(pos);
         return !state.isAir() && state.getFluidState().isEmpty();
+    }
+
+    /**
+     * Emits invisible depth-only barrier quads at Y = 62.92f and Y = 61.92f inside enclosed ship holds
+     * during AFTER_BLOCK_ENTITIES (after solid hull blocks are drawn, but BEFORE vanilla translucent chunk water).
+     * The GPU depth test culls vanilla water at Y = 62.88f and 61.88f, keeping ship cabins completely dry visually!
+     */
+    private static void renderEnclosedHoldDepthOcclusion(RenderLevelStageEvent event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null) return;
+        Level level = mc.level;
+        if (level.dimension() != Level.OVERWORLD) return;
+
+        SubLevelContainer subContainer = SubLevelContainer.getContainer(level);
+        if (!(subContainer instanceof ClientSubLevelContainer clientContainer)) return;
+
+        Camera camera = event.getCamera();
+        Vec3 camPos = camera.getPosition();
+
+        Vector3d worldProbe = new Vector3d();
+        Vector3d localProbe = new Vector3d();
+        BlockPos.MutableBlockPos subProbePos = new BlockPos.MutableBlockPos();
+
+        List<float[]> holdQuads = new ArrayList<>();
+        float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
+
+        for (ClientSubLevel subLevel : clientContainer.getAllSubLevels()) {
+            var bounds = subLevel.boundingBox();
+            if (bounds == null) continue;
+            if (bounds.minY() > 63.5 || bounds.maxY() < 55.0) continue;
+
+            Pose3dc pose = subLevel.renderPose(partialTick);
+            if (pose == null) pose = subLevel.logicalPose();
+            if (pose == null) continue;
+
+            Level subLevelWorld = subLevel.getLevel();
+            if (subLevelWorld == null) continue;
+
+            double minX = bounds.minX(), maxX = bounds.maxX();
+            double minY = bounds.minY(), maxY = bounds.maxY();
+            double minZ = bounds.minZ(), maxZ = bounds.maxZ();
+
+            boolean hasEnclosedHold = checkHasEnclosedHold(subLevel, pose, subLevelWorld,
+                    minX, maxX, minY, maxY, minZ, maxZ,
+                    worldProbe, localProbe, subProbePos);
+            if (!hasEnclosedHold) continue;
+
+            int startGX = (int) Math.floor(minX);
+            int endGX = (int) Math.ceil(maxX);
+            int startGZ = (int) Math.floor(minZ);
+            int endGZ = (int) Math.ceil(maxZ);
+
+            for (int gx = startGX; gx < endGX; gx++) {
+                for (int gz = startGZ; gz < endGZ; gz++) {
+                    if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, gx + 0.5, gz + 0.5,
+                            worldProbe, localProbe, subProbePos)) {
+                        holdQuads.add(new float[] { (float) gx, (float) gz, (float) (gx + 1.0f), (float) (gz + 1.0f) });
+                    }
+                }
+            }
+        }
+
+        if (holdQuads.isEmpty()) return;
+
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(true);
+        RenderSystem.colorMask(false, false, false, false);
+        RenderSystem.disableCull();
+
+        try {
+            PoseStack poseStack = event.getPoseStack();
+            poseStack.pushPose();
+            Matrix4f matrix = poseStack.last().pose();
+
+            Tesselator tesselator = Tesselator.getInstance();
+            BufferBuilder bufferBuilder = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION);
+            RenderSystem.setShader(GameRenderer::getPositionShader);
+
+            float cx = (float) camPos.x;
+            float cy = (float) camPos.y;
+            float cz = (float) camPos.z;
+
+            // Emit horizontal depth barriers at Y = 62.92f (blocks vanilla water at 62.88)
+            // and Y = 61.92f (blocks vanilla lower water at 61.88)
+            float[] barrierYLevels = new float[] { 62.92f, 61.92f };
+            for (float yBarrier : barrierYLevels) {
+                float dy = yBarrier - cy;
+                for (float[] quad : holdQuads) {
+                    float x0 = quad[0] - cx;
+                    float z0 = quad[1] - cz;
+                    float x1 = quad[2] - cx;
+                    float z1 = quad[3] - cz;
+
+                    bufferBuilder.addVertex(matrix, x0, dy, z0);
+                    bufferBuilder.addVertex(matrix, x0, dy, z1);
+                    bufferBuilder.addVertex(matrix, x1, dy, z1);
+                    bufferBuilder.addVertex(matrix, x1, dy, z0);
+                }
+            }
+
+            MeshData meshData = bufferBuilder.build();
+            if (meshData != null) {
+                BufferUploader.drawWithShader(meshData);
+            }
+
+            poseStack.popPose();
+        } finally {
+            RenderSystem.colorMask(true, true, true, true);
+            RenderSystem.enableCull();
+        }
     }
 
     @SubscribeEvent

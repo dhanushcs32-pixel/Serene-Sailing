@@ -1,28 +1,58 @@
 {
+  "credit": "SereneSailing - 17th Century Canvas Sail (Half / Reefed Deployment)",
   "parent": "minecraft:block/block",
   "textures": {
-    "particle": "serenesailing:block/canvas_sail",
+    "particle": "minecraft:block/white_wool",
     "timber": "minecraft:block/stripped_oak_log",
-    "canvas": "serenesailing:block/canvas_sail"
+    "canvas": "minecraft:block/white_wool",
+    "seam": "minecraft:block/light_gray_wool",
+    "iron": "minecraft:block/iron_block",
+    "rope": "minecraft:block/oak_planks"
   },
   "elements": [
     {
-      "name": "canvas_sheet_half",
-      "from": [0.0, 8.0, 2.5],
-      "to": [16.0, 16.0, 4.0],
+      "name": "yardarm_mast_clamp",
+      "from": [5.0, 13.5, 0.25],
+      "to": [11.0, 16.0, 2.0],
       "faces": {
-        "north": { "uv": [0, 0, 16, 8],  "texture": "#canvas" },
-        "south": { "uv": [0, 0, 16, 8],  "texture": "#canvas" },
-        "west":  { "uv": [0, 0, 2, 8],   "texture": "#canvas" },
-        "east":  { "uv": [14, 0, 16, 8],  "texture": "#canvas" },
-        "up":    { "uv": [0, 0, 16, 2],  "texture": "#canvas" },
-        "down":  { "uv": [0, 8, 16, 10], "texture": "#canvas" }
+        "north": { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "south": { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "west":  { "uv": [0, 0, 3, 3],  "texture": "#timber" },
+        "east":  { "uv": [13, 0, 16, 3], "texture": "#timber" },
+        "up":    { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "down":  { "uv": [5, 0, 11, 3], "texture": "#timber" }
       }
     },
     {
-      "name": "top_beam",
+      "name": "clamp_iron_band_port",
+      "from": [5.3, 13.4, 0.15],
+      "to": [6.7, 16.0, 2.1],
+      "faces": {
+        "north": { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "south": { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 3], "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 3], "texture": "#iron" },
+        "up":    { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "down":  { "uv": [5, 0, 7, 3], "texture": "#iron" }
+      }
+    },
+    {
+      "name": "clamp_iron_band_starboard",
+      "from": [9.3, 13.4, 0.15],
+      "to": [10.7, 16.0, 2.1],
+      "faces": {
+        "north": { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "south": { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 3],  "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 3],  "texture": "#iron" },
+        "up":    { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "down":  { "uv": [9, 0, 11, 3], "texture": "#iron" }
+      }
+    },
+    {
+      "name": "main_yardarm_spar",
       "from": [0.0, 14.0, 0.5],
-      "to": [16.0, 16.0, 2.5],
+      "to": [16.0, 15.8, 2.2],
       "faces": {
         "north": { "uv": [0, 0, 16, 2],  "texture": "#timber" },
         "south": { "uv": [0, 0, 16, 2],  "texture": "#timber" },
@@ -33,42 +63,116 @@
       }
     },
     {
-      "name": "bottom_beam",
-      "from": [0.0, 0.0, 0.5],
-      "to": [16.0, 2.0, 2.5],
+      "name": "iron_bracket_port",
+      "from": [1.0, 13.8, 0.3],
+      "to": [2.5, 15.9, 2.2],
       "faces": {
-        "north": { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "south": { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "west":  { "uv": [0, 14, 2, 16],  "texture": "#timber" },
-        "east":  { "uv": [14, 14, 16, 16], "texture": "#timber" },
-        "up":    { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "down":  { "uv": [0, 14, 16, 16], "texture": "#timber" }
+        "north": { "uv": [1, 0, 3, 2], "texture": "#iron" },
+        "south": { "uv": [1, 0, 3, 2], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 2], "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 2], "texture": "#iron" },
+        "up":    { "uv": [1, 0, 3, 3], "texture": "#iron" },
+        "down":  { "uv": [1, 0, 3, 3], "texture": "#iron" }
       }
     },
     {
-      "name": "port_post",
-      "from": [0.0, 0.0, 0.5],
-      "to": [2.0, 16.0, 2.5],
+      "name": "iron_bracket_starboard",
+      "from": [13.5, 13.8, 0.3],
+      "to": [15.0, 15.9, 2.2],
       "faces": {
-        "north": { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "south": { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "west":  { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "east":  { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "up":    { "uv": [0, 0, 2, 2],  "texture": "#timber" },
-        "down":  { "uv": [0, 0, 2, 2],  "texture": "#timber" }
+        "north": { "uv": [13, 0, 15, 2], "texture": "#iron" },
+        "south": { "uv": [13, 0, 15, 2], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 2],  "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 2],  "texture": "#iron" },
+        "up":    { "uv": [13, 0, 15, 3], "texture": "#iron" },
+        "down":  { "uv": [13, 0, 15, 3], "texture": "#iron" }
       }
     },
     {
-      "name": "starboard_post",
-      "from": [14.0, 0.0, 0.5],
-      "to": [16.0, 16.0, 2.5],
+      "name": "plain_canvas_sheet",
+      "from": [0.0, 8.0, 2.2],
+      "to": [16.0, 16.0, 3.5],
       "faces": {
-        "north": { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "south": { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "west":  { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "east":  { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "up":    { "uv": [14, 0, 16, 2],  "texture": "#timber" },
-        "down":  { "uv": [14, 0, 16, 2],  "texture": "#timber" }
+        "north": { "uv": [0, 0, 16, 8], "texture": "#canvas" },
+        "south": { "uv": [0, 0, 16, 8], "texture": "#canvas" },
+        "west":  { "uv": [0, 0, 1, 8],  "texture": "#canvas" },
+        "east":  { "uv": [15, 0, 16, 8], "texture": "#canvas" },
+        "up":    { "uv": [0, 0, 16, 1], "texture": "#canvas" },
+        "down":  { "uv": [0, 7, 16, 8], "texture": "#canvas" }
+      }
+    },
+    {
+      "name": "vertical_cloth_seam_1",
+      "from": [5.1, 8.0, 2.15],
+      "to": [5.5, 16.0, 3.55],
+      "faces": {
+        "north": { "uv": [5, 0, 6, 8], "texture": "#seam" },
+        "south": { "uv": [5, 0, 6, 8], "texture": "#seam" },
+        "up":    { "uv": [5, 0, 6, 1], "texture": "#seam" },
+        "down":  { "uv": [5, 7, 6, 8], "texture": "#seam" }
+      }
+    },
+    {
+      "name": "vertical_cloth_seam_2",
+      "from": [10.5, 8.0, 2.15],
+      "to": [10.9, 16.0, 3.55],
+      "faces": {
+        "north": { "uv": [10, 0, 11, 8], "texture": "#seam" },
+        "south": { "uv": [10, 0, 11, 8], "texture": "#seam" },
+        "up":    { "uv": [10, 0, 11, 1],  "texture": "#seam" },
+        "down":  { "uv": [10, 7, 11, 8],  "texture": "#seam" }
+      }
+    },
+    {
+      "name": "reefed_bundle",
+      "from": [0.0, 6.0, 1.8],
+      "to": [16.0, 8.2, 3.8],
+      "faces": {
+        "north": { "uv": [0, 8, 16, 10], "texture": "#canvas" },
+        "south": { "uv": [0, 8, 16, 10], "texture": "#canvas" },
+        "west":  { "uv": [0, 8, 2, 10],  "texture": "#canvas" },
+        "east":  { "uv": [14, 8, 16, 10], "texture": "#canvas" },
+        "up":    { "uv": [0, 8, 16, 10], "texture": "#canvas" },
+        "down":  { "uv": [0, 8, 16, 10], "texture": "#canvas" }
+      }
+    },
+    {
+      "name": "reef_point_tie_1",
+      "from": [3.0, 5.8, 1.7],
+      "to": [3.6, 8.4, 3.9],
+      "faces": {
+        "north": { "uv": [3, 8, 4, 11], "texture": "#rope" },
+        "south": { "uv": [3, 8, 4, 11], "texture": "#rope" },
+        "west":  { "uv": [0, 8, 2, 11], "texture": "#rope" },
+        "east":  { "uv": [0, 8, 2, 11], "texture": "#rope" },
+        "up":    { "uv": [3, 0, 4, 2],  "texture": "#rope" },
+        "down":  { "uv": [3, 0, 4, 2],  "texture": "#rope" }
+      }
+    },
+    {
+      "name": "reef_point_tie_2",
+      "from": [7.7, 5.8, 1.7],
+      "to": [8.3, 8.4, 3.9],
+      "faces": {
+        "north": { "uv": [7, 8, 8, 11], "texture": "#rope" },
+        "south": { "uv": [7, 8, 8, 11], "texture": "#rope" },
+        "west":  { "uv": [0, 8, 2, 11], "texture": "#rope" },
+        "east":  { "uv": [0, 8, 2, 11], "texture": "#rope" },
+        "up":    { "uv": [7, 0, 8, 2],  "texture": "#rope" },
+        "down":  { "uv": [7, 0, 8, 2],  "texture": "#rope" }
+      }
+    },
+    {
+      "name": "reef_point_tie_3",
+      "from": [12.4, 5.8, 1.7],
+      "to": [13.0, 8.4, 3.9],
+      "faces": {
+        "north": { "uv": [12, 8, 13, 11], "texture": "#rope" },
+        "south": { "uv": [12, 8, 13, 11], "texture": "#rope" },
+        "west":  { "uv": [0, 8, 2, 11],  "texture": "#rope" },
+        "east":  { "uv": [0, 8, 2, 11],  "texture": "#rope" },
+        "up":    { "uv": [12, 0, 13, 2],  "texture": "#rope" },
+        "down":  { "uv": [12, 0, 13, 2],  "texture": "#rope" }
       }
     }
   ]

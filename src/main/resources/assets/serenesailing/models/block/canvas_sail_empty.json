@@ -1,15 +1,55 @@
 {
+  "credit": "SereneSailing - 17th Century Canvas Sail (Empty Yardarm Frame)",
   "parent": "minecraft:block/block",
   "textures": {
-    "particle": "serenesailing:block/canvas_sail",
+    "particle": "minecraft:block/stripped_oak_log",
     "timber": "minecraft:block/stripped_oak_log",
-    "canvas": "serenesailing:block/canvas_sail"
+    "iron": "minecraft:block/iron_block"
   },
   "elements": [
     {
-      "name": "top_beam",
+      "name": "yardarm_mast_clamp",
+      "from": [5.0, 13.5, 0.25],
+      "to": [11.0, 16.0, 2.0],
+      "faces": {
+        "north": { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "south": { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "west":  { "uv": [0, 0, 3, 3],  "texture": "#timber" },
+        "east":  { "uv": [13, 0, 16, 3], "texture": "#timber" },
+        "up":    { "uv": [5, 0, 11, 3], "texture": "#timber" },
+        "down":  { "uv": [5, 0, 11, 3], "texture": "#timber" }
+      }
+    },
+    {
+      "name": "clamp_iron_band_port",
+      "from": [5.3, 13.4, 0.15],
+      "to": [6.7, 16.0, 2.1],
+      "faces": {
+        "north": { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "south": { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 3], "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 3], "texture": "#iron" },
+        "up":    { "uv": [5, 0, 7, 3], "texture": "#iron" },
+        "down":  { "uv": [5, 0, 7, 3], "texture": "#iron" }
+      }
+    },
+    {
+      "name": "clamp_iron_band_starboard",
+      "from": [9.3, 13.4, 0.15],
+      "to": [10.7, 16.0, 2.1],
+      "faces": {
+        "north": { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "south": { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 3],  "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 3],  "texture": "#iron" },
+        "up":    { "uv": [9, 0, 11, 3], "texture": "#iron" },
+        "down":  { "uv": [9, 0, 11, 3], "texture": "#iron" }
+      }
+    },
+    {
+      "name": "main_yardarm_spar",
       "from": [0.0, 14.0, 0.5],
-      "to": [16.0, 16.0, 2.5],
+      "to": [16.0, 15.8, 2.2],
       "faces": {
         "north": { "uv": [0, 0, 16, 2],  "texture": "#timber" },
         "south": { "uv": [0, 0, 16, 2],  "texture": "#timber" },
@@ -20,42 +60,29 @@
       }
     },
     {
-      "name": "bottom_beam",
-      "from": [0.0, 0.0, 0.5],
-      "to": [16.0, 2.0, 2.5],
+      "name": "iron_bracket_port",
+      "from": [1.0, 13.8, 0.3],
+      "to": [2.5, 15.9, 2.2],
       "faces": {
-        "north": { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "south": { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "west":  { "uv": [0, 14, 2, 16],  "texture": "#timber" },
-        "east":  { "uv": [14, 14, 16, 16], "texture": "#timber" },
-        "up":    { "uv": [0, 14, 16, 16], "texture": "#timber" },
-        "down":  { "uv": [0, 14, 16, 16], "texture": "#timber" }
+        "north": { "uv": [1, 0, 3, 2], "texture": "#iron" },
+        "south": { "uv": [1, 0, 3, 2], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 2], "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 2], "texture": "#iron" },
+        "up":    { "uv": [1, 0, 3, 3], "texture": "#iron" },
+        "down":  { "uv": [1, 0, 3, 3], "texture": "#iron" }
       }
     },
     {
-      "name": "port_post",
-      "from": [0.0, 0.0, 0.5],
-      "to": [2.0, 16.0, 2.5],
+      "name": "iron_bracket_starboard",
+      "from": [13.5, 13.8, 0.3],
+      "to": [15.0, 15.9, 2.2],
       "faces": {
-        "north": { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "south": { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "west":  { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "east":  { "uv": [0, 0, 2, 16], "texture": "#timber" },
-        "up":    { "uv": [0, 0, 2, 2],  "texture": "#timber" },
-        "down":  { "uv": [0, 0, 2, 2],  "texture": "#timber" }
-      }
-    },
-    {
-      "name": "starboard_post",
-      "from": [14.0, 0.0, 0.5],
-      "to": [16.0, 16.0, 2.5],
-      "faces": {
-        "north": { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "south": { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "west":  { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "east":  { "uv": [14, 0, 16, 16], "texture": "#timber" },
-        "up":    { "uv": [14, 0, 16, 2],  "texture": "#timber" },
-        "down":  { "uv": [14, 0, 16, 2],  "texture": "#timber" }
+        "north": { "uv": [13, 0, 15, 2], "texture": "#iron" },
+        "south": { "uv": [13, 0, 15, 2], "texture": "#iron" },
+        "west":  { "uv": [0, 0, 3, 2],  "texture": "#iron" },
+        "east":  { "uv": [0, 0, 3, 2],  "texture": "#iron" },
+        "up":    { "uv": [13, 0, 15, 3], "texture": "#iron" },
+        "down":  { "uv": [13, 0, 15, 3], "texture": "#iron" }
       }
     }
   ]

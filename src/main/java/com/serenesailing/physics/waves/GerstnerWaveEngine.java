@@ -163,7 +163,7 @@ public final class GerstnerWaveEngine {
     private static final DimensionWaveState DEFAULT_STATE = new DimensionWaveState();
 
     public static DimensionWaveState getDimensionState(Level level) {
-        if (level == null) {
+        if (level == null || level.dimension() == null) {
             return DEFAULT_STATE;
         }
         return DIMENSION_STATES.computeIfAbsent(level.dimension(), dim -> new DimensionWaveState());
