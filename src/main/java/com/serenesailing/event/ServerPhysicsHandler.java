@@ -12,6 +12,10 @@ import com.serenesailing.entity.RudderBlockEntity;
 import com.serenesailing.entity.TaffrailLogBlockEntity;
 import com.serenesailing.entity.WindVaneBlockEntity;
 import com.serenesailing.physics.SailAerodynamics;
+import com.serenesailing.compat.weather2.Weather2Compat;
+import com.serenesailing.physics.ShipHullAirPocketHelper;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import com.serenesailing.registry.ModBlocks;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
@@ -130,6 +134,7 @@ public class ServerPhysicsHandler {
     private static final Map<UUID, Double> FORWARD_SPEED_CACHE = new ConcurrentHashMap<>();
     /** Previous tick forward heading cached per sub-level UUID for momentum turning redirection. */
     private static final Map<UUID, Vector3d> PREV_HEADING_CACHE = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> LAST_BILGE_PURGE_TICK = new ConcurrentHashMap<>();
 
     /** Cached wind speed and angle sampled on the main server thread. */
     public record CachedWind(float angle, float speed) {
@@ -439,25 +444,42 @@ public class ServerPhysicsHandler {
             meanWaterSurfaceY = baseWaterSurfaceY + clampedWaveOffset;
         }
 
+        // Automatic Sub-Level Interior Bilge Purge on Assembly & Periodically every 40 ticks
+        Long lastPurge = LAST_BILGE_PURGE_TICK.get(subLevelId);
+        long currentStep = stepCounter.get();
+        if (lastPurge == null || (currentStep - lastPurge) >= 40) {
+            purgeSubLevelHoldWater(subLevel);
+            LAST_BILGE_PURGE_TICK.put(subLevelId, currentStep);
+        }
+
+        boolean hasEnclosedHold = steering.interiorAirVolume() > 50 || steering.hullHeight() >= 3.0;
+        boolean anchored = isAnchored(steering);
+
+        // Weather2 Storm & Tornado Physics Interaction
+        Weather2Compat.StormData nearestStorm = Weather2Compat.getNearestStorm(level, worldPos.x(), worldPos.z(), 256.0);
+        StormPhysicsResult stormResult = applyStormAndTornadoForces(
+                body, nearestStorm, worldPos, shipVelWorld,
+                steering.blockCount(), hasEnclosedHold, anchored,
+                steering.sailAreaEfficiency(), steering.sailCount(),
+                time, dt
+        );
+
         // Task 3.1: Raft Flotation Check: Flat vessels with minimal draft (T < 0.5m)
         // are recognized as floating whenever any hull block intersects water.
         int submergedSamples = countSubmergedHullSamples(level, subLevel, keelWorldY, targetDraft, isShallowDraft);
         boolean waterContact = meanWaterSurfaceY > Double.NEGATIVE_INFINITY
                 && (keelWorldY <= meanWaterSurfaceY + 0.5 || (isShallowDraft && keelWorldY <= meanWaterSurfaceY + 0.3));
         boolean afloat = waterContact || (submergedSamples > 0);
-        if (afloat && meanWaterSurfaceY > Double.NEGATIVE_INFINITY) {
+        if (afloat && meanWaterSurfaceY > Double.NEGATIVE_INFINITY && !stormResult.isLiftedByTornado()) {
             applyRideHeightSpring(body, meanWaterSurfaceY, keelWorldY, targetDraft, dt, isCalmWeather);
         }
 
-        // ---- Flotation gate: beached ships get ground friction only --------
-        if (!afloat && submergedSamples == 0) {
+        // ---- Flotation gate: beached ships get ground friction only (unless airborne in tornado) --------
+        if (!afloat && submergedSamples == 0 && !stormResult.isLiftedByTornado()) {
             applyGroundFriction(body, dt);
             updateWindVanes(steering.vanes(), forwardWorld, trueWindWorld, shipVelWorld);
             return;
         }
-
-        // ---- Anchor state: decided BEFORE any thrust or steering -------------
-        boolean anchored = isAnchored(steering);
 
         // ---- Strict zero-wind / zero-sail thrust guard -----------------------
         // Below the calm threshold there is no aerodynamic force at all, and
@@ -798,8 +820,8 @@ public class ServerPhysicsHandler {
             body.addLinearAndAngularVelocity(planarDelta, new Vector3d());
 
             // Rotational yaw damping: a stationary AND centered-helm ship
-            // generates no rudder lift — there is no water flowing past the
-            // foil — so leftover yaw angular velocity is damped hard.
+            // generates no rudder lift â€” there is no water flowing past the
+            // foil â€” so leftover yaw angular velocity is damped hard.
             // FIX: Skip this when the rudder is deflected, otherwise the
             // damping wipes out the steering torque applied right after.
             if (Math.abs(activeHelmAngle) < 0.5f) {
@@ -931,7 +953,7 @@ public class ServerPhysicsHandler {
                 }
 
                 if (submergedRudderCount > 0 && Math.abs(facingSignSum) > 1.0e-5) {
-                    // FIX: Direct inline torque formula — STEER_TORQUE_COEFF is
+                    // FIX: Direct inline torque formula â€” STEER_TORQUE_COEFF is
                     // applied directly as tau = -coeff * v * sin(theta) * facingSignSum.
                     // The old RudderHydrodynamics bridge divided by 800, zeroing
                     // the result. This formula is proven and well-scaled.
@@ -1054,7 +1076,7 @@ public class ServerPhysicsHandler {
         Long stamp = STEERING_CACHE_STEP.get(id);
         // FIX (Bug 6): Always reuse cache for STEERING_RESCAN_STEPS regardless
         // of rudder count. The old condition `!cached.rudders().isEmpty()` caused
-        // every physics step to rescan O(chunks×16³) on rudderless vessels.
+        // every physics step to rescan O(chunksÃ—16Â³) on rudderless vessels.
         if (cached != null && stamp != null
                 && (stepCounter.get() - stamp) < STEERING_RESCAN_STEPS) {
             return cached;
@@ -1133,6 +1155,255 @@ public class ServerPhysicsHandler {
      * Scans plot chunks for rudders (with facings), helm stations, wind vanes,
      * capstans, taffrail logs, and computes exact slice-by-slice Archimedes draft.
      */
+    public record StormPhysicsResult(boolean isLiftedByTornado, double verticalLiftVelocity, double stormWindSpeed) {}
+
+    public static StormPhysicsResult applyStormAndTornadoForces(
+            RigidBodyHandle body,
+            Weather2Compat.StormData storm,
+            org.joml.Vector3dc worldPos,
+            Vector3d shipVelWorld,
+            int blockCount,
+            boolean hasEnclosedHold,
+            boolean anchored,
+            double sailAreaEfficiency,
+            int sailCount,
+            double time,
+            double dt
+    ) {
+        if (storm == null || storm.intensityStage() <= 0) {
+            return new StormPhysicsResult(false, 0.0, 0.0);
+        }
+
+        double stormX = storm.stormX();
+        double stormZ = storm.stormZ();
+        double dist = storm.distance();
+        double radius = Math.max(30.0, storm.radius());
+        int stage = storm.intensityStage();
+
+        double dx = stormX - worldPos.x();
+        double dz = stormZ - worldPos.z();
+        double dLen = Math.sqrt(dx * dx + dz * dz);
+        Vector3d inwardDir = dLen > 0.1 ? new Vector3d(dx / dLen, 0.0, dz / dLen) : new Vector3d(0.0, 0.0, 0.0);
+        // Tangential cyclonic direction (counter-clockwise)
+        Vector3d tangentDir = new Vector3d(-inwardDir.z, 0.0, inwardDir.x);
+
+        double influenceRadius = radius * 2.0;
+        if (dist > influenceRadius) {
+            return new StormPhysicsResult(false, 0.0, 0.0);
+        }
+
+        double proximity = Mth.clamp(1.0 - (dist / influenceRadius), 0.0, 1.0);
+        double vortexRadius = radius * 1.5;
+        double vortexProx = Mth.clamp(1.0 - (dist / vortexRadius), 0.0, 1.0);
+        boolean isLightVessel = blockCount <= 150 || !hasEnclosedHold;
+
+        boolean isLifted = false;
+        double liftVy = 0.0;
+        double stormWindSpeed = (15.0 + stage * 8.0) * proximity;
+
+        // Stage 1 — Severe Gale / Squall (F0–F2 or Heavy Storm: stage 1..3)
+        if (stage >= 1) {
+            Vector3d stormWind = new Vector3d(tangentDir).mul(0.7).add(new Vector3d(inwardDir).mul(0.3));
+            if (stormWind.lengthSquared() > 1e-4) stormWind.normalize();
+
+            // Tangential cyclonic wind gusts spiraling into storm center
+            Vector3d gustImpulse = new Vector3d(stormWind).mul(stormWindSpeed * (isLightVessel ? 0.25 : 0.15) * dt);
+            if (body != null) {
+                body.addLinearAndAngularVelocity(gustImpulse, new Vector3d());
+            }
+
+            // Violent wave heeling / pitching buffets:
+            // Tall-masted brigs list heavily (15°–25°) unless sails are reefed (HALF) or furled (ROLLED)
+            double deploymentRatio = sailCount > 0 ? (sailAreaEfficiency / (double) sailCount) : 0.25;
+            double listTargetRad = Math.toRadians(15.0 + Math.min(stage, 3) * 3.5) * deploymentRatio;
+            double heelRollRate = Math.sin(time * 0.15) * listTargetRad * 2.5 * dt;
+            double pitchBuffetRate = Math.cos(time * 0.2) * 0.12 * dt;
+            if (body != null) {
+                body.addLinearAndAngularVelocity(new Vector3d(), new Vector3d(pitchBuffetRate, 0.0, heelRollRate));
+            }
+        }
+
+        // Stage 2 — Major Tornado (F3: stage == 4)
+        if (stage == 4) {
+            double suctionSpeed = (isLightVessel ? 5.0 : 2.0) * proximity;
+            Vector3d suctionDelta = new Vector3d(inwardDir).mul(suctionSpeed * dt);
+            double spinYawRate = (isLightVessel ? 1.5 : 0.5) * proximity;
+            double waveSlam = (Math.sin(time * 0.35) > 0.4 ? 2.5 : -1.2) * proximity * dt;
+            if (body != null) {
+                body.addLinearAndAngularVelocity(new Vector3d(suctionDelta.x, waveSlam, suctionDelta.z),
+                        new Vector3d(0.0, spinYawRate * dt, 0.0));
+            }
+        }
+
+        // Stage 3 — Devastating Tornado (F4 & F5: stage >= 5)
+        if (stage >= 5 && dist <= vortexRadius) {
+            if (isLightVessel) {
+                isLifted = true;
+                // Upward Suction Lift (+Y):
+                // vy climbing up to +4.0 to +12.0 m/s, lifting the raft 15 to 50+ blocks high!
+                double maxTargetVy = 4.0 + (stage - 4) * 4.0 * vortexProx; // 8.0 m/s for F4, 12.0 m/s for F5
+                double currentVy = shipVelWorld.y;
+                double deltaVy;
+                if (currentVy < maxTargetVy) {
+                    deltaVy = Math.min(maxTargetVy - currentVy, (12.0 + (stage - 4) * 8.0) * dt);
+                } else {
+                    deltaVy = 0.0;
+                }
+                liftVy = currentVy + deltaVy;
+
+                // Tangential vortex spin & inward pull (X, Z + Yaw/Roll/Pitch):
+                double tangentialSpeed = (14.0 + (stage - 4) * 6.0) * vortexProx;
+                double inwardSpeed = (5.0 + (stage - 4) * 3.0) * vortexProx;
+                Vector3d vortexHoriz = new Vector3d(tangentDir).mul(tangentialSpeed)
+                        .add(new Vector3d(inwardDir).mul(inwardSpeed));
+
+                Vector3d horizDelta = new Vector3d(vortexHoriz.x - shipVelWorld.x, 0.0, vortexHoriz.z - shipVelWorld.z)
+                        .mul(Math.min(1.0, 3.5 * dt));
+
+                // If raft climbs high into the funnel cloud (> 100 blocks altitude), fling it outward
+                if (worldPos.y() > 100.0) {
+                    horizDelta.add(new Vector3d(inwardDir).mul(-15.0 * dt));
+                }
+
+                double spinYaw = (3.0 + (stage - 4) * 1.5) * dt;
+                double spinRoll = Math.sin(time * 0.25) * 2.0 * dt;
+                double spinPitch = Math.cos(time * 0.25) * 1.5 * dt;
+
+                if (body != null) {
+                    body.addLinearAndAngularVelocity(
+                            new Vector3d(horizDelta.x, deltaVy, horizDelta.z),
+                            new Vector3d(spinPitch, spinYaw, spinRoll)
+                    );
+                }
+            } else {
+                // Heavy Brigs / Large Ships:
+                // Violent cyclonic whirlpool dragging toward core
+                Vector3d whirlpool = new Vector3d(tangentDir).mul(6.0 * vortexProx)
+                        .add(new Vector3d(inwardDir).mul(3.0 * vortexProx));
+                Vector3d dragDelta = new Vector3d(whirlpool.x - shipVelWorld.x, 0.0, whirlpool.z - shipVelWorld.z)
+                        .mul(Math.min(1.0, 1.5 * dt));
+
+                // Extreme heeling (up to 35°):
+                double heelAngle35 = Math.toRadians(35.0) * vortexProx;
+                double heelImpulse = (Math.sin(time * 0.2) > 0 ? 1.0 : -1.0) * heelAngle35 * 0.6 * dt;
+
+                // Violent vertical heave surges (+2.0 to +4.5m)
+                double heaveSurge = (2.0 + (stage - 4) * 1.25) * vortexProx;
+                double heaveImpulse = Math.sin(time * 0.3) * heaveSurge * dt;
+
+                // Involuntary yaw spinning unless anchored
+                double involuntaryYaw = anchored ? 0.0 : (0.6 * vortexProx * dt);
+
+                if (body != null) {
+                    body.addLinearAndAngularVelocity(
+                            new Vector3d(dragDelta.x, heaveImpulse, dragDelta.z),
+                            new Vector3d(0.0, involuntaryYaw, heelImpulse)
+                    );
+                }
+            }
+        }
+
+        return new StormPhysicsResult(isLifted, liftVy, stormWindSpeed);
+    }
+
+    public static Vector3d simulateVesselStormStep(
+            Vector3d pos,
+            Vector3d vel,
+            Weather2Compat.StormData storm,
+            int blockCount,
+            boolean hasEnclosedHold,
+            boolean anchored,
+            double time,
+            double dt
+    ) {
+        StormPhysicsResult res = applyStormAndTornadoForces(
+                null, storm, pos, vel, blockCount, hasEnclosedHold, anchored,
+                1.0, 4, time, dt
+        );
+
+        Vector3d nextVel = new Vector3d(vel);
+        if (res.isLiftedByTornado()) {
+            double maxTargetVy = 4.0 + (storm.intensityStage() - 4) * 4.0;
+            double deltaVy = Math.min(maxTargetVy - nextVel.y, (12.0 + (storm.intensityStage() - 4) * 8.0) * dt);
+            nextVel.y += Math.max(0.0, deltaVy);
+
+            double vortexRadius = Math.max(30.0, storm.radius()) * 1.5;
+            double vortexProx = Mth.clamp(1.0 - (storm.distance() / vortexRadius), 0.0, 1.0);
+            double dx = storm.stormX() - pos.x;
+            double dz = storm.stormZ() - pos.z;
+            double dLen = Math.sqrt(dx * dx + dz * dz);
+            Vector3d inwardDir = dLen > 0.1 ? new Vector3d(dx / dLen, 0.0, dz / dLen) : new Vector3d(0, 0, 0);
+            Vector3d tangentDir = new Vector3d(-inwardDir.z, 0.0, inwardDir.x);
+            double tangentialSpeed = (14.0 + (storm.intensityStage() - 4) * 6.0) * vortexProx;
+            double inwardSpeed = (5.0 + (storm.intensityStage() - 4) * 3.0) * vortexProx;
+            Vector3d vortexHoriz = new Vector3d(tangentDir).mul(tangentialSpeed)
+                    .add(new Vector3d(inwardDir).mul(inwardSpeed));
+            Vector3d horizDelta = new Vector3d(vortexHoriz.x - nextVel.x, 0.0, vortexHoriz.z - nextVel.z)
+                    .mul(Math.min(1.0, 3.5 * dt));
+            nextVel.x += horizDelta.x;
+            nextVel.z += horizDelta.z;
+        } else {
+            // Large ship or outside vortex: heave surge and settling toward water level 63.0
+            double heaveSurge = (2.0 + (storm.intensityStage() - 4) * 1.25) * Math.sin(time * 0.3) * dt;
+            double targetY = 63.0;
+            double depth = targetY - pos.y;
+            nextVel.y += (depth * 10.0 - nextVel.y * 3.0) * dt + heaveSurge;
+        }
+
+        return nextVel;
+    }
+
+    /**
+     * Scans sub-level local blocks inside the hull bounding box and purges water
+     * and clears waterlogged properties from enclosed blocks.
+     */
+    public static int purgeSubLevelHoldWater(ServerSubLevel subLevel) {
+        if (subLevel == null) return 0;
+        ServerLevel subLevelWorld = subLevel.getLevel();
+        if (subLevelWorld == null) return 0;
+        var plot = subLevel.getPlot();
+        if (plot == null) return 0;
+
+        int purged = 0;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (PlotChunkHolder holder : plot.getLoadedChunks()) {
+            LevelChunk chunk = holder.getChunk();
+            if (chunk == null) continue;
+            LevelChunkSection[] sections = chunk.getSections();
+            for (int secIdx = 0; secIdx < sections.length; secIdx++) {
+                LevelChunkSection section = sections[secIdx];
+                if (section == null || section.hasOnlyAir()) continue;
+                int sectionY = chunk.getSectionYFromSectionIndex(secIdx);
+                int baseBlockY = sectionY << 4;
+                for (int sy = 0; sy < 16; sy++) {
+                    for (int sz = 0; sz < 16; sz++) {
+                        for (int sx = 0; sx < 16; sx++) {
+                            BlockState state = section.getBlockState(sx, sy, sz);
+                            boolean isFluid = state.is(Blocks.WATER) || state.is(Blocks.BUBBLE_COLUMN);
+                            boolean isWaterlogged = state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED);
+                            if (isFluid || isWaterlogged) {
+                                pos.set(chunk.getPos().getMinBlockX() + sx, baseBlockY + sy, chunk.getPos().getMinBlockZ() + sz);
+                                if (ShipHullAirPocketHelper.isInsideHullSpace(subLevelWorld, pos)) {
+                                    if (isFluid) {
+                                        subLevelWorld.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                                        purged++;
+                                    } else {
+                                        subLevelWorld.setBlock(pos, state.setValue(BlockStateProperties.WATERLOGGED, false), 3);
+                                        purged++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return purged;
+    }
+
+    public static int purgeHoldWater(Level level, Iterable<BlockPos> positions) {
+        return ShipHullAirPocketHelper.purgeHoldWater(level, positions);
+    }
     private static SteeringCache scanSteering(ServerSubLevel subLevel) {
         List<RudderInfo> rudders = new ArrayList<>();
         List<HelmBlockEntity> helms = new ArrayList<>();
