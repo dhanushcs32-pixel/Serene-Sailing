@@ -884,6 +884,136 @@ public class HydrodynamicsFossenMmgTest {
         assertTrue(speedAt180Deg > 2.0,
                 String.format("Vessel must retain momentum through 180-deg tack, got: %.3f m/s", speedAt180Deg));
     }
+
+    @Test
+    @DisplayName("Feature 1: Bilge purge converts interior water and waterlogged blocks inside hull to dry air")
+    public void testSubLevelInteriorWaterPurgedOnAssembly() {
+        record MockBlock(String id, boolean isSolid, boolean isWater, boolean isWaterlogged) {}
+
+        java.util.Map<net.minecraft.core.BlockPos, MockBlock> blockMap = new java.util.HashMap<>();
+
+        // Build a mock brig hull:
+        // Solid keel/floor at Y = 60, X from -4 to 4, Z from -8 to 8
+        for (int x = -4; x <= 4; x++) {
+            for (int z = -8; z <= 8; z++) {
+                blockMap.put(new net.minecraft.core.BlockPos(x, 60, z), new MockBlock("oak_plank", true, false, false));
+            }
+        }
+
+        // Lateral walls: port (X = -4) and starboard (X = 4) from Y = 61 to 64
+        for (int y = 61; y <= 64; y++) {
+            for (int z = -8; z <= 8; z++) {
+                blockMap.put(new net.minecraft.core.BlockPos(-4, y, z), new MockBlock("oak_plank", true, false, false));
+                blockMap.put(new net.minecraft.core.BlockPos(4, y, z), new MockBlock("oak_plank", true, false, false));
+            }
+        }
+
+        // Longitudinal walls: bow (Z = -8) and stern (Z = 8) from Y = 61 to 64
+        for (int y = 61; y <= 64; y++) {
+            for (int x = -4; x <= 4; x++) {
+                blockMap.put(new net.minecraft.core.BlockPos(x, y, -8), new MockBlock("oak_plank", true, false, false));
+                blockMap.put(new net.minecraft.core.BlockPos(x, y, 8), new MockBlock("oak_plank", true, false, false));
+            }
+        }
+
+        // Interior positions inside hold (Y = 61):
+        net.minecraft.core.BlockPos holdWater1 = new net.minecraft.core.BlockPos(0, 61, 0);
+        net.minecraft.core.BlockPos holdWater2 = new net.minecraft.core.BlockPos(1, 62, 2);
+        net.minecraft.core.BlockPos holdWaterloggedStairs = new net.minecraft.core.BlockPos(0, 61, 3);
+
+        // Exterior ocean position outside hull:
+        net.minecraft.core.BlockPos oceanWater = new net.minecraft.core.BlockPos(15, 61, 15);
+
+        blockMap.put(holdWater1, new MockBlock("water", false, true, false));
+        blockMap.put(holdWater2, new MockBlock("water", false, true, false));
+        blockMap.put(holdWaterloggedStairs, new MockBlock("waterlogged_stairs", true, false, true));
+        blockMap.put(oceanWater, new MockBlock("water", false, true, false));
+
+        ShipHullAirPocketHelper.BilgeBlockAccessor<MockBlock> accessor = new ShipHullAirPocketHelper.BilgeBlockAccessor<>() {
+            @Override
+            public boolean isSolid(MockBlock block) {
+                return block != null && block.isSolid();
+            }
+
+            @Override
+            public boolean isWater(MockBlock block) {
+                return block != null && block.isWater();
+            }
+
+            @Override
+            public boolean isWaterlogged(MockBlock block) {
+                return block != null && block.isWaterlogged();
+            }
+
+            @Override
+            public MockBlock createAir() {
+                return new MockBlock("air", false, false, false);
+            }
+
+            @Override
+            public MockBlock setUnwaterlogged(MockBlock block) {
+                return new MockBlock("dry_stairs", true, false, false);
+            }
+        };
+
+        java.util.List<net.minecraft.core.BlockPos> candidates = java.util.List.of(
+                holdWater1, holdWater2, holdWaterloggedStairs, oceanWater
+        );
+
+        int purgedCount = ShipHullAirPocketHelper.purgeHoldWater(
+                blockMap::get,
+                blockMap::put,
+                accessor,
+                candidates
+        );
+
+        assertEquals(3, purgedCount, "Exactly 3 interior blocks should be purged/cleared");
+        assertEquals("air", blockMap.get(holdWater1).id(), "Hold water block 1 must be converted to air");
+        assertEquals("air", blockMap.get(holdWater2).id(), "Hold water block 2 must be converted to air");
+        assertEquals("dry_stairs", blockMap.get(holdWaterloggedStairs).id(), "Hold waterlogged stairs must be un-waterlogged");
+        org.junit.jupiter.api.Assertions.assertFalse(blockMap.get(holdWaterloggedStairs).isWaterlogged(), "Waterlogged flag must be false");
+        assertEquals("water", blockMap.get(oceanWater).id(), "Ocean water outside hull must NOT be purged");
+    }
+
+    @Test
+    @DisplayName("Feature 2: F4 tornado uplifts small raft into the air while heavy brig stays near sea level")
+    public void testF4TornadoUpliftsSmallRaftIntoAir() {
+        // Severe F4 tornado: center at (100, 100), radius 40m, stage 5 (F4), distance 15m
+        com.serenesailing.compat.weather2.Weather2Compat.StormData f4Tornado =
+                new com.serenesailing.compat.weather2.Weather2Compat.StormData(100.0, 100.0, 40.0, 5, 15.0, true, false);
+
+        // Simulation parameters
+        double dt = 0.05; // 20 ticks/sec
+        int ticks = 40;   // 2.0 seconds
+
+        // 1. Small raft simulation: 50 blocks, flat open deck (no enclosed hold), not anchored
+        Vector3d raftPos = new Vector3d(105.0, 63.0, 105.0);
+        Vector3d raftVel = new Vector3d(0.0, 0.0, 0.0);
+
+        for (int t = 0; t < ticks; t++) {
+            raftVel = ServerPhysicsHandler.simulateVesselStormStep(
+                    raftPos, raftVel, f4Tornado, 50, false, false, t * dt, dt
+            );
+            raftPos.add(raftVel.x * dt, raftVel.y * dt, raftVel.z * dt);
+        }
+
+        assertTrue(raftVel.y > 2.0,
+                String.format("Small raft vertical velocity must be strongly positive (> 2.0 m/s), got: %.3f m/s", raftVel.y));
+        assertTrue(raftPos.y > 70.0,
+                String.format("Small raft altitude must rise significantly into the funnel cloud (> 70.0 blocks), got: %.3f", raftPos.y));
+
+        // 2. Heavy brig simulation: 400 blocks, deep enclosed hold, not anchored
+        Vector3d brigPos = new Vector3d(105.0, 63.0, 105.0);
+        Vector3d brigVel = new Vector3d(0.0, 0.0, 0.0);
+
+        for (int t = 0; t < ticks; t++) {
+            brigVel = ServerPhysicsHandler.simulateVesselStormStep(
+                    brigPos, brigVel, f4Tornado, 400, true, false, t * dt, dt
+            );
+            brigPos.add(brigVel.x * dt, brigVel.y * dt, brigVel.z * dt);
+        }
+
+        assertTrue(brigPos.y <= 66.5,
+                String.format("Heavy brig must remain near sea level (Y <= 66.5) under heavy storm buffeting, got: %.3f", brigPos.y));
+    }
 }
-
-

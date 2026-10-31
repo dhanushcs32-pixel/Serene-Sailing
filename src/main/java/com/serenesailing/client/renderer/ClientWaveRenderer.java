@@ -11,6 +11,7 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.Camera;
@@ -398,7 +399,9 @@ public class ClientWaveRenderer {
      */
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES) {
+        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_SOLID_BLOCKS
+                || event.getStage() == RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES
+                || event.getStage() == RenderLevelStageEvent.Stage.AFTER_CUTOUT_BLOCKS) {
             renderEnclosedHoldDepthOcclusion(event);
             return;
         }
@@ -815,16 +818,26 @@ public class ClientWaveRenderer {
             }
         }
 
-        // Texture sprite for animated native water - statically locked to 1x1 block
-        // coordinates with 0.25px inset to eliminate texture-atlas edge bleeding
+        // Texture sprite for animated native water - safe normalized interpolation with 1.5% margin
+        // to eliminate texture-atlas edge bleeding
         TextureAtlasSprite waterSprite = mc.getTextureAtlas(InventoryMenu.BLOCK_ATLAS)
                 .apply(ResourceLocation.withDefaultNamespace("block/water_still"));
-        float u0 = waterSprite.getU(0.25f);
-        float u1 = waterSprite.getU(15.75f);
-        float v0 = waterSprite.getV(0.25f);
-        float v1 = waterSprite.getV(15.75f);
-        float uMid = (u0 + u1) * 0.5f;
-        float vMid = (v0 + v1) * 0.5f;
+        float rawU0 = waterSprite.getU0();
+        float rawU1 = waterSprite.getU1();
+        float rawV0 = waterSprite.getV0();
+        float rawV1 = waterSprite.getV1();
+        float uMargin = (rawU1 - rawU0) * 0.015f;
+        float vMargin = (rawV1 - rawV0) * 0.015f;
+        float u0 = rawU0 + uMargin;
+        float u1 = rawU1 - uMargin;
+        float v0 = rawV0 + vMargin;
+        float v1 = rawV1 - vMargin;
+
+        // Texture sprite for surf foam overlay - sample pure white from snow sprite so foam is 100% white
+        TextureAtlasSprite snowSprite = mc.getTextureAtlas(InventoryMenu.BLOCK_ATLAS)
+                .apply(ResourceLocation.withDefaultNamespace("block/snow"));
+        float foamUMid = (snowSprite.getU0() + snowSprite.getU1()) * 0.5f;
+        float foamVMid = (snowSprite.getV0() + snowSprite.getV1()) * 0.5f;
 
         PoseStack poseStack = event.getPoseStack();
         poseStack.pushPose();
@@ -991,19 +1004,19 @@ public class ClientWaveRenderer {
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy00 - camPos.y),
                                                 (float) (swz0 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fr00, fg00, fb00, fa00);
+                                        .setUv(foamUMid, foamVMid).setColor(fr00, fg00, fb00, fa00);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy01 - camPos.y),
                                                 (float) (swz1 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fr01, fg01, fb01, fa01);
+                                        .setUv(foamUMid, foamVMid).setColor(fr01, fg01, fb01, fa01);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy11 - camPos.y),
                                                 (float) (swz1 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fr11, fg11, fb11, fa11);
+                                        .setUv(foamUMid, foamVMid).setColor(fr11, fg11, fb11, fa11);
                                 bufferBuilder
                                         .addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy10 - camPos.y),
                                                 (float) (swz0 - camPos.z))
-                                        .setUv(uMid, vMid).setColor(fr10, fg10, fb10, fa10);
+                                        .setUv(foamUMid, foamVMid).setColor(fr10, fg10, fb10, fa10);
                             }
                         }
                     }
@@ -1376,15 +1389,14 @@ public class ClientWaveRenderer {
     }
 
     /**
-     * Determines if a sub-level has an enclosed interior hold by checking vertical height span >= 2.8 blocks
-     * and presence of an enclosed cavity below waterline with solid floor, deck/ceiling, and 4 enclosing walls.
+     * Determines if a sub-level has a submerged hull hold by checking that it extends below
+     * the ocean waterline (minY <= 62.8f) and has a vertical height >= 2.0 blocks.
      */
     private static boolean checkHasEnclosedHold(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
                                                 double minX, double maxX, double minY, double maxY, double minZ, double maxZ,
                                                 Vector3d worldProbe, Vector3d localProbe,
                                                 BlockPos.MutableBlockPos subProbePos) {
-        double heightSpan = maxY - minY;
-        if (heightSpan < 2.8) {
+        if (minY > 62.8f || (maxY - minY) < 2.0) {
             return false;
         }
         int minSampleX = (int) Math.floor(minX + 1.0);
@@ -1394,8 +1406,10 @@ public class ClientWaveRenderer {
         if (maxSampleX < minSampleX || maxSampleZ < minSampleZ) {
             return false;
         }
-        for (int sx = minSampleX; sx <= maxSampleX; sx += 2) {
-            for (int sz = minSampleZ; sz <= maxSampleZ; sz += 2) {
+        int stepX = Math.max(1, (maxSampleX - minSampleX) / 8);
+        int stepZ = Math.max(1, (maxSampleZ - minSampleZ) / 8);
+        for (int sx = minSampleX; sx <= maxSampleX; sx += stepX) {
+            for (int sz = minSampleZ; sz <= maxSampleZ; sz += stepZ) {
                 if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, sx + 0.5, sz + 0.5,
                         worldProbe, localProbe, subProbePos)) {
                     return true;
@@ -1406,63 +1420,51 @@ public class ClientWaveRenderer {
     }
 
     /**
-     * Checks if a world grid point (wx, wz) is strictly inside an assembled ClientSubLevel enclosed ship hold.
-     * Requires solid floor below (wy ~ 57.0 to 61.2), solid ceiling/deck above (wy ~ 63.8 to 68.0),
-     * and solid enclosing hull walls in all 4 cardinal directions.
+     * Checks if a world grid point (wx, wz) is strictly inside a dry ship hull/hold:
+     * - Solid floor / keel below the waterline (wy between 54.0 and 62.2 in local space).
+     * - Open interior cavity at the waterline (wy = 62.5).
+     * - Bounded laterally by solid hull walls within Â±16 blocks in X and Â±28 blocks in Z.
+     * Does NOT require a ceiling overhead, allowing wide holds, open hatches, stairs, and open-deck hulls.
      */
     private static boolean isInsideShipEnclosedHold(ClientSubLevel subLevel, Pose3dc pose,
                                                     Level subLevelWorld, double wx, double wz,
                                                     Vector3d worldProbe, Vector3d localProbe,
                                                     BlockPos.MutableBlockPos subProbePos) {
-        // 1. Keel/Floor check: solid floor below (wy ~ 57.0 to 61.2)
+        // 1. Keel/Floor check: solid floor below (wy ~ 54.0 to 62.2)
         boolean hasSolidFloorBelow = false;
-        for (double wy = 57.0; wy <= 61.2; wy += 0.75) {
+        for (double wy = 54.0; wy <= 62.2; wy += 0.5) {
             worldProbe.set(wx, wy, wz);
             pose.transformPositionInverse(worldProbe, localProbe);
             subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-            if (subLevelWorld.hasChunkAt(subProbePos)) {
-                BlockState state = subLevelWorld.getBlockState(subProbePos);
-                if (!state.isAir() && state.getFluidState().isEmpty()) {
-                    hasSolidFloorBelow = true;
-                    break;
-                }
+            if (isSolidSubBlock(subLevelWorld, subProbePos)) {
+                hasSolidFloorBelow = true;
+                break;
             }
         }
         if (!hasSolidFloorBelow) {
             return false;
         }
 
-        // 2. Ceiling / deck check: enclosed above by deck/roof (wy ~ 63.8 to 68.0)
-        boolean hasSolidCeilingAbove = false;
-        for (double wy = 63.8; wy <= 68.0; wy += 0.75) {
-            worldProbe.set(wx, wy, wz);
-            pose.transformPositionInverse(worldProbe, localProbe);
-            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-            if (subLevelWorld.hasChunkAt(subProbePos)) {
-                BlockState state = subLevelWorld.getBlockState(subProbePos);
-                if (!state.isAir() && state.getFluidState().isEmpty()) {
-                    hasSolidCeilingAbove = true;
-                    break;
-                }
-            }
-        }
-        if (!hasSolidCeilingAbove) {
-            return false;
-        }
-
-        // 3. Enclosed horizontally on all 4 sides by hull walls at wy = 62.5
+        // 2. Interior cavity check at wy = 62.5 in local space:
         worldProbe.set(wx, 62.5, wz);
         pose.transformPositionInverse(worldProbe, localProbe);
         int lx = Mth.floor(localProbe.x);
         int ly = Mth.floor(localProbe.y);
         int lz = Mth.floor(localProbe.z);
 
+        // 3. Enclosed laterally on 4 sides (Â±X, Â±Z) by hull walls:
         boolean wallNegX = false, wallPosX = false, wallNegZ = false, wallPosZ = false;
-        for (int d = 1; d <= 8; d++) {
-            if (!wallNegX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))) wallNegX = true;
-            if (!wallPosX && isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly, lz))) wallPosX = true;
-            if (!wallNegZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz - d))) wallNegZ = true;
-            if (!wallPosZ && isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz + d))) wallPosZ = true;
+        for (int d = 1; d <= 16; d++) {
+            if (!wallNegX && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))
+                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly + 1, lz)))) wallNegX = true;
+            if (!wallPosX && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly, lz))
+                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly + 1, lz)))) wallPosX = true;
+        }
+        for (int d = 1; d <= 28; d++) {
+            if (!wallNegZ && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz - d))
+                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly + 1, lz - d)))) wallNegZ = true;
+            if (!wallPosZ && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz + d))
+                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly + 1, lz + d)))) wallPosZ = true;
         }
 
         return wallNegX && wallPosX && wallNegZ && wallPosZ;
@@ -1475,9 +1477,10 @@ public class ClientWaveRenderer {
     }
 
     /**
-     * Emits invisible depth-only barrier quads at Y = 62.92f and Y = 61.92f inside enclosed ship holds
-     * during AFTER_BLOCK_ENTITIES (after solid hull blocks are drawn, but BEFORE vanilla translucent chunk water).
-     * The GPU depth test culls vanilla water at Y = 62.88f and 61.88f, keeping ship cabins completely dry visually!
+     * Emits invisible depth-only barrier quads inside enclosed ship holds and along sloped hull walls
+     * during AFTER_BLOCK_ENTITIES and AFTER_CUTOUT_BLOCKS (after solid hull blocks are drawn, but BEFORE vanilla translucent chunk water).
+     * Combines both a 3x3 dilated world-grid barrier and a rotation-proof sub-level local-space OBB depth seal
+     * to completely eliminate vanilla water in the cabin and along sloped hull walls!
      */
     private static void renderEnclosedHoldDepthOcclusion(RenderLevelStageEvent event) {
         Minecraft mc = Minecraft.getInstance();
@@ -1495,13 +1498,14 @@ public class ClientWaveRenderer {
         Vector3d localProbe = new Vector3d();
         BlockPos.MutableBlockPos subProbePos = new BlockPos.MutableBlockPos();
 
-        List<float[]> holdQuads = new ArrayList<>();
+        List<float[]> worldQuads = new ArrayList<>();
+        List<float[]> localObbQuads = new ArrayList<>();
         float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
 
         for (ClientSubLevel subLevel : clientContainer.getAllSubLevels()) {
             var bounds = subLevel.boundingBox();
             if (bounds == null) continue;
-            if (bounds.minY() > 63.5 || bounds.maxY() < 55.0) continue;
+            if (bounds.minY() > 63.5 || bounds.maxY() < 54.0) continue;
 
             Pose3dc pose = subLevel.renderPose(partialTick);
             if (pose == null) pose = subLevel.logicalPose();
@@ -1519,24 +1523,152 @@ public class ClientWaveRenderer {
                     worldProbe, localProbe, subProbePos);
             if (!hasEnclosedHold) continue;
 
-            int startGX = (int) Math.floor(minX);
-            int endGX = (int) Math.ceil(maxX);
-            int startGZ = (int) Math.floor(minZ);
-            int endGZ = (int) Math.ceil(maxZ);
+            // 1. Dilated World-Grid Mask:
+            int startGX = (int) Math.floor(minX - 1.0);
+            int endGX = (int) Math.ceil(maxX + 1.0);
+            int startGZ = (int) Math.floor(minZ - 1.0);
+            int endGZ = (int) Math.ceil(maxZ + 1.0);
 
-            for (int gx = startGX; gx < endGX; gx++) {
-                for (int gz = startGZ; gz < endGZ; gz++) {
-                    if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, gx + 0.5, gz + 0.5,
-                            worldProbe, localProbe, subProbePos)) {
-                        holdQuads.add(new float[] { (float) gx, (float) gz, (float) (gx + 1.0f), (float) (gz + 1.0f) });
+            int spanX = endGX - startGX + 1;
+            int spanZ = endGZ - startGZ + 1;
+            if (spanX > 0 && spanZ > 0 && spanX < 200 && spanZ < 200) {
+                boolean[][] rawHold = new boolean[spanX][spanZ];
+                for (int gx = startGX; gx <= endGX; gx++) {
+                    for (int gz = startGZ; gz <= endGZ; gz++) {
+                        if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, gx + 0.5, gz + 0.5,
+                                worldProbe, localProbe, subProbePos)) {
+                            rawHold[gx - startGX][gz - startGZ] = true;
+                        }
+                    }
+                }
+
+                for (int gx = startGX; gx <= endGX; gx++) {
+                    for (int gz = startGZ; gz <= endGZ; gz++) {
+                        int ix = gx - startGX;
+                        int iz = gz - startGZ;
+                        boolean include = rawHold[ix][iz];
+                        if (!include) {
+                            // Dilate 1 cell into adjacent hull walls (3x3 neighborhood)
+                            for (int dx = -1; dx <= 1 && !include; dx++) {
+                                for (int dz = -1; dz <= 1 && !include; dz++) {
+                                    int nx = ix + dx;
+                                    int nz = iz + dz;
+                                    if (nx >= 0 && nx < spanX && nz >= 0 && nz < spanZ && rawHold[nx][nz]) {
+                                        for (double wy = 54.0; wy <= 62.5; wy += 0.5) {
+                                            worldProbe.set(gx + 0.5, wy, gz + 0.5);
+                                            pose.transformPositionInverse(worldProbe, localProbe);
+                                            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+                                            if (isSolidSubBlock(subLevelWorld, subProbePos)) {
+                                                include = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (include) {
+                            worldQuads.add(new float[] { (float) gx, (float) gz, (float) (gx + 1.0f), (float) (gz + 1.0f) });
+                        }
+                    }
+                }
+            }
+
+            // 2. Sub-Level Local-Space OBB Depth Seal (Rotation-Proof):
+            BoundingBox3ic localBox = null;
+            if (subLevel.getPlot() != null) {
+                localBox = subLevel.getPlot().getBoundingBox();
+            }
+
+            int minLX, maxLX, minLZ, maxLZ;
+            if (localBox != null) {
+                minLX = localBox.minX();
+                maxLX = localBox.maxX();
+                minLZ = localBox.minZ();
+                maxLZ = localBox.maxZ();
+            } else {
+                worldProbe.set(minX, 62.5, minZ);
+                pose.transformPositionInverse(worldProbe, localProbe);
+                minLX = Mth.floor(localProbe.x) - 2;
+                minLZ = Mth.floor(localProbe.z) - 2;
+                worldProbe.set(maxX, 62.5, maxZ);
+                pose.transformPositionInverse(worldProbe, localProbe);
+                maxLX = Mth.ceil(localProbe.x) + 2;
+                maxLZ = Mth.ceil(localProbe.z) + 2;
+                if (maxLX < minLX) { int t = minLX; minLX = maxLX; maxLX = t; }
+                if (maxLZ < minLZ) { int t = minLZ; minLZ = maxLZ; maxLZ = t; }
+            }
+
+            // Approximate local Y corresponding to waterline
+            worldProbe.set((minX + maxX) * 0.5, 62.5, (minZ + maxZ) * 0.5);
+            pose.transformPositionInverse(worldProbe, localProbe);
+            int localWaterY = Mth.floor(localProbe.y);
+
+            Vector3d cLocal = new Vector3d();
+            Vector3d p0 = new Vector3d(), p1 = new Vector3d(), p2 = new Vector3d(), p3 = new Vector3d();
+
+            for (int lz = minLZ; lz <= maxLZ; lz++) {
+                int firstSolidX = Integer.MAX_VALUE;
+                int lastSolidX = Integer.MIN_VALUE;
+
+                // Find leftmost and rightmost solid hull plank blocks at the waterline (localWaterY - 1 .. localWaterY + 1)
+                for (int lx = minLX; lx <= maxLX; lx++) {
+                    boolean isSolidAtWaterline = false;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, localWaterY + dy, lz))) {
+                            isSolidAtWaterline = true;
+                            break;
+                        }
+                    }
+                    if (isSolidAtWaterline) {
+                        if (lx < firstSolidX) firstSolidX = lx;
+                        if (lx > lastSolidX) lastSolidX = lx;
+                    }
+                }
+
+                // Ensure both port and starboard walls exist for this row, spanning at least 2 blocks wide
+                if (firstSolidX != Integer.MAX_VALUE && lastSolidX != Integer.MIN_VALUE && (lastSolidX - firstSolidX) >= 2) {
+                    // Check that there is a floor/keel below within this row
+                    boolean hasFloor = false;
+                    for (int lx = firstSolidX; lx <= lastSolidX; lx++) {
+                        for (int ly = localWaterY - 1; ly >= localWaterY - 8; ly--) {
+                            if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz))) {
+                                hasFloor = true;
+                                break;
+                            }
+                        }
+                        if (hasFloor) break;
+                    }
+
+                    if (hasFloor) {
+                        // Emit a continuous, 100% gap-free depth-only strip from firstSolidX to lastSolidX
+                        cLocal.set(firstSolidX, localWaterY, lz);
+                        pose.transformPosition(cLocal, p0);
+                        cLocal.set(firstSolidX, localWaterY, lz + 1.0);
+                        pose.transformPosition(cLocal, p1);
+                        cLocal.set(lastSolidX + 1.0, localWaterY, lz + 1.0);
+                        pose.transformPosition(cLocal, p2);
+                        cLocal.set(lastSolidX + 1.0, localWaterY, lz);
+                        pose.transformPosition(cLocal, p3);
+
+                        // hasLowerFloor = 1.0f ensures depth seal quads are emitted at both Y = 62.892f and Y = 61.892f
+                        localObbQuads.add(new float[] {
+                                (float) p0.x, (float) p0.z,
+                                (float) p1.x, (float) p1.z,
+                                (float) p2.x, (float) p2.z,
+                                (float) p3.x, (float) p3.z,
+                                1.0f
+                        });
                     }
                 }
             }
         }
 
-        if (holdQuads.isEmpty()) return;
+        if (worldQuads.isEmpty() && localObbQuads.isEmpty()) return;
 
         RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
         RenderSystem.depthMask(true);
         RenderSystem.colorMask(false, false, false, false);
         RenderSystem.disableCull();
@@ -1547,28 +1679,49 @@ public class ClientWaveRenderer {
             Matrix4f matrix = poseStack.last().pose();
 
             Tesselator tesselator = Tesselator.getInstance();
-            BufferBuilder bufferBuilder = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION);
-            RenderSystem.setShader(GameRenderer::getPositionShader);
+            BufferBuilder bufferBuilder = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            RenderSystem.setShader(GameRenderer::getPositionColorShader);
 
             float cx = (float) camPos.x;
             float cy = (float) camPos.y;
             float cz = (float) camPos.z;
 
-            // Emit horizontal depth barriers at Y = 62.92f (blocks vanilla water at 62.88)
-            // and Y = 61.92f (blocks vanilla lower water at 61.88)
-            float[] barrierYLevels = new float[] { 62.92f, 61.92f };
+            // 1. Emit rotation-proof local OBB depth barrier quads at Y = 62.892f (and 61.892f if floor < 61.5)
+            float dy62 = 62.892f - cy;
+            float dy61 = 61.892f - cy;
+            for (float[] q : localObbQuads) {
+                float x0 = q[0] - cx, z0 = q[1] - cz;
+                float x1 = q[2] - cx, z1 = q[3] - cz;
+                float x2 = q[4] - cx, z2 = q[5] - cz;
+                float x3 = q[6] - cx, z3 = q[7] - cz;
+
+                bufferBuilder.addVertex(matrix, x0, dy62, z0).setColor(255, 255, 255, 255);
+                bufferBuilder.addVertex(matrix, x1, dy62, z1).setColor(255, 255, 255, 255);
+                bufferBuilder.addVertex(matrix, x2, dy62, z2).setColor(255, 255, 255, 255);
+                bufferBuilder.addVertex(matrix, x3, dy62, z3).setColor(255, 255, 255, 255);
+
+                if (q[8] > 0.5f) {
+                    bufferBuilder.addVertex(matrix, x0, dy61, z0).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x1, dy61, z1).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x2, dy61, z2).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x3, dy61, z3).setColor(255, 255, 255, 255);
+                }
+            }
+
+            // 2. Emit dilated world-grid depth barriers:
+            float[] barrierYLevels = new float[] { 62.892f, 62.885f, 62.865f, 61.892f, 61.865f };
             for (float yBarrier : barrierYLevels) {
                 float dy = yBarrier - cy;
-                for (float[] quad : holdQuads) {
+                for (float[] quad : worldQuads) {
                     float x0 = quad[0] - cx;
                     float z0 = quad[1] - cz;
                     float x1 = quad[2] - cx;
                     float z1 = quad[3] - cz;
 
-                    bufferBuilder.addVertex(matrix, x0, dy, z0);
-                    bufferBuilder.addVertex(matrix, x0, dy, z1);
-                    bufferBuilder.addVertex(matrix, x1, dy, z1);
-                    bufferBuilder.addVertex(matrix, x1, dy, z0);
+                    bufferBuilder.addVertex(matrix, x0, dy, z0).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x0, dy, z1).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x1, dy, z1).setColor(255, 255, 255, 255);
+                    bufferBuilder.addVertex(matrix, x1, dy, z0).setColor(255, 255, 255, 255);
                 }
             }
 
