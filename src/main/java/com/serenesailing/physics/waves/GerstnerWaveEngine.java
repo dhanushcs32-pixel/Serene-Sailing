@@ -74,11 +74,14 @@ public final class GerstnerWaveEngine {
      * Smoothed wave and storm state tracked per dimension.
      */
     public static class DimensionWaveState {
-        public double smoothedWindSpeed = 1.0;
-        public double smoothedWindDirX = 0.0;
-        public double smoothedWindDirZ = -1.0;
-        public double smoothedStormIntensity = 0.15;
-        public long lastUpdateTick = -1L;
+        // FIX (Audit 106): Made volatile so render-thread reads see writes
+        // from the tick-thread's synchronized update(). Without volatile,
+        // the JMM permits stale caching in CPU registers/L1 indefinitely.
+        public volatile double smoothedWindSpeed = 1.0;
+        public volatile double smoothedWindDirX = 0.0;
+        public volatile double smoothedWindDirZ = -1.0;
+        public volatile double smoothedStormIntensity = 0.15;
+        public volatile long lastUpdateTick = -1L;
 
         public synchronized void update(Level level, long gameTime) {
             if (gameTime == lastUpdateTick && lastUpdateTick >= 0) {

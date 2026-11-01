@@ -314,6 +314,12 @@ public class CapstanBlockEntity extends BlockEntity {
         this.chainLength = tag.getFloat("ChainLength");
         this.trailX = tag.getFloat("TrailX");
         this.trailZ = tag.getFloat("TrailZ");
+
+        if (Float.isNaN(this.seabedDepth) || Float.isInfinite(this.seabedDepth)) this.seabedDepth = 0.0f;
+        if (Float.isNaN(this.chainLength) || Float.isInfinite(this.chainLength)) this.chainLength = 0.0f;
+        if (Float.isNaN(this.trailX) || Float.isInfinite(this.trailX)) this.trailX = 0.0f;
+        if (Float.isNaN(this.trailZ) || Float.isInfinite(this.trailZ)) this.trailZ = 0.0f;
+
         // Snap interpolation state so the chain does not visibly rewind.
         this.prevChainLength = this.chainLength;
         this.prevTrailX = this.trailX;

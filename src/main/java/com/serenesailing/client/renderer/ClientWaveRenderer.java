@@ -1075,6 +1075,9 @@ public class ClientWaveRenderer {
         }
 
         // Compute local slope normal
+        // FIX (Audit 106): Use (cachedGridDim + 1) - 1 = cachedGridDim as the max
+        // vertex index for slope normal sampling. waveOffset is [vertDim][vertDim]
+        // where vertDim = cachedGridDim + 1, so the last valid index is cachedGridDim.
         int prevI = Math.max(0, vi - 1);
         int nextI = Math.min(cachedGridDim, vi + 1);
         int prevJ = Math.max(0, vj - 1);
@@ -1612,10 +1615,10 @@ public class ClientWaveRenderer {
                 int firstSolidX = Integer.MAX_VALUE;
                 int lastSolidX = Integer.MIN_VALUE;
 
-                // Find leftmost and rightmost solid hull plank blocks at the waterline (localWaterY - 1 .. localWaterY + 1)
+                // Find leftmost and rightmost solid hull plank blocks at the waterline (localWaterY - 2 .. localWaterY + 2)
                 for (int lx = minLX; lx <= maxLX; lx++) {
                     boolean isSolidAtWaterline = false;
-                    for (int dy = -1; dy <= 1; dy++) {
+                    for (int dy = -2; dy <= 2; dy++) {
                         if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, localWaterY + dy, lz))) {
                             isSolidAtWaterline = true;
                             break;
@@ -1632,7 +1635,7 @@ public class ClientWaveRenderer {
                     // Check that there is a floor/keel below within this row
                     boolean hasFloor = false;
                     for (int lx = firstSolidX; lx <= lastSolidX; lx++) {
-                        for (int ly = localWaterY - 1; ly >= localWaterY - 8; ly--) {
+                        for (int ly = localWaterY - 1; ly >= localWaterY - 10; ly--) {
                             if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz))) {
                                 hasFloor = true;
                                 break;
@@ -1667,15 +1670,15 @@ public class ClientWaveRenderer {
 
         if (worldQuads.isEmpty() && localObbQuads.isEmpty()) return;
 
-        RenderSystem.enableDepthTest();
-        RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
-        RenderSystem.depthMask(true);
-        RenderSystem.colorMask(false, false, false, false);
-        RenderSystem.disableCull();
-
+        PoseStack poseStack = event.getPoseStack();
+        poseStack.pushPose();
         try {
-            PoseStack poseStack = event.getPoseStack();
-            poseStack.pushPose();
+            RenderSystem.enableDepthTest();
+            RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
+            RenderSystem.depthMask(true);
+            RenderSystem.colorMask(false, false, false, false);
+            RenderSystem.disableCull();
+
             Matrix4f matrix = poseStack.last().pose();
 
             Tesselator tesselator = Tesselator.getInstance();
@@ -1729,11 +1732,12 @@ public class ClientWaveRenderer {
             if (meshData != null) {
                 BufferUploader.drawWithShader(meshData);
             }
-
-            poseStack.popPose();
         } finally {
             RenderSystem.colorMask(true, true, true, true);
             RenderSystem.enableCull();
+            RenderSystem.depthMask(true);
+            RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
+            poseStack.popPose();
         }
     }
 

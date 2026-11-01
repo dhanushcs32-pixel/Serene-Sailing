@@ -242,6 +242,11 @@ public class WindVaneBlockEntity extends BlockEntity {
         this.apparentWindSpeed = tag.getFloat("ApparentWind");
         this.relativeWindAngleDeg = tag.getFloat("RelWindAngle");
         this.pointOfSail = tag.getString("PointOfSail");
+
+        if (Float.isNaN(this.trueWindSpeed) || Float.isInfinite(this.trueWindSpeed)) this.trueWindSpeed = 0.0f;
+        if (Float.isNaN(this.apparentWindSpeed) || Float.isInfinite(this.apparentWindSpeed)) this.apparentWindSpeed = 0.0f;
+        if (Float.isNaN(this.relativeWindAngleDeg) || Float.isInfinite(this.relativeWindAngleDeg)) this.relativeWindAngleDeg = 0.0f;
+
         // Avoid a visible spin from 0 deg on (re)load: snap both interp states.
         this.apparentWindAngle = this.relativeWindAngleDeg;
         this.prevApparentWindAngle = this.relativeWindAngleDeg;

@@ -20,6 +20,9 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Client -> server payload: sets the helm's unified steering angle from the
@@ -28,6 +31,8 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * {@link HelmBlockEntity#setSteeringAngle(float)}.
  */
 public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPacketPayload {
+
+    private static final Map<UUID, long[]> RATE_LIMIT_MAP = new ConcurrentHashMap<>();
 
     public static final Type<SetHelmAnglePayload> TYPE = new Type<>(
             ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "set_helm_angle"));
@@ -62,6 +67,21 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
             }
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
+                if (serverPlayer.isRemoved()) {
+                    return;
+                }
+
+                // Rate limiting: allow at most 20 steer packets per player per game tick
+                long currentTick = serverLevel.getGameTime();
+                long[] burst = RATE_LIMIT_MAP.computeIfAbsent(serverPlayer.getUUID(), k -> new long[]{currentTick, 0});
+                if (burst[0] == currentTick) {
+                    if (++burst[1] > 20) {
+                        return; // Drop excess packet burst
+                    }
+                } else {
+                    burst[0] = currentTick;
+                    burst[1] = 1;
+                }
                 SereneSailing.LOGGER.debug("[HELM-NET] Received angle: {} for pos: {}", payload.angle(), payload.pos());
 
                 HelmBlockEntity helm = null;

@@ -86,6 +86,10 @@ public class Weather2Compat {
                     int rawStage = storm.levelCurIntensityStage;
 
                     // Map Weather2 stages to 0..6 (1=F0, 2=F1, 3=F2, 4=F3, 5=F4, 6=F5)
+                    // FIX (Audit 106): Reordered branches so rawStage 2,3 (STATE_HIGHWIND/
+                    // STATE_HAIL) are checked before the graduated 4-9+ tornado/cyclone mapping.
+                    // The old ordering had rawStage >= 1 && rawStage <= 6 as a catch-all that
+                    // swallowed rawStage 2,3 before their dedicated branch could execute.
                     int mappedStage;
                     if (rawStage >= 9) { // STATE_STAGE5
                         mappedStage = 6;
@@ -99,9 +103,9 @@ public class Weather2Compat {
                         mappedStage = 2;
                     } else if (rawStage == 4) { // STATE_FORMING / F0
                         mappedStage = 1;
-                    } else if (rawStage >= 1 && rawStage <= 6) {
-                        mappedStage = rawStage;
                     } else if (rawStage == 2 || rawStage == 3) { // STATE_HIGHWIND / STATE_HAIL
+                        mappedStage = 1;
+                    } else if (rawStage == 1) { // STATE_FORMING_EARLY
                         mappedStage = 1;
                     } else {
                         mappedStage = 0;
