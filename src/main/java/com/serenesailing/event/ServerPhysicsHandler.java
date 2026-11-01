@@ -18,6 +18,8 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import com.serenesailing.registry.ModBlocks;
+import java.util.Set;
+import java.util.HashSet;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
@@ -238,6 +240,7 @@ public class ServerPhysicsHandler {
             return;
         }
 
+        Set<UUID> activeSubLevelIds = new HashSet<>();
         for (ServerSubLevel subLevel : serverContainer.getAllSubLevels()) {
             UUID id = subLevel.getUniqueId();
             if (subLevel.isRemoved()) {
@@ -249,13 +252,28 @@ public class ServerPhysicsHandler {
                 FORWARD_SPEED_CACHE.remove(id);
                 PREV_HEADING_CACHE.remove(id);
                 PHYS_DEBUG_TICK.remove(id);
+                LAST_BILGE_PURGE_TICK.remove(id);
                 continue;
             }
+            activeSubLevelIds.add(id);
             try {
                 applyShipPhysics(subLevel, level, dt);
             } catch (Exception ex) {
                 SereneSailing.LOGGER.error("[SereneSailing] sailing physics failed for sub-level {}", id, ex);
             }
+        }
+
+        // Periodic orphan cache eviction (every 100 ticks): clean up disassembled or unloaded contraptions
+        if (stepCounter.get() % 100 == 0) {
+            STEERING_CACHE.keySet().retainAll(activeSubLevelIds);
+            STEERING_CACHE_STEP.keySet().retainAll(activeSubLevelIds);
+            CREAK_COOLDOWN.keySet().retainAll(activeSubLevelIds);
+            HELM_ANGLE_CACHE.keySet().retainAll(activeSubLevelIds);
+            VESSEL_VELOCITY_CACHE.keySet().retainAll(activeSubLevelIds);
+            FORWARD_SPEED_CACHE.keySet().retainAll(activeSubLevelIds);
+            PREV_HEADING_CACHE.keySet().retainAll(activeSubLevelIds);
+            PHYS_DEBUG_TICK.keySet().retainAll(activeSubLevelIds);
+            LAST_BILGE_PURGE_TICK.keySet().retainAll(activeSubLevelIds);
         }
     }
 
@@ -304,7 +322,12 @@ public class ServerPhysicsHandler {
         }
 
         Vector3d localUp = new Vector3d(0.0, 1.0, 0.0);
-        Vector3d localRight = new Vector3d(localForward).cross(localUp).normalize();
+        Vector3d localRight = new Vector3d(localForward).cross(localUp);
+        if (localRight.lengthSquared() < 1.0e-4) {
+            localRight.set(1.0, 0.0, 0.0);
+        } else {
+            localRight.normalize();
+        }
 
         Vector3d forwardWorld = new Vector3d(localForward).rotate(orientation);
         forwardWorld.y = 0.0;
@@ -347,8 +370,9 @@ public class ServerPhysicsHandler {
         // When the ship's heading rotates by dYaw while underway, rotate the horizontal
         // velocity vector toward the new forwardHeading by 80% (75%-85%) of dYaw.
         // This prevents artificial sway drag from destroying forward momentum on direction change!
+        boolean anchored = isAnchored(steering);
         Vector3d prevHeading = PREV_HEADING_CACHE.get(subLevelId);
-        if (prevHeading != null && initialFwdSpeed > 0.05) {
+        if (!anchored && prevHeading != null && Math.abs(initialFwdSpeed) > 0.05) {
             Vector3d cross = new Vector3d(prevHeading).cross(forwardWorld);
             double dYaw = Math.atan2(cross.y, prevHeading.dot(forwardWorld));
             if (Math.abs(dYaw) > 1.0e-5) {
@@ -453,7 +477,7 @@ public class ServerPhysicsHandler {
         }
 
         boolean hasEnclosedHold = steering.interiorAirVolume() > 50 || steering.hullHeight() >= 3.0;
-        boolean anchored = isAnchored(steering);
+        // anchored is already evaluated above for momentum redirection
 
         // Weather2 Storm & Tornado Physics Interaction
         Weather2Compat.StormData nearestStorm = Weather2Compat.getNearestStorm(level, worldPos.x(), worldPos.z(), 256.0);
@@ -505,8 +529,8 @@ public class ServerPhysicsHandler {
             thrustMag = thrustWorld.length();
 
             // Strict linear scaling from zero based on active sail area
-            if (thrustMag > maxAeroForce) {
-                thrustWorld.normalize().mul(maxAeroForce);
+            if (thrustMag > maxAeroForce && thrustMag > 1.0e-6) {
+                thrustWorld.mul(maxAeroForce / thrustMag);
                 thrustMag = maxAeroForce;
             }
         }
@@ -526,8 +550,9 @@ public class ServerPhysicsHandler {
             );
 
             double maxImpulse = maxAeroForce * dt;
-            if (localLinearImpulse.length() > maxImpulse) {
-                localLinearImpulse.normalize().mul(maxImpulse);
+            double impulseLen = localLinearImpulse.length();
+            if (impulseLen > maxImpulse && impulseLen > 1.0e-6) {
+                localLinearImpulse.mul(maxImpulse / impulseLen);
             }
 
             // Ensure aerodynamic linear acceleration satisfies a = F_thrust / M_total,
@@ -732,16 +757,24 @@ public class ServerPhysicsHandler {
 
         // ---- Momentum Inertia Guard (Maximum Per-Tick Deceleration Clamp) ----
         // Unless the Capstan Anchor is locked or the ship collides with solid world terrain,
-        // horizontal forward speed (fwdSpeed) must NEVER be reduced by hydrodynamic/wave/damping
-        // forces by more than 2.5% per tick (maxDeltaV = -0.025 * currentForwardSpeed).
-        // This mathematically guarantees the vessel can NEVER jerk to a sudden stop.
-        if (!anchored && initialFwdSpeed > 0.05) {
+        // horizontal speed (fwdSpeed) must NEVER be reduced by hydrodynamic/wave/damping
+        // forces by more than 2.5% per tick (maxDeltaV = -0.025 * currentSpeed).
+        // Works bidirectionally in both forward headway and reverse sternway.
+        if (!anchored && Math.abs(initialFwdSpeed) > 0.05) {
             Vector3d currentVelWorld = new Vector3d(body.getLinearVelocity());
             double currentFwdSpeed = currentVelWorld.dot(forwardWorld);
             double deltaFwd = currentFwdSpeed - initialFwdSpeed;
-            double maxLoss = 0.025 * initialFwdSpeed * (dt / 0.05);
-            if (deltaFwd < -maxLoss) {
+            double maxLoss = 0.025 * Math.abs(initialFwdSpeed) * (dt / 0.05);
+            if (initialFwdSpeed > 0.0 && deltaFwd < -maxLoss) {
                 double clampedFwdSpeed = initialFwdSpeed - maxLoss;
+                double restore = clampedFwdSpeed - currentFwdSpeed;
+                Vector3d restoreImpulse = new Vector3d(forwardWorld).mul(restore);
+                body.addLinearAndAngularVelocity(restoreImpulse, new Vector3d());
+                shipVelWorld.add(restoreImpulse);
+                fwdSpeed = clampedFwdSpeed;
+                FORWARD_SPEED_CACHE.put(subLevelId, fwdSpeed);
+            } else if (initialFwdSpeed < 0.0 && deltaFwd > maxLoss) {
+                double clampedFwdSpeed = initialFwdSpeed + maxLoss;
                 double restore = clampedFwdSpeed - currentFwdSpeed;
                 Vector3d restoreImpulse = new Vector3d(forwardWorld).mul(restore);
                 body.addLinearAndAngularVelocity(restoreImpulse, new Vector3d());
@@ -1347,7 +1380,10 @@ public class ServerPhysicsHandler {
             double heaveSurge = (2.0 + (storm.intensityStage() - 4) * 1.25) * Math.sin(time * 0.3) * dt;
             double targetY = 63.0;
             double depth = targetY - pos.y;
-            nextVel.y += (depth * 10.0 - nextVel.y * 3.0) * dt + heaveSurge;
+            double accelY = (depth * 10.0 - nextVel.y * 3.0);
+            accelY = Mth.clamp(accelY, -16.0, 16.0);
+            nextVel.y += accelY * dt + heaveSurge;
+            nextVel.y = Mth.clamp(nextVel.y, -16.0, 16.0);
         }
 
         return nextVel;
@@ -1375,6 +1411,7 @@ public class ServerPhysicsHandler {
                 if (section == null || section.hasOnlyAir()) continue;
                 int sectionY = chunk.getSectionYFromSectionIndex(secIdx);
                 int baseBlockY = sectionY << 4;
+                if (baseBlockY > 70 || (baseBlockY + 15) < 40) continue;
                 for (int sy = 0; sy < 16; sy++) {
                     for (int sz = 0; sz < 16; sz++) {
                         for (int sx = 0; sx < 16; sx++) {
@@ -1385,10 +1422,10 @@ public class ServerPhysicsHandler {
                                 pos.set(chunk.getPos().getMinBlockX() + sx, baseBlockY + sy, chunk.getPos().getMinBlockZ() + sz);
                                 if (ShipHullAirPocketHelper.isInsideHullSpace(subLevelWorld, pos)) {
                                     if (isFluid) {
-                                        subLevelWorld.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                                        subLevelWorld.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
                                         purged++;
                                     } else {
-                                        subLevelWorld.setBlock(pos, state.setValue(BlockStateProperties.WATERLOGGED, false), 3);
+                                        subLevelWorld.setBlock(pos, state.setValue(BlockStateProperties.WATERLOGGED, false), 2);
                                         purged++;
                                     }
                                 }
@@ -1554,7 +1591,12 @@ public class ServerPhysicsHandler {
             localForward.normalize();
         }
         Vector3d localUp = new Vector3d(0.0, 1.0, 0.0);
-        Vector3d localRight = new Vector3d(localForward).cross(localUp).normalize();
+        Vector3d localRight = new Vector3d(localForward).cross(localUp);
+        if (localRight.lengthSquared() < 1.0e-4) {
+            localRight.set(1.0, 0.0, 0.0);
+        } else {
+            localRight.normalize();
+        }
 
         double hullLength = Math.max(1.0, Math.abs(localForward.x) * gridWidth + Math.abs(localForward.z) * gridDepth);
         double hullBeam = Math.max(1.0, Math.abs(localRight.x) * gridWidth + Math.abs(localRight.z) * gridDepth);
@@ -1769,6 +1811,14 @@ public class ServerPhysicsHandler {
         double depth = targetKeelY - currentKeelY;
         Vector3d vel = new Vector3d(body.getLinearVelocity());
 
+        // Hydrodynamic splashdown impact cushioning: if falling or plunging into water at high downward speed,
+        // cushion the plunge so vessels smoothly settle without bottoming out or punching into the seabed.
+        if (vel.y < -4.0) {
+            double cushionedVy = Math.max(-4.0, vel.y * Math.exp(-12.0 * dt));
+            body.addLinearAndAngularVelocity(new Vector3d(0.0, cushionedVy - vel.y, 0.0), new Vector3d());
+            vel.y = cushionedVy;
+        }
+
         // In calm water near equilibrium (depth < 0.05) and low vertical velocity (vy < 0.08),
         // smoothly damp vy (vy *= 0.5) without applying oscillating impulses so docked ships sit 100% motionless!
         if (isCalmWeather && Math.abs(depth) < 0.05 && Math.abs(vel.y) < 0.08) {
@@ -1867,7 +1917,7 @@ public class ServerPhysicsHandler {
         double initialFwdSpeed = resultVel.x * currentHeading.x + resultVel.z * currentHeading.z;
 
         // 1. Keel Hydrodynamic Lift / Momentum Redirection (80% of dYaw)
-        if (prevHeading != null && initialFwdSpeed > 0.05) {
+        if (!anchored && prevHeading != null && Math.abs(initialFwdSpeed) > 0.05) {
             Vector3d cross = new Vector3d(prevHeading).cross(currentHeading);
             double dYaw = Math.atan2(cross.y, prevHeading.dot(currentHeading));
             if (Math.abs(dYaw) > 1.0e-5) {
@@ -1879,7 +1929,12 @@ public class ServerPhysicsHandler {
         }
 
         // 2. Lateral Keel Resistance / Sway Damping (reduced by 70% during active turns)
-        Vector3d localRight = new Vector3d(currentHeading).cross(0.0, 1.0, 0.0).normalize();
+        Vector3d localRight = new Vector3d(currentHeading).cross(0.0, 1.0, 0.0);
+        if (localRight.lengthSquared() < 1.0e-4) {
+            localRight.set(1.0, 0.0, 0.0);
+        } else {
+            localRight.normalize();
+        }
         double vLateral = resultVel.dot(localRight);
         if (Math.abs(vLateral) > 1.0e-9) {
             double lateralDamping = KEEL_LATERAL_DAMPING;
@@ -1902,13 +1957,17 @@ public class ServerPhysicsHandler {
             }
         }
 
-        // 4. Momentum Inertia Guard: forward speed never drops by > 2.5% per tick
-        if (initialFwdSpeed > 0.05) {
+        // 4. Momentum Inertia Guard: speed never drops by > 2.5% per tick (works in headway and sternway)
+        if (Math.abs(initialFwdSpeed) > 0.05) {
             double currentFwdSpeed = resultVel.x * currentHeading.x + resultVel.z * currentHeading.z;
             double deltaFwd = currentFwdSpeed - initialFwdSpeed;
-            double maxLoss = 0.025 * initialFwdSpeed * (dt / 0.05);
-            if (deltaFwd < -maxLoss) {
+            double maxLoss = 0.025 * Math.abs(initialFwdSpeed) * (dt / 0.05);
+            if (initialFwdSpeed > 0.0 && deltaFwd < -maxLoss) {
                 double clampedFwdSpeed = initialFwdSpeed - maxLoss;
+                double restore = clampedFwdSpeed - currentFwdSpeed;
+                resultVel.add(new Vector3d(currentHeading).mul(restore));
+            } else if (initialFwdSpeed < 0.0 && deltaFwd > maxLoss) {
+                double clampedFwdSpeed = initialFwdSpeed + maxLoss;
                 double restore = clampedFwdSpeed - currentFwdSpeed;
                 resultVel.add(new Vector3d(currentHeading).mul(restore));
             }
@@ -1921,14 +1980,39 @@ public class ServerPhysicsHandler {
     public static void onLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
         if (event.getLevel() instanceof ServerLevel serverLevel) {
             DIMENSION_WIND_CACHE.remove(serverLevel.dimension());
-            STEERING_CACHE.clear();
-            STEERING_CACHE_STEP.clear();
-            CREAK_COOLDOWN.clear();
-            HELM_ANGLE_CACHE.clear();
-            VESSEL_VELOCITY_CACHE.clear();
-            FORWARD_SPEED_CACHE.clear();
-            PREV_HEADING_CACHE.clear();
-            PHYS_DEBUG_TICK.clear();
+            // FIX (Audit 106): Only evict sub-level entries belonging to the
+            // unloading dimension. The old code called .clear() which wiped
+            // ALL cached physics state across ALL dimensions whenever a SINGLE
+            // dimension unloaded (e.g. entering/leaving the Nether). This
+            // destroyed velocity, heading, and steering caches for vessels
+            // sailing in the Overworld when the player briefly visited the End.
+            SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+            if (container instanceof ServerSubLevelContainer serverContainer) {
+                Set<UUID> toRemove = new HashSet<>();
+                for (ServerSubLevel sl : serverContainer.getAllSubLevels()) {
+                    toRemove.add(sl.getUniqueId());
+                }
+                STEERING_CACHE.keySet().removeAll(toRemove);
+                STEERING_CACHE_STEP.keySet().removeAll(toRemove);
+                CREAK_COOLDOWN.keySet().removeAll(toRemove);
+                HELM_ANGLE_CACHE.keySet().removeAll(toRemove);
+                VESSEL_VELOCITY_CACHE.keySet().removeAll(toRemove);
+                FORWARD_SPEED_CACHE.keySet().removeAll(toRemove);
+                PREV_HEADING_CACHE.keySet().removeAll(toRemove);
+                PHYS_DEBUG_TICK.keySet().removeAll(toRemove);
+                LAST_BILGE_PURGE_TICK.keySet().removeAll(toRemove);
+            } else {
+                // Fallback for edge case where container is unavailable
+                STEERING_CACHE.clear();
+                STEERING_CACHE_STEP.clear();
+                CREAK_COOLDOWN.clear();
+                HELM_ANGLE_CACHE.clear();
+                VESSEL_VELOCITY_CACHE.clear();
+                FORWARD_SPEED_CACHE.clear();
+                PREV_HEADING_CACHE.clear();
+                PHYS_DEBUG_TICK.clear();
+                LAST_BILGE_PURGE_TICK.clear();
+            }
         }
     }
 }

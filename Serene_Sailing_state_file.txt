@@ -961,3 +961,76 @@ SESSION 102 (2026-10-30):
     - `./gradlew.bat test --offline`: BUILD SUCCESSFUL (all 46 unit tests passing across all test suites).
     - `./gradlew.bat build --offline`: BUILD SUCCESSFUL.
     - Generated release jar: `D:\SereneSailing\build\libs\serenesailing-1.0.0.jar` (214,714 bytes).
+
+================================================================================
+SESSION 103 (2026-10-31):
+================================================================================
+- Deep Bug Audit & Screenshot Fixes (Screenshots 234440.jpg & 234503.jpg):
+  * Bug 1: Texture Atlas Sprite UV Inset & Pure White Snow Surf Foam (ClientWaveRenderer.java):
+    - Root Cause: In Minecraft 1.21.1 TextureAtlasSprite, `getU(float)` and `getV(float)` expect normalized [0.0f..1.0f] fractions. Calling `waterSprite.getU(15.75f)` stretched coordinates 15.75x across the BLOCK_ATLAS sheet, sampling items (tools/weapons/yellow blocks) onto ocean quads.
+    - Fix: Implemented safe normalized UV margin interpolation: `rawU0 = waterSprite.getU0()`, `rawU1 = waterSprite.getU1()`, `uMargin = (rawU1 - rawU0) * 0.015f`, `u0 = rawU0 + uMargin`, `u1 = rawU1 - uMargin` (and corresponding V coordinates).
+    - Foam Sprite: Surf foam quads now sample the pure neutral white `minecraft:block/snow` sprite (`foamUMid, foamVMid`) from BLOCK_ATLAS instead of `block/water_still`, guaranteeing pure white foam that never multiplies against dark blue water texels.
+  * Bug 2: Capstan & Taffrail Log Disconnection & Deck Flush Mounts:
+    - Capstan Models (`capstan_anchored.json`, `capstan_weighed.json`, `capstan.json`): Added continuous deck plinth base [2, 0, 2] to [14, 2, 14] sitting flush on the deck (Y = 0 to 2), solid central spool waist [4, 2, 4] to [12, 5, 12] (Y = 2 to 5), upper barrel drum [3, 5, 3] to [13, 10, 13] (Y = 5 to 10), and cross turn-bars with zero vertical gaps.
+    - Taffrail Log Model (`taffrail_log.json`): Added central pedestal post [6, 2, 6] to [10, 4.5, 10] connecting the mount base directly to the logline spool drum with side stanchions [4.5, 2, 5.5] to [6, 9.5, 10.5] and [10, 2, 5.5] to [11.5, 9.5, 10.5], eliminating floating gaps.
+    - Removed `SimpleWaterloggedBlock` and `WATERLOGGED` property from `HelmBlock.java` to guarantee ship deck blocks never render vanilla water inside/underneath pedestals.
+  * Bug 3: Below-Waterline Large Ship Hold Depth Barrier & Air Pocket Fix (ClientWaveRenderer.java & ShipHullAirPocketHelper.java):
+    - Root Cause: `checkHasEnclosedHold` and `isInsideShipEnclosedHold` required a solid ceiling directly overhead (`wy in [63.8, 68.0]`) and only searched 8 blocks laterally. Wide or long ships (~11-13 wide, ~25-35 long) or holds with open stairways/hatchways failed this check, preventing depth occlusion barriers from being emitted.
+    - Detection Overhaul: Dry hold detection now checks: (1) Solid hull floor/keel below waterline (wy between 54.0 and 62.2), (2) Air/non-water cavity at waterline (wy = 62.5), (3) Bounded laterally by hull walls within ±16 blocks in X and ±28 blocks in Z. Overhead ceiling is no longer required.
+    - Depth Occlusion Barriers: Emitted during both `Stage.AFTER_BLOCK_ENTITIES` and `Stage.AFTER_CUTOUT_BLOCKS` using `GameRenderer::getPositionColorShader` with `GL_LEQUAL`, `depthMask(true)`, and `colorMask(false, false, false, false)` at Y = 62.895f, 62.885f, 62.865f, 62.01f, 61.895f, 61.865f with vertex alpha = 255, completely sandwiching and culling vanilla translucent chunk water from both above and below.
+    - `ShipHullAirPocketHelper.java`: Updated `checkSubLevelHold` to support floor keels down to Y = 54.0 and lateral bounds up to ±16 (X) and ±28 (Z) with no ceiling constraint, canceling water touch/eye, swimming state, drag, and fall distance.
+  * Bug 4: Comprehensive Codebase Audit & Build Verification:
+    - Scanned all renderers: confirmed zero remaining calls to raw `.getU(float)` or `.getV(float)`.
+    - Validated all 18 block and item models in `assets/serenesailing/models/`: all parse cleanly with valid bounds (`from < to`) and defined texture references.
+    - `./gradlew.bat test --offline`: BUILD SUCCESSFUL (all 46 unit tests passing across all suites).
+    - `./gradlew.bat build --offline`: BUILD SUCCESSFUL.
+    - Generated release jar: `D:\SereneSailing\build\libs\serenesailing-1.0.0.jar` (215,005 bytes).
+
+================================================================================
+SESSION 104 (2026-10-31):
+================================================================================
+- Below-Waterline Ship Hold Infinite Splash & Sloped Wall Water Strip Fixes (Screenshot 104425.jpg):
+  * Bug 1: Infinite Splash/Bubble Particle Eruption & Sound Loop Fix:
+    - Root Cause: `ShipHullAirPocketHelper` was forcing `entity.wasTouchingWater = false` during `PlayerTickEvent.Pre` / `EntityTickEvent.Pre`. `Entity.baseTick()` runs between `Pre` and `Post` and invokes `updateInWaterStateAndDoFluidPushing()`, which detected `wasTouchingWater` changing from false to true every tick (since Overworld chunk at player's feet has water), triggering `doWaterSplashEffect()` 20 times a second with continuous bubble/splash particles and splashing audio!
+    - Fix: Created `EntityAirPocketMixin` targeting `net.minecraft.world.entity.Entity`, registered in `serenesailing.mixins.json`. Intercepts `updateInWaterStateAndDoFluidPushing()Z` at `HEAD` and cancels it (`cir.setReturnValue(false)`) when `ShipHullAirPocketHelper.isEntityInDryShipHold` is true. Also intercepts `doWaterSplashEffect()V`, `updateSwimming()V`, `isInWater()Z`, and `isEyeInFluid(TagKey)Z` before vanilla can spawn particles or update swimming.
+    - Sound Suppression: In `ShipHullAirPocketHelper.java`, removed Pre-tick state tampering (runs only in Post), and hooked `PlayLevelSoundEvent.AtEntity` and `PlayLevelSoundEvent.AtPosition` to cancel any splash or swim sound effects inside dry ship holds as a backup guard.
+  * Bug 2: Sloped Hull Wall Blue Water Strip Elimination (ClientWaveRenderer.java):
+    - Root Cause: At sloped hull wall blocks, the waterline was occupied by solid wood planks rather than open air, so axis-aligned world-grid hold detection stopped 1 block short of the walls. Furthermore, axis-aligned 1x1 grid quads left jagged stair-step gaps when Sable ships rotated.
+    - Dilated World-Grid Mask: Applied 3x3 neighborhood dilation (1 cell into adjacent solid hull wall cells), writing depth-only barrier quads across the wall footprint.
+    - Rotation-Proof Sub-Level Local-Space OBB Depth Seal: For each active ClientSubLevel with an enclosed hold below Y = 63, scanned the local horizontal cross-section at the waterline across the ship's entire local bounding box (`localBox.minX()..maxX()`, `minZ()..maxZ()`). For each local column with floor below Y = 62.85f within the hull footprint, transformed its 4 local corners through `subLevel.renderPose(partialTick)` into world space at Y = 62.892f (and Y = 61.892f if floor < 61.5f).
+    - Depth Barriers: The rotated local OBB quads rotate in lock-step with the vessel, sealing the sloped wooden walls without stair-stepping and completely culling vanilla chunk water at Y = 62.888f.
+  * Build & Packaging Verification:
+    - `./gradlew.bat test --offline`: BUILD SUCCESSFUL (all 46 unit tests passing across all suites).
+    - `./gradlew.bat build --offline`: BUILD SUCCESSFUL.
+    - Verified `serenesailing.mixins.json` and `com/serenesailing/mixin/EntityAirPocketMixin.class` are packaged in `D:\SereneSailing\build\libs\serenesailing-1.0.0.jar` (218,845 bytes).
+
+================================================================================
+SESSION 105 (2026-11-01):
+================================================================================
+- Full-Codebase Defensive Audit & Security Hardening (7 Domains):
+  * Domain 1: 6-DOF Physics, Hydrodynamics & Weather2 Tornado Dynamics (ServerPhysicsHandler.java, SailAerodynamics.java, RudderHydrodynamics.java):
+    - Fixed vector normalization on zero/degenerate vectors: guarded `localRight = localForward.cross(localUp)` in both physics tick and scanSteering against vertical orientations (`localForward` along ±Y), defaulting safely to `(1, 0, 0)` when `lengthSquared() < 1.0e-4`.
+    - Fixed `localRight = currentHeading.cross(0, 1, 0)` in `updateTurningMomentum` to prevent NaN poisoning of sway impulse when vessels are flipped or airborne in tornado vortices.
+    - Replaced `.normalize()` on `thrustWorld` and `localLinearImpulse` with safe length checks and scalar multiplication `mul(max / len)`.
+    - Tornado Splashdown Recovery: Added hydrodynamic impact cushioning in `applyRideHeightSpring` when descending at high vertical velocity (`vel.y < -4.0 m/s`), attenuating downward velocity with `Math.exp(-12.0 * dt)` and clamping to `-4.0 m/s` to prevent hulls from punching into the seabed after being dropped by an F4/F5 tornado.
+    - In `simulateVesselStormStep`, clamped vertical descent acceleration and capped terminal descent speed to `-16.0 m/s`.
+    - Turn Redirection & Inertia Guard: Extended momentum redirection and the 2.5%/tick deceleration clamp to operate bidirectionally in both headway and sternway (`Math.abs(initialFwdSpeed) > 0.05`), and ensured anchor drop immediately disables turn redirection.
+  * Domain 2: Below-Waterline Dry Holds, Mixins & Bilge Purge (EntityAirPocketMixin.java, ShipHullAirPocketHelper.java, ServerPhysicsHandler.java):
+    - Mixin & Recursion Safety: Confirmed `EntityAirPocketMixin` hooks never call back into Entity water checks; verified method descriptors match NeoForge 1.21.1 bytecode.
+    - Bilge Purge Lag Elimination: In `purgeSubLevelHoldWater`, bounded chunk section scanning strictly to the waterline band (`baseBlockY <= 70 && baseBlockY + 15 >= 40`), skipping all mast, sail, and void sections (75% iteration reduction). Switched `setBlock` flag from 3 to 2 (`Block.UPDATE_CLIENTS`) to eliminate cascading neighbor block updates.
+  * Domain 3: Client Wave Rendering, Depth Occlusion & Blaze3D State (ClientWaveRenderer.java):
+    - Guaranteed State Restoration: Reorganized `renderEnclosedHoldDepthOcclusion` so that `poseStack.pushPose()` is paired with `poseStack.popPose()`, `RenderSystem.colorMask(true, true, true, true)`, `RenderSystem.enableCull()`, `RenderSystem.depthMask(true)`, and `RenderSystem.depthFunc(GL_LEQUAL)` inside a single `try ... finally` block, preventing Blaze3D state leaks on exceptions.
+    - Pitch/Roll Sealing: Expanded local hull waterline search range `dy` from [-1, +1] to [-2, +2] and floor search to 10 blocks, maintaining an unbroken depth barrier when vessels roll or pitch in heavy seas.
+  * Domain 4: Block Entities, Blocks & Contraption Lifecycle (entity/*, ServerPhysicsHandler.java):
+    - Memory Leak Prevention: In `ServerPhysicsHandler`, added periodic orphan key eviction across all 9 static tracking maps (`STEERING_CACHE`, `STEERING_CACHE_STEP`, `CREAK_COOLDOWN`, `HELM_ANGLE_CACHE`, `VESSEL_VELOCITY_CACHE`, `FORWARD_SPEED_CACHE`, `PREV_HEADING_CACHE`, `PHYS_DEBUG_TICK`, `LAST_BILGE_PURGE_TICK`) every 100 ticks, purging stale IDs when contraptions are disassembled by Sable.
+    - Also added `LAST_BILGE_PURGE_TICK.remove(id)` on sublevel removal and `.clear()` in `onLevelUnload`.
+    - Float Sanitization: Added `Float.isNaN(...) || Float.isInfinite(...)` sanitization to `loadAdditional` across `CapstanBlockEntity`, `TaffrailLogBlockEntity`, and `WindVaneBlockEntity`.
+  * Domain 5: Network Payloads & Multiplayer Security (ServerboundSteerPayload.java, SetHelmAnglePayload.java):
+    - Added `serverPlayer.isRemoved()` guards and per-player tick burst rate limiters (max 20 packets/tick) to prevent packet spam attacks from consuming server CPU.
+  * Domain 6: Resource Pack, JSON Models & Blockstates:
+    - Validated all 28 JSON asset files in `src/main/resources/assets/serenesailing/`: verified 0 JSON syntax errors, valid `[-16, 32]` bounds, valid rotation axes/angles, non-degenerate UVs, and all `#texture` references resolved.
+  * Domain 7: Test Suite Expansion & Production Build:
+    - Created `AuditedDefensiveSafetyTest.java` with 7 new unit tests covering vertical heading vector safety, tornado descent settling, splashdown cushioning, sternway momentum guards, anchor drop damping, NBT float sanitization, and network payload clamping.
+    - `./gradlew.bat test --offline`: BUILD SUCCESSFUL (all 55 unit tests passing across 6 test suites, 0 failures, 0 errors).
+    - `./gradlew.bat build --offline`: BUILD SUCCESSFUL.
+    - Generated production jar: `D:\SereneSailing\build\libs\serenesailing-1.0.0.jar` (233,053 bytes).

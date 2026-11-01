@@ -20,6 +20,9 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Client → server payload: sets the helm's rudder angle and active-hold
@@ -28,6 +31,8 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * which broadcasts the change to all tracking clients via its update packet.
  */
 public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean activelyHeld) implements CustomPacketPayload {
+
+    private static final Map<UUID, long[]> RATE_LIMIT_MAP = new ConcurrentHashMap<>();
 
     public static final Type<ServerboundSteerPayload> TYPE = new Type<>(
             ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "serverbound_steer"));
@@ -63,6 +68,21 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
             }
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
+                if (serverPlayer.isRemoved()) {
+                    return;
+                }
+
+                // Rate limiting: allow at most 20 steer packets per player per game tick
+                long currentTick = serverLevel.getGameTime();
+                long[] burst = RATE_LIMIT_MAP.computeIfAbsent(serverPlayer.getUUID(), k -> new long[]{currentTick, 0});
+                if (burst[0] == currentTick) {
+                    if (++burst[1] > 20) {
+                        return; // Drop excess packet burst
+                    }
+                } else {
+                    burst[0] = currentTick;
+                    burst[1] = 1;
+                }
                 SereneSailing.LOGGER.debug("[HELM-NET] Received rudder: {} held: {} for pos: {}",
                         payload.rudderAngle(), payload.activelyHeld(), payload.pos());
 

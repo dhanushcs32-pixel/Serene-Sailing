@@ -134,6 +134,9 @@ public class TaffrailLogBlockEntity extends BlockEntity {
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
         this.speedMs = tag.getFloat("SpeedMs");
+        if (Float.isNaN(this.speedMs) || Float.isInfinite(this.speedMs)) {
+            this.speedMs = 0.0f;
+        }
         this.prevSpeedMs = this.speedMs;
         this.redstoneSignal = tag.getInt("Signal");
     }
