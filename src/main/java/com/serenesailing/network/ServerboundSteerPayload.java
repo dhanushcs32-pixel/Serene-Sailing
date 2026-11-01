@@ -83,6 +83,19 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
                     burst[0] = currentTick;
                     burst[1] = 1;
                 }
+                // FIX (Audit 106): Evict stale rate-limit entries for disconnected
+                // players to prevent unbounded memory growth on long-running servers.
+                if (RATE_LIMIT_MAP.size() > 64) {
+                    int checked = 0;
+                    var iter = RATE_LIMIT_MAP.entrySet().iterator();
+                    while (iter.hasNext() && checked < 32) {
+                        var e = iter.next();
+                        if (currentTick - e.getValue()[0] > 200) {
+                            iter.remove();
+                        }
+                        checked++;
+                    }
+                }
                 SereneSailing.LOGGER.debug("[HELM-NET] Received rudder: {} held: {} for pos: {}",
                         payload.rudderAngle(), payload.activelyHeld(), payload.pos());
 
