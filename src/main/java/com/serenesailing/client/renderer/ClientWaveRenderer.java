@@ -11,16 +11,21 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BiomeTags;
@@ -32,9 +37,11 @@ import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
@@ -42,11 +49,14 @@ import org.joml.Matrix4f;
 import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
+import org.lwjgl.opengl.GL11;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -399,10 +409,13 @@ public class ClientWaveRenderer {
      */
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_SOLID_BLOCKS
-                || event.getStage() == RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES
-                || event.getStage() == RenderLevelStageEvent.Stage.AFTER_CUTOUT_BLOCKS) {
-            renderEnclosedHoldDepthOcclusion(event);
+        float partialTick = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(true);
+        if (isHoldOcclusionStage(event.getStage())) {
+            renderEnclosedHoldDepthOcclusion(
+                    event.getPoseStack().last().pose(),
+                    event.getCamera().getPosition(),
+                    partialTick
+            );
             return;
         }
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
@@ -443,7 +456,6 @@ public class ClientWaveRenderer {
         double windDirX = waveState.smoothedWindDirX;
         double windDirZ = waveState.smoothedWindDirZ;
 
-        float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
         double renderTime = (gameTime + partialTick) * 0.05;
 
         // 3 High-Frequency visual chop harmonics (lambda ~ 11m, 5.8m, and cross-chop at 3.4m)
@@ -466,104 +478,22 @@ public class ClientWaveRenderer {
         float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
 
         // --- Sable Sub-Level Hull Masking & Wave Attenuation ---
-        // Scan assembled ClientSubLevels, applying strict water-contact gating and deck masking
         List<MaskedCellInfo> maskedCells = new ArrayList<>();
         boolean[][] maskedByShipHull = new boolean[cachedGridDim][cachedGridDim];
-        float[][] cellEdgeWaterlineY = new float[cachedGridDim][cachedGridDim];
 
-        SubLevelContainer subContainer = SubLevelContainer.getContainer(level);
-        if (subContainer instanceof ClientSubLevelContainer clientContainer) {
-            Vector3d worldProbe = new Vector3d();
-            Vector3d localProbe = new Vector3d();
-            BlockPos.MutableBlockPos subProbePos = new BlockPos.MutableBlockPos();
+        maskWaveGridByHoldEnvelopes(
+                maskedByShipHull,
+                startX,
+                startZ,
+                CELL_STEP,
+                camPos,
+                partialTick
+        );
 
-            double gridMinX = startX;
-            double gridMaxX = startX + cachedGridDim * CELL_STEP;
-            double gridMinZ = startZ;
-            double gridMaxZ = startZ + cachedGridDim * CELL_STEP;
-
-            for (ClientSubLevel subLevel : clientContainer.getAllSubLevels()) {
-                var bounds = subLevel.boundingBox();
-                if (bounds == null) continue;
-
-                if (bounds.maxX() < gridMinX - 8.0 || bounds.minX() > gridMaxX + 8.0
-                        || bounds.maxZ() < gridMinZ - 8.0 || bounds.minZ() > gridMaxZ + 8.0) {
-                    continue;
-                }
-
-                if (bounds.maxY() < 58.0 || bounds.minY() > 68.0) {
-                    continue;
-                }
-
-                Pose3dc pose = subLevel.renderPose(partialTick);
-                if (pose == null) {
-                    pose = subLevel.logicalPose();
-                }
-                if (pose == null) continue;
-
-                Level subLevelWorld = subLevel.getLevel();
-                if (subLevelWorld == null) continue;
-
-                double minX = bounds.minX(), maxX = bounds.maxX();
-                double minY = bounds.minY(), maxY = bounds.maxY();
-                double minZ = bounds.minZ(), maxZ = bounds.maxZ();
-
-                boolean hasEnclosedHold = checkHasEnclosedHold(subLevel, pose, subLevelWorld,
-                        minX, maxX, minY, maxY, minZ, maxZ,
-                        worldProbe, localProbe, subProbePos);
-
-                int minGX = Math.max(0, (int) Math.floor((minX - startX) / CELL_STEP));
-                int maxGX = Math.min(cachedGridDim - 1, (int) Math.floor((maxX - startX) / CELL_STEP));
-                int minGZ = Math.max(0, (int) Math.floor((minZ - startZ) / CELL_STEP));
-                int maxGZ = Math.min(cachedGridDim - 1, (int) Math.floor((maxZ - startZ) / CELL_STEP));
-
-                for (int gx = minGX; gx <= maxGX; gx++) {
-                    double cellMinX = startX + gx * CELL_STEP;
-                    double cellMaxX = cellMinX + CELL_STEP;
-                    double wxCenter = cellMinX + 0.5 * CELL_STEP;
-
-                    for (int gz = minGZ; gz <= maxGZ; gz++) {
-                        if (maskedByShipHull[gx][gz]) continue;
-                        double cellMinZ = startZ + gz * CELL_STEP;
-                        double cellMaxZ = cellMinZ + CELL_STEP;
-                        double wzCenter = cellMinZ + 0.5 * CELL_STEP;
-
-                        // Approximate open water level at cell center
-                        double bw = GerstnerWaveEngine.evaluateWaveOffset(wxCenter, wzCenter, renderTime, stormIntensity, windDirX, windDirZ);
-                        double cp1 = Math.sin(0.5712 * (dirX1 * wxCenter + dirZ1 * wzCenter) - 2.367 * renderTime) * amp1;
-                        double cp2 = Math.sin(1.0833 * (dirX2 * wxCenter + dirZ2 * wzCenter) - 3.259 * renderTime) * amp2;
-                        double cp3 = Math.sin(1.8480 * (dirX3 * wxCenter + dirZ3 * wzCenter) - 4.150 * renderTime) * amp3;
-                        float colOpenWaterY = Math.max(safeFloor, interiorBaseY + (float) (bw + cp1 + cp2 + cp3));
-
-                        // Test all 4 corners (with 0.15 cell-step inset) and the center
-                        double[][] probePoints = new double[][] {
-                                { cellMinX + 0.15 * CELL_STEP, cellMinZ + 0.15 * CELL_STEP },
-                                { cellMinX + 0.15 * CELL_STEP, cellMaxZ - 0.15 * CELL_STEP },
-                                { cellMaxX - 0.15 * CELL_STEP, cellMinZ + 0.15 * CELL_STEP },
-                                { cellMaxX - 0.15 * CELL_STEP, cellMaxZ - 0.15 * CELL_STEP },
-                                { wxCenter, wzCenter }
-                        };
-
-                        if (hasEnclosedHold) {
-                            int insideHoldCount = 0;
-                            for (double[] pt : probePoints) {
-                                if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld,
-                                        pt[0], pt[1], worldProbe, localProbe, subProbePos)) {
-                                    insideHoldCount++;
-                                }
-                            }
-
-                            // Only mask cell if ALL 4 corners and center are strictly inside enclosed hold
-                            if (insideHoldCount == probePoints.length) {
-                                maskedByShipHull[gx][gz] = true;
-                                cellEdgeWaterlineY[gx][gz] = PINNED_WATER_Y + 0.05f;
-                                maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
-                            } else if (insideHoldCount > 0) {
-                                cellEdgeWaterlineY[gx][gz] = PINNED_WATER_Y + 0.05f;
-                                maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
-                            }
-                        }
-                    }
+        for (int gx = 0; gx < cachedGridDim; gx++) {
+            for (int gz = 0; gz < cachedGridDim; gz++) {
+                if (maskedByShipHull[gx][gz]) {
+                    maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
                 }
             }
         }
@@ -1331,423 +1261,636 @@ public class ClientWaveRenderer {
 
     private record MaskedCellInfo(int gx, int gz, float edgeWaterlineY) {}
 
-    private record ColumnContactResult(boolean inContact, float hullBottomWorldY, float edgeTopWorldY, float edgeWaterlineY) {
-        public static final ColumnContactResult NO_CONTACT = new ColumnContactResult(false, 999.0f, -999.0f, PINNED_WATER_Y + 0.05f);
-    }
+    // =========================================================================================
+    //  TUNABLES
+    // =========================================================================================
 
+    /** Vanilla sea-level water surface is 62 + 8/9 = 62.8889; the barrier sits a hair above it. */
+    private static final float PLANE_UPPER_Y = 62.895f;
+    /** Barrier for the lower water layer; only emitted over columns whose floor lies below it. */
+    private static final float PLANE_LOWER_Y = 61.895f;
     /**
-     * Checks if a world column (wx, wz) contains solid hull or deck blocks in direct contact with the water surface.
-     * Enforces the Contact Gate: hullBottomWorldY <= colOpenWaterY + 0.15f AND edgeTopWorldY >= 62.0f.
+     * Optional mirror plane just UNDER the vanilla surface. Vanilla draws the water underside too, and for a
+     * camera below the waterline inside the hold that quad is nearer than PLANE_UPPER_Y and passes the depth
+     * test. Turn this on if the sheet is still visible when standing on a low hold floor.
      */
-    private static ColumnContactResult checkColumnWaterContact(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
-                                                               double wx, double wz, float colOpenWaterY,
-                                                               Vector3d worldProbe, Vector3d localProbe,
-                                                               BlockPos.MutableBlockPos subProbePos) {
-        double lowestBottomY = Double.POSITIVE_INFINITY;
-        double highestTopY = Double.NEGATIVE_INFINITY;
-        boolean foundSolid = false;
+    private static final boolean OCCLUDE_WATER_UNDERSIDE = false;
+    private static final float PLANE_UNDERSIDE_Y = 62.8845f;
+    /** Pulls the barrier a few depth steps towards the camera so it cannot z-fight vanilla water at range. */
+    private static final boolean USE_POLYGON_OFFSET = true;
 
-        for (double wy = 58.0; wy <= 66.0; wy += 0.5) {
-            worldProbe.set(wx, wy, wz);
-            pose.transformPositionInverse(worldProbe, localProbe);
-            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-            if (subLevelWorld.hasChunkAt(subProbePos)) {
-                BlockState state = subLevelWorld.getBlockState(subProbePos);
-                if (!state.isAir() && state.getFluidState().isEmpty()) {
-                    foundSolid = true;
+    /** Stages the barrier is emitted in. Drop the early ones if entities / chests below the plane vanish. */
+    private static final Set<RenderLevelStageEvent.Stage> HOLD_OCCLUSION_STAGES = Set.of(
+            RenderLevelStageEvent.Stage.AFTER_SOLID_BLOCKS,
+            RenderLevelStageEvent.Stage.AFTER_CUTOUT_BLOCKS,
+            RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES);
 
-                    // World Y of block bottom
-                    localProbe.set(subProbePos.getX() + 0.5, subProbePos.getY(), subProbePos.getZ() + 0.5);
-                    pose.transformPosition(localProbe, worldProbe);
-                    if (worldProbe.y < lowestBottomY) lowestBottomY = worldProbe.y;
+    // Hull classification, all in world Y.
+    /** Interior floor top at/above this is raft-like. Also the threshold to ENTER "sunken hold". */
+    private static final float RAFT_FLOOR_MIN_Y = 62.30f;
+    /** A hull floor exists below the surface. Also the threshold to STAY a "sunken hold" (hysteresis). */
+    private static final float HOLD_FLOOR_MAX_Y = 62.65f;
+    /** The 61.895 plane is only emitted where the floor top is below this. */
+    private static final float LOWER_PLANE_FLOOR_MAX_Y = 61.85f;
+    /** Perimeter walls must reach at least this high to count as rising above the surface. */
+    private static final float WALL_RISE_MIN_Y = 63.2f;
+    /** A column is a hull wall if enough non-air blocks fall inside this waterline band... */
+    private static final float WALL_BAND_MIN_Y = 61.0f;
+    private static final float WALL_BAND_MAX_Y = 64.5f;
+    /** ...and its wall top is the highest block top found in this (taller) vertical slice. */
+    private static final float WALL_TOP_BAND_MIN_Y = 61.5f;
+    private static final float WALL_TOP_BAND_MAX_Y = 65.5f;
+    /** Non-air blocks needed in the band for a column to be a wall (1 reproduces "any non-air block"). */
+    private static final int WALL_MIN_BAND_BLOCKS = 2;
+    /** Rows needed before a vessel can be a hold at all. */
+    private static final int MIN_HOLD_ROWS = 3;
+    /** Basin cells (interior floor well below the surface) needed: at least this many... */
+    private static final int MIN_BASIN_CELLS = 4;
+    /** ...and at least this fraction of the floored interior cells. */
+    private static final float BASIN_FRACTION = 0.20f;
+    /** A row needs this fraction of its interior cells to have a floor below the surface. */
+    private static final float ROW_MIN_FLOORED_FRACTION = 0.25f;
 
-                    // World Y of block top
-                    localProbe.set(subProbePos.getX() + 0.5, subProbePos.getY() + 1.0, subProbePos.getZ() + 0.5);
-                    pose.transformPosition(localProbe, worldProbe);
-                    if (worldProbe.y > highestTopY) highestTopY = worldProbe.y;
-                }
-            }
+    // Cost / robustness limits.
+    private static final int REBUILD_INTERVAL_TICKS = 20;
+    private static final int MAX_PLOT_SPAN = 192;
+    private static final double MAX_HOLD_DISTANCE = 192.0;
+    private static final double SEA_BAND_MIN_Y = 56.0;
+    private static final double SEA_BAND_MAX_Y = 72.0;
+    /** cos(max tilt of local +Y from world +Y). Ships beyond ~31 degrees are skipped. */
+    private static final double MIN_UPRIGHT_COS = 0.85;
+    private static final float FLOOR_SCAN_CEILING_Y = WALL_TOP_BAND_MAX_Y + 1.0f;
+    /** Wave array sample position inside a cell: 0.5 = cell centre, 0.0 if the array is vertex-indexed. */
+    private static final double WAVE_MASK_SAMPLE_OFFSET = 0.5;
+
+    private static final int FLAG_UPPER = 1;
+    private static final int FLAG_LOWER = 2;
+
+    // =========================================================================================
+    //  STATE (render thread only)
+    // =========================================================================================
+
+    private enum HullClass { FLAT_RAFT, SUNKEN_HOLD }
+
+    private record HullStats(int validRows, int flooredCells, int basinEnterCells, int basinStayCells) { }
+
+    @FunctionalInterface
+    private interface RunSink {
+        /** Parallelogram on the horizontal plane in world X/Z: O, O+U, O+U+V, O+V. */
+        void accept(double ox, double oz, double ux, double uz, double vx, double vz);
+    }
+
+    private static final class FloorProbe {
+        double lowestTop = Double.POSITIVE_INFINITY;
+        double runTop = Double.POSITIVE_INFINITY;
+    }
+
+    /** Affine local(plot) -> world map of one sub-level for this frame, built from four pose transforms. */
+    private static final class PoseBasis {
+        int bx, by, bz;
+        double ox, oy, oz;
+        double exX, exY, exZ;
+        double eyX, eyY, eyZ;
+        double ezX, ezY, ezZ;
+
+        /** @return false if the ship is tilted too far for a horizontal-plane approach to make sense. */
+        boolean update(Pose3dc pose, int bx, int by, int bz, Vector3d tmp) {
+            this.bx = bx;
+            this.by = by;
+            this.bz = bz;
+            Vector3d p = pose.transformPosition(tmp.set(bx, by, bz));
+            ox = p.x;
+            oy = p.y;
+            oz = p.z;
+            p = pose.transformPosition(tmp.set(bx + 1, by, bz));
+            exX = p.x - ox;
+            exY = p.y - oy;
+            exZ = p.z - oz;
+            p = pose.transformPosition(tmp.set(bx, by + 1, bz));
+            eyX = p.x - ox;
+            eyY = p.y - oy;
+            eyZ = p.z - oz;
+            p = pose.transformPosition(tmp.set(bx, by, bz + 1));
+            ezX = p.x - ox;
+            ezY = p.y - oy;
+            ezZ = p.z - oz;
+            final double upLen = Math.sqrt(eyX * eyX + eyY * eyY + eyZ * eyZ);
+            return upLen > 1.0e-6 && eyY / upLen >= MIN_UPRIGHT_COS;
         }
 
-        if (!foundSolid) {
-            return ColumnContactResult.NO_CONTACT;
+        double worldX(double lx, double ly, double lz) {
+            return ox + (lx - bx) * exX + (ly - by) * eyX + (lz - bz) * ezX;
         }
 
-        float hullBottomWorldY = (float) lowestBottomY;
-        float edgeTopWorldY = (float) highestTopY;
-
-        // Contact Gate: hullBottomWorldY <= colOpenWaterY + 0.15f AND edgeTopWorldY >= 62.0f
-        if (hullBottomWorldY <= colOpenWaterY + 0.15f && edgeTopWorldY >= 62.0f) {
-            float edgeWaterlineY = edgeTopWorldY - 0.10f;
-            return new ColumnContactResult(true, hullBottomWorldY, edgeTopWorldY, edgeWaterlineY);
+        double worldY(double lx, double ly, double lz) {
+            return oy + (lx - bx) * exY + (ly - by) * eyY + (lz - bz) * ezY;
         }
 
-        return ColumnContactResult.NO_CONTACT;
+        double worldZ(double lx, double ly, double lz) {
+            return oz + (lx - bx) * exZ + (ly - by) * eyZ + (lz - bz) * ezZ;
+        }
+
+        /** Local Y at which the column (lx, lz) crosses the given world height. */
+        double localY(double worldY, double lx, double lz) {
+            return by + (worldY - oy - (lx - bx) * exY - (lz - bz) * ezY) / eyY;
+        }
+    }
+
+    /** Cached hull scan of one sub-level, in local (plot) space; survives bobbing, rebuilt every second. */
+    private static final class HoldEnvelope {
+        final PoseBasis basis = new PoseBasis();
+        HullClass hullClass = HullClass.FLAT_RAFT;
+        boolean built;
+        long lastRebuildTick;
+        long lastSeenTick;
+        int minX, minY, minZ, maxX, maxY, maxZ;
+        int width, depth;
+        double centerX, centerZ;
+        /** Per row (lz - minZ): first / last hull-wall column, or -1 if the row is not part of a hold. */
+        int[] portX = new int[0];
+        int[] starboardX = new int[0];
+        /** Per cell, row-major: FLAG_UPPER / FLAG_LOWER = a solid hull floor lies below that plane. */
+        byte[] cellFlags = new byte[0];
+
+        void setBounds(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+            this.minX = minX;
+            this.minY = minY;
+            this.minZ = minZ;
+            this.maxX = maxX;
+            this.maxY = maxY;
+            this.maxZ = maxZ;
+            this.width = maxX - minX + 1;
+            this.depth = maxZ - minZ + 1;
+            this.centerX = (minX + maxX + 1) * 0.5;
+            this.centerZ = (minZ + maxZ + 1) * 0.5;
+        }
+    }
+
+    private static final Map<ClientSubLevel, HoldEnvelope> HOLD_CACHE = new IdentityHashMap<>();
+    private static final List<HoldEnvelope> ACTIVE_HOLDS = new ArrayList<>();
+    private static final BlockPos.MutableBlockPos SCRATCH_POS = new BlockPos.MutableBlockPos();
+    private static final Vector3d SCRATCH_VEC = new Vector3d();
+    private static final FloorProbe FLOOR = new FloorProbe();
+    private static ClientLevel holdCacheLevel;
+
+    // =========================================================================================
+    //  PUBLIC ENTRY POINTS
+    // =========================================================================================
+
+    public static boolean isHoldOcclusionStage(RenderLevelStageEvent.Stage stage) {
+        return HOLD_OCCLUSION_STAGES.contains(stage);
+    }
+
+    /** Cached classification of a sub-level (false until it has been scanned at least once). */
+    public static boolean isSunkenHold(ClientSubLevel subLevel) {
+        final HoldEnvelope env = HOLD_CACHE.get(subLevel);
+        return env != null && env.hullClass == HullClass.SUNKEN_HOLD;
+    }
+
+    /** Forget all scans, e.g. from a block-change hook; they are rebuilt on the next frame. */
+    public static void invalidateHoldEnvelopes() {
+        HOLD_CACHE.clear();
     }
 
     /**
-     * Determines if a sub-level has a submerged hull hold by checking that it extends below
-    /**
-     * Determines if a sub-level has a submerged hull hold by checking that it extends at least
-     * 2.5 blocks below the ocean waterline (worldMinY < 60.5f) and has a vertical height >= 2.5 blocks.
+     * Emits the invisible depth-only barrier that keeps vanilla chunk water out of sunken holds.
+     *
+     * @param viewPose    matrix applied to the camera-relative vertices (same one your other draws use)
+     * @param camPos      camera position, world space
+     * @param partialTick partial tick handed to {@code ClientSubLevel#renderPose(float)}
      */
-    private static boolean checkHasEnclosedHold(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
-                                                double minX, double maxX, double minY, double maxY, double minZ, double maxZ,
-                                                Vector3d worldProbe, Vector3d localProbe,
-                                                BlockPos.MutableBlockPos subProbePos) {
-        if (minY >= 60.5f || (maxY - minY) < 2.5) {
-            return false;
+    public static void renderEnclosedHoldDepthOcclusion(Matrix4f viewPose, Vec3 camPos, float partialTick) {
+        final ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) {
+            return;
         }
-        int minSampleX = (int) Math.floor(minX + 1.0);
-        int maxSampleX = (int) Math.floor(maxX - 1.0);
-        int minSampleZ = (int) Math.floor(minZ + 1.0);
-        int maxSampleZ = (int) Math.floor(maxZ - 1.0);
-        if (maxSampleX < minSampleX || maxSampleZ < minSampleZ) {
-            return false;
+        final List<HoldEnvelope> holds = refreshActiveHolds(level, camPos, partialTick);
+        if (holds.isEmpty()) {
+            return;
         }
-        int stepX = Math.max(1, (maxSampleX - minSampleX) / 8);
-        int stepZ = Math.max(1, (maxSampleZ - minSampleZ) / 8);
-        for (int sx = minSampleX; sx <= maxSampleX; sx += stepX) {
-            for (int sz = minSampleZ; sz <= maxSampleZ; sz += stepZ) {
-                if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, sx + 0.5, sz + 0.5,
-                        worldProbe, localProbe, subProbePos)) {
-                    return true;
+
+        final BufferBuilder buffer = Tesselator.getInstance()
+                .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        MeshData mesh = null;
+        try {
+            for (final HoldEnvelope env : holds) {
+                emitPlane(buffer, viewPose, camPos, env, PLANE_UPPER_Y, FLAG_UPPER);
+                emitPlane(buffer, viewPose, camPos, env, PLANE_LOWER_Y, FLAG_LOWER);
+                if (OCCLUDE_WATER_UNDERSIDE) {
+                    emitPlane(buffer, viewPose, camPos, env, PLANE_UNDERSIDE_Y, FLAG_UPPER);
                 }
             }
+        } finally {
+            mesh = buffer.build(); // always finish the shared builder, null when nothing was emitted
         }
-        return false;
-    }
-
-    /**
-     * Checks if a world grid point (wx, wz) is strictly inside a dry ship hull/hold:
-     * - Sub-level extends at least 2.5 blocks below waterline (worldMinY < 60.5f).
-     * - Solid hull floor strictly deep below sea level (hullFloorTopWorldY < 61.3f).
-     * - Open dry air at the waterline (worldY = 62.2f AND worldY = 62.8f are non-solid air).
-     * - Enclosed on all 4 cardinal directions (+X, -X, +Z, -Z) by solid hull walls at the waterline (worldY = 62.2f..62.8f).
-     */
-    private static boolean isInsideShipEnclosedHold(ClientSubLevel subLevel, Pose3dc pose,
-                                                    Level subLevelWorld, double wx, double wz,
-                                                    Vector3d worldProbe, Vector3d localProbe,
-                                                    BlockPos.MutableBlockPos subProbePos) {
-        var bounds = subLevel.boundingBox();
-        if (bounds != null && bounds.minY() >= 60.5f) {
-            return false;
+        if (mesh == null) {
+            return;
         }
 
-        // 1. Solid hull floor strictly deep below sea level (hullFloorTopWorldY < 61.3f)
-        boolean hasSolidFloorBelow = false;
-        double highestFloorTopY = Double.NEGATIVE_INFINITY;
-        for (double wy = 54.0; wy <= 62.0; wy += 0.5) {
-            worldProbe.set(wx, wy, wz);
-            pose.transformPositionInverse(worldProbe, localProbe);
-            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-            if (isSolidSubBlock(subLevelWorld, subProbePos)) {
-                hasSolidFloorBelow = true;
-                localProbe.set(subProbePos.getX() + 0.5, subProbePos.getY() + 1.0, subProbePos.getZ() + 0.5);
-                pose.transformPosition(localProbe, worldProbe);
-                if (worldProbe.y > highestFloorTopY) {
-                    highestFloorTopY = worldProbe.y;
-                }
-            }
-        }
-        if (!hasSolidFloorBelow || highestFloorTopY >= 61.3) {
-            return false;
-        }
-
-        // 2. Open dry air at the waterline (worldY = 62.2f AND worldY = 62.8f are non-solid air)
-        worldProbe.set(wx, 62.2, wz);
-        pose.transformPositionInverse(worldProbe, localProbe);
-        subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-        if (isSolidSubBlock(subLevelWorld, subProbePos)) {
-            return false;
-        }
-
-        worldProbe.set(wx, 62.8, wz);
-        pose.transformPositionInverse(worldProbe, localProbe);
-        subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-        if (isSolidSubBlock(subLevelWorld, subProbePos)) {
-            return false;
-        }
-
-        // 3. Enclosed on all 4 cardinal directions (±X, ±Z) by solid hull walls at the waterline (worldY = 62.2f..62.8f)
-        int lx = Mth.floor(localProbe.x);
-        int ly = Mth.floor(localProbe.y);
-        int lz = Mth.floor(localProbe.z);
-
-        boolean wallNegX = false, wallPosX = false, wallNegZ = false, wallPosZ = false;
-        for (int d = 1; d <= 16; d++) {
-            if (!wallNegX && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))
-                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly + 1, lz)))) wallNegX = true;
-            if (!wallPosX && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly, lz))
-                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx + d, ly + 1, lz)))) wallPosX = true;
-        }
-        for (int d = 1; d <= 28; d++) {
-            if (!wallNegZ && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz - d))
-                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly + 1, lz - d)))) wallNegZ = true;
-            if (!wallPosZ && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz + d))
-                    || isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly + 1, lz + d)))) wallPosZ = true;
-        }
-
-        return wallNegX && wallPosX && wallNegZ && wallPosZ;
-    }
-
-    private static boolean isSolidSubBlock(Level level, BlockPos pos) {
-        if (level == null || !level.hasChunk(pos.getX() >> 4, pos.getZ() >> 4)) return false;
-        BlockState state = level.getBlockState(pos);
-        return !state.isAir() && state.getFluidState().isEmpty();
-    }
-
-    /**
-     * Emits invisible depth-only barrier quads inside enclosed ship holds and along sloped hull walls
-     * during AFTER_BLOCK_ENTITIES and AFTER_CUTOUT_BLOCKS (after solid hull blocks are drawn, but BEFORE vanilla translucent chunk water).
-     * Combines both a 3x3 dilated world-grid barrier and a rotation-proof sub-level local-space OBB depth seal
-     * to completely eliminate vanilla water in the cabin and along sloped hull walls!
-     */
-    private static void renderEnclosedHoldDepthOcclusion(RenderLevelStageEvent event) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null || mc.player == null) return;
-        Level level = mc.level;
-        if (level.dimension() != Level.OVERWORLD) return;
-
-        SubLevelContainer subContainer = SubLevelContainer.getContainer(level);
-        if (!(subContainer instanceof ClientSubLevelContainer clientContainer)) return;
-
-        Camera camera = event.getCamera();
-        Vec3 camPos = camera.getPosition();
-
-        Vector3d worldProbe = new Vector3d();
-        Vector3d localProbe = new Vector3d();
-        BlockPos.MutableBlockPos subProbePos = new BlockPos.MutableBlockPos();
-
-        List<float[]> worldQuads = new ArrayList<>();
-        List<float[]> localObbQuads = new ArrayList<>();
-        float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
-
-        for (ClientSubLevel subLevel : clientContainer.getAllSubLevels()) {
-            var bounds = subLevel.boundingBox();
-            if (bounds == null) continue;
-            if (bounds.minY() > 63.5 || bounds.maxY() < 54.0) continue;
-
-            Pose3dc pose = subLevel.renderPose(partialTick);
-            if (pose == null) pose = subLevel.logicalPose();
-            if (pose == null) continue;
-
-            Level subLevelWorld = subLevel.getLevel();
-            if (subLevelWorld == null) continue;
-
-            double minX = bounds.minX(), maxX = bounds.maxX();
-            double minY = bounds.minY(), maxY = bounds.maxY();
-            double minZ = bounds.minZ(), maxZ = bounds.maxZ();
-
-            boolean hasEnclosedHold = checkHasEnclosedHold(subLevel, pose, subLevelWorld,
-                    minX, maxX, minY, maxY, minZ, maxZ,
-                    worldProbe, localProbe, subProbePos);
-            if (!hasEnclosedHold) continue;
-
-            // 1. Dilated World-Grid Mask:
-            int startGX = (int) Math.floor(minX - 1.0);
-            int endGX = (int) Math.ceil(maxX + 1.0);
-            int startGZ = (int) Math.floor(minZ - 1.0);
-            int endGZ = (int) Math.ceil(maxZ + 1.0);
-
-            int spanX = endGX - startGX + 1;
-            int spanZ = endGZ - startGZ + 1;
-            if (spanX > 0 && spanZ > 0 && spanX < 200 && spanZ < 200) {
-                boolean[][] rawHold = new boolean[spanX][spanZ];
-                for (int gx = startGX; gx <= endGX; gx++) {
-                    for (int gz = startGZ; gz <= endGZ; gz++) {
-                        if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld, gx + 0.5, gz + 0.5,
-                                worldProbe, localProbe, subProbePos)) {
-                            rawHold[gx - startGX][gz - startGZ] = true;
-                        }
-                    }
-                }
-
-                for (int gx = startGX; gx <= endGX; gx++) {
-                    for (int gz = startGZ; gz <= endGZ; gz++) {
-                        int ix = gx - startGX;
-                        int iz = gz - startGZ;
-                        if (rawHold[ix][iz]) {
-                            worldQuads.add(new float[] { (float) gx, (float) gz, (float) (gx + 1.0f), (float) (gz + 1.0f) });
-                        }
-                    }
-                }
-            }
-
-            // 2. Sub-Level Local-Space OBB Depth Seal (Rotation-Proof):
-            BoundingBox3ic localBox = null;
-            if (subLevel.getPlot() != null) {
-                localBox = subLevel.getPlot().getBoundingBox();
-            }
-
-            int minLX, maxLX, minLZ, maxLZ;
-            if (localBox != null) {
-                minLX = localBox.minX();
-                maxLX = localBox.maxX();
-                minLZ = localBox.minZ();
-                maxLZ = localBox.maxZ();
-            } else {
-                worldProbe.set(minX, 62.5, minZ);
-                pose.transformPositionInverse(worldProbe, localProbe);
-                minLX = Mth.floor(localProbe.x) - 2;
-                minLZ = Mth.floor(localProbe.z) - 2;
-                worldProbe.set(maxX, 62.5, maxZ);
-                pose.transformPositionInverse(worldProbe, localProbe);
-                maxLX = Mth.ceil(localProbe.x) + 2;
-                maxLZ = Mth.ceil(localProbe.z) + 2;
-                if (maxLX < minLX) { int t = minLX; minLX = maxLX; maxLX = t; }
-                if (maxLZ < minLZ) { int t = minLZ; minLZ = maxLZ; maxLZ = t; }
-            }
-
-            // Approximate local Y corresponding to waterline
-            worldProbe.set((minX + maxX) * 0.5, 62.5, (minZ + maxZ) * 0.5);
-            pose.transformPositionInverse(worldProbe, localProbe);
-            int localWaterY = Mth.floor(localProbe.y);
-
-            Vector3d cLocal = new Vector3d();
-            Vector3d p0 = new Vector3d(), p1 = new Vector3d(), p2 = new Vector3d(), p3 = new Vector3d();
-
-            for (int lz = minLZ; lz <= maxLZ; lz++) {
-                int firstSolidX = Integer.MAX_VALUE;
-                int lastSolidX = Integer.MIN_VALUE;
-
-                // Find leftmost and rightmost solid hull plank blocks at the waterline (localWaterY - 2 .. localWaterY + 2)
-                for (int lx = minLX; lx <= maxLX; lx++) {
-                    boolean isSolidAtWaterline = false;
-                    for (int dy = -2; dy <= 2; dy++) {
-                        if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, localWaterY + dy, lz))) {
-                            isSolidAtWaterline = true;
-                            break;
-                        }
-                    }
-                    if (isSolidAtWaterline) {
-                        if (lx < firstSolidX) firstSolidX = lx;
-                        if (lx > lastSolidX) lastSolidX = lx;
-                    }
-                }
-
-                // Ensure both port and starboard walls exist for this row, spanning at least 2 blocks wide
-                if (firstSolidX != Integer.MAX_VALUE && lastSolidX != Integer.MIN_VALUE && (lastSolidX - firstSolidX) >= 2) {
-                    // Check that there is a floor/keel below within this row
-                    boolean hasFloor = false;
-                    for (int lx = firstSolidX; lx <= lastSolidX; lx++) {
-                        for (int ly = localWaterY - 1; ly >= localWaterY - 10; ly--) {
-                            if (isSolidSubBlock(subLevelWorld, subProbePos.set(lx, ly, lz))) {
-                                hasFloor = true;
-                                break;
-                            }
-                        }
-                        if (hasFloor) break;
-                    }
-
-                    if (hasFloor) {
-                        // Emit a continuous, 100% gap-free depth-only strip from firstSolidX to lastSolidX
-                        cLocal.set(firstSolidX, localWaterY, lz);
-                        pose.transformPosition(cLocal, p0);
-                        cLocal.set(firstSolidX, localWaterY, lz + 1.0);
-                        pose.transformPosition(cLocal, p1);
-                        cLocal.set(lastSolidX + 1.0, localWaterY, lz + 1.0);
-                        pose.transformPosition(cLocal, p2);
-                        cLocal.set(lastSolidX + 1.0, localWaterY, lz);
-                        pose.transformPosition(cLocal, p3);
-
-                        // hasLowerFloor = 1.0f ensures depth seal quads are emitted at both Y = 62.892f and Y = 61.892f
-                        localObbQuads.add(new float[] {
-                                (float) p0.x, (float) p0.z,
-                                (float) p1.x, (float) p1.z,
-                                (float) p2.x, (float) p2.z,
-                                (float) p3.x, (float) p3.z,
-                                1.0f
-                        });
-                    }
-                }
-            }
-        }
-
-        if (worldQuads.isEmpty() && localObbQuads.isEmpty()) return;
-
-        PoseStack poseStack = event.getPoseStack();
-        poseStack.pushPose();
         try {
             RenderSystem.enableDepthTest();
-            RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
+            RenderSystem.depthFunc(GL11.GL_LEQUAL);
             RenderSystem.depthMask(true);
             RenderSystem.colorMask(false, false, false, false);
             RenderSystem.disableCull();
-
-            Matrix4f matrix = poseStack.last().pose();
-
-            Tesselator tesselator = Tesselator.getInstance();
-            BufferBuilder bufferBuilder = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
             RenderSystem.setShader(GameRenderer::getPositionColorShader);
-
-            float cx = (float) camPos.x;
-            float cy = (float) camPos.y;
-            float cz = (float) camPos.z;
-
-            // 1. Emit rotation-proof local OBB depth barrier quads at Y = 62.892f (and 61.892f if floor < 61.5)
-            float dy62 = 62.892f - cy;
-            float dy61 = 61.892f - cy;
-            for (float[] q : localObbQuads) {
-                float x0 = q[0] - cx, z0 = q[1] - cz;
-                float x1 = q[2] - cx, z1 = q[3] - cz;
-                float x2 = q[4] - cx, z2 = q[5] - cz;
-                float x3 = q[6] - cx, z3 = q[7] - cz;
-
-                bufferBuilder.addVertex(matrix, x0, dy62, z0).setColor(255, 255, 255, 255);
-                bufferBuilder.addVertex(matrix, x1, dy62, z1).setColor(255, 255, 255, 255);
-                bufferBuilder.addVertex(matrix, x2, dy62, z2).setColor(255, 255, 255, 255);
-                bufferBuilder.addVertex(matrix, x3, dy62, z3).setColor(255, 255, 255, 255);
-
-                if (q[8] > 0.5f) {
-                    bufferBuilder.addVertex(matrix, x0, dy61, z0).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x1, dy61, z1).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x2, dy61, z2).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x3, dy61, z3).setColor(255, 255, 255, 255);
-                }
+            if (USE_POLYGON_OFFSET) {
+                RenderSystem.enablePolygonOffset();
+                RenderSystem.polygonOffset(-1.0F, -10.0F);
             }
-
-            // 2. Emit dilated world-grid depth barriers:
-            float[] barrierYLevels = new float[] { 62.892f, 62.885f, 62.865f, 61.892f, 61.865f };
-            for (float yBarrier : barrierYLevels) {
-                float dy = yBarrier - cy;
-                for (float[] quad : worldQuads) {
-                    float x0 = quad[0] - cx;
-                    float z0 = quad[1] - cz;
-                    float x1 = quad[2] - cx;
-                    float z1 = quad[3] - cz;
-
-                    bufferBuilder.addVertex(matrix, x0, dy, z0).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x0, dy, z1).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x1, dy, z1).setColor(255, 255, 255, 255);
-                    bufferBuilder.addVertex(matrix, x1, dy, z0).setColor(255, 255, 255, 255);
-                }
-            }
-
-            MeshData meshData = bufferBuilder.build();
-            if (meshData != null) {
-                BufferUploader.drawWithShader(meshData);
-            }
+            BufferUploader.drawWithShader(mesh);
         } finally {
-            RenderSystem.colorMask(true, true, true, true);
+            if (USE_POLYGON_OFFSET) {
+                RenderSystem.polygonOffset(0.0F, 0.0F);
+                RenderSystem.disablePolygonOffset();
+            }
             RenderSystem.enableCull();
+            RenderSystem.colorMask(true, true, true, true);
             RenderSystem.depthMask(true);
-            RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
-            RenderSystem.disableBlend();
-            RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
-            poseStack.popPose();
+            RenderSystem.depthFunc(GL11.GL_LEQUAL);
+        }
+    }
+
+    /**
+     * Marks every wave-grid cell inside a sunken hold's outer-hull envelope so the Gerstner surface is not
+     * drawn there either. Uses the same runs as the depth barrier, so the two can never disagree.
+     * Grid cell (gx, gz) is sampled at origin + (index + 0.5) * cellSize (see WAVE_MASK_SAMPLE_OFFSET).
+     */
+    public static void maskWaveGridByHoldEnvelopes(boolean[][] maskedByShipHull, double gridOriginX,
+                                                   double gridOriginZ, double cellSize, Vec3 camPos,
+                                                   float partialTick) {
+        if (maskedByShipHull == null || maskedByShipHull.length == 0 || cellSize <= 0.0) {
+            return;
+        }
+        final ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) {
+            return;
+        }
+        for (final HoldEnvelope env : refreshActiveHolds(level, camPos, partialTick)) {
+            forEachEligibleRun(env, FLAG_UPPER, PLANE_UPPER_Y, (ox, oz, ux, uz, vx, vz) ->
+                    rasterizeIntoMask(maskedByShipHull, gridOriginX, gridOriginZ, cellSize, ox, oz, ux, uz, vx, vz));
+        }
+    }
+
+    // =========================================================================================
+    //  SUB-LEVEL SELECTION + CACHE
+    // =========================================================================================
+
+    private static List<HoldEnvelope> refreshActiveHolds(ClientLevel level, Vec3 camPos, float partialTick) {
+        ACTIVE_HOLDS.clear();
+        if (holdCacheLevel != level) {
+            HOLD_CACHE.clear();
+            holdCacheLevel = level;
+        }
+        final SubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) {
+            return ACTIVE_HOLDS;
+        }
+
+        final long now = level.getGameTime();
+        for (final SubLevel candidate : container.getAllSubLevels()) {
+            if (!(candidate instanceof ClientSubLevel sub) || !sub.isFinalized()) {
+                continue;
+            }
+            if (!isNearSeaBand(sub, camPos)) {
+                continue;
+            }
+
+            final LevelPlot plot = sub.getPlot();
+            final BoundingBox3ic bb = plot.getBoundingBox();
+            final int minX = bb.minX(), minY = bb.minY(), minZ = bb.minZ();
+            final int maxX = bb.maxX(), maxY = bb.maxY(), maxZ = bb.maxZ();
+            if (maxX < minX || maxY < minY || maxZ < minZ) {
+                continue; // empty / not synced yet
+            }
+            if (!plot.contains(minX, minZ) || !plot.contains(maxX, maxZ)) {
+                continue; // EMPTY box sits at the origin, outside the plot
+            }
+            if (maxX - minX >= MAX_PLOT_SPAN || maxZ - minZ >= MAX_PLOT_SPAN) {
+                continue;
+            }
+
+            final HoldEnvelope env = HOLD_CACHE.computeIfAbsent(sub, k -> new HoldEnvelope());
+            env.lastSeenTick = now;
+            final boolean boundsChanged = env.minX != minX || env.maxX != maxX || env.minY != minY
+                    || env.maxY != maxY || env.minZ != minZ || env.maxZ != maxZ;
+            if (boundsChanged) {
+                env.setBounds(minX, minY, minZ, maxX, maxY, maxZ);
+            }
+
+            final Pose3dc pose = sub.renderPose(partialTick);
+            if (!env.basis.update(pose, env.minX, env.minY, env.minZ, SCRATCH_VEC)) {
+                continue; // rolled over: keep the last classification, draw nothing this frame
+            }
+            if (!env.built || boundsChanged || now < env.lastRebuildTick
+                    || now - env.lastRebuildTick >= REBUILD_INTERVAL_TICKS) {
+                rebuildEnvelope(level, env);
+                env.built = true;
+                env.lastRebuildTick = now;
+            }
+            if (env.hullClass == HullClass.SUNKEN_HOLD) {
+                ACTIVE_HOLDS.add(env);
+            }
+        }
+
+        if ((now & 63L) == 0L) {
+            HOLD_CACHE.values().removeIf(e -> now - e.lastSeenTick > 200L);
+        }
+        return ACTIVE_HOLDS;
+    }
+
+    private static boolean isNearSeaBand(ClientSubLevel sub, Vec3 cam) {
+        final BoundingBox3dc box = sub.boundingBox();
+        if (box.maxY() < SEA_BAND_MIN_Y || box.minY() > SEA_BAND_MAX_Y) {
+            return false;
+        }
+        final double dx = Math.max(Math.max(box.minX() - cam.x, cam.x - box.maxX()), 0.0);
+        final double dz = Math.max(Math.max(box.minZ() - cam.z, cam.z - box.maxZ()), 0.0);
+        return dx * dx + dz * dz <= MAX_HOLD_DISTANCE * MAX_HOLD_DISTANCE;
+    }
+
+    // =========================================================================================
+    //  HULL SCAN + CLASSIFICATION
+    // =========================================================================================
+
+    /** Row/column outer-hull scanline scan of one sub-level. Fills the envelope arrays and the hull class. */
+    private static void rebuildEnvelope(ClientLevel level, HoldEnvelope env) {
+        final PoseBasis b = env.basis;
+        final int minX = env.minX, minY = env.minY, minZ = env.minZ;
+        final int maxX = env.maxX, maxY = env.maxY, maxZ = env.maxZ;
+        final int width = env.width, depth = env.depth;
+
+        if (env.portX.length != depth) {
+            env.portX = new int[depth];
+            env.starboardX = new int[depth];
+        }
+        if (env.cellFlags.length != width * depth) {
+            env.cellFlags = new byte[width * depth];
+        } else {
+            Arrays.fill(env.cellFlags, (byte) 0);
+        }
+
+        int validRows = 0, flooredCells = 0, basinEnter = 0, basinStay = 0;
+
+        for (int lz = minZ; lz <= maxZ; lz++) {
+            final int row = lz - minZ;
+            env.portX[row] = -1;
+            env.starboardX[row] = -1;
+
+            // Port side: first outer-hull wall column scanning inwards.
+            int port = -1;
+            double portTop = Double.NaN;
+            for (int lx = minX; lx <= maxX; lx++) {
+                final double top = probeWallColumn(level, b, lx, lz, minY, maxY);
+                if (!Double.isNaN(top)) {
+                    port = lx;
+                    portTop = top;
+                    break;
+                }
+            }
+            if (port < 0) {
+                continue;
+            }
+            // Starboard side: last outer-hull wall column.
+            int star = -1;
+            double starTop = Double.NaN;
+            for (int lx = maxX; lx > port; lx--) {
+                final double top = probeWallColumn(level, b, lx, lz, minY, maxY);
+                if (!Double.isNaN(top)) {
+                    star = lx;
+                    starTop = top;
+                    break;
+                }
+            }
+            if (star < 0 || star - port < 2) {
+                continue; // no interior between the walls
+            }
+            if (portTop < WALL_RISE_MIN_Y || starTop < WALL_RISE_MIN_Y) {
+                continue; // perimeter does not rise above the surface
+            }
+
+            // Everything between the walls (walls included) is part of the envelope; flag where a hull floor exists.
+            final int rowBase = row * width - minX;
+            int floored = 0, rowBasinEnter = 0, rowBasinStay = 0;
+            for (int lx = port; lx <= star; lx++) {
+                readFloorColumn(level, b, lx, lz, minY, maxY, FLOOR);
+                int flags = 0;
+                if (FLOOR.lowestTop < HOLD_FLOOR_MAX_Y) {
+                    flags |= FLAG_UPPER;
+                }
+                if (FLOOR.lowestTop < LOWER_PLANE_FLOOR_MAX_Y) {
+                    flags |= FLAG_LOWER;
+                }
+                env.cellFlags[rowBase + lx] = (byte) flags;
+                if (lx > port && lx < star) {
+                    if ((flags & FLAG_UPPER) != 0) {
+                        floored++;
+                    }
+                    if (FLOOR.runTop < RAFT_FLOOR_MIN_Y) {
+                        rowBasinEnter++;
+                    }
+                    if (FLOOR.runTop < HOLD_FLOOR_MAX_Y) {
+                        rowBasinStay++;
+                    }
+                }
+            }
+            final int interior = star - port - 1;
+            if (floored < Math.max(1, (int) Math.ceil(interior * ROW_MIN_FLOORED_FRACTION))) {
+                continue; // no solid hull floor between the walls
+            }
+
+            env.portX[row] = port;
+            env.starboardX[row] = star;
+            validRows++;
+            flooredCells += floored;
+            basinEnter += rowBasinEnter;
+            basinStay += rowBasinStay;
+        }
+
+        env.hullClass = classifyHull(new HullStats(validRows, flooredCells, basinEnter, basinStay), env.hullClass);
+    }
+
+    /**
+     * Sunken hold vs flat raft. A hold needs perimeter walls rising above the surface (already required by
+     * every valid row) and an interior basin: floor well below the surface. Entering needs the floor below
+     * RAFT_FLOOR_MIN_Y, staying only needs it below HOLD_FLOOR_MAX_Y, so a bobbing ship never flickers.
+     */
+    private static HullClass classifyHull(HullStats stats, HullClass previous) {
+        if (stats.validRows() < MIN_HOLD_ROWS) {
+            return HullClass.FLAT_RAFT;
+        }
+        final int basin = previous == HullClass.SUNKEN_HOLD ? stats.basinStayCells() : stats.basinEnterCells();
+        final int needed = Math.max(MIN_BASIN_CELLS, (int) Math.ceil(stats.flooredCells() * BASIN_FRACTION));
+        return basin >= needed ? HullClass.SUNKEN_HOLD : HullClass.FLAT_RAFT;
+    }
+
+    /**
+     * @return NaN if the column is not an outer-hull wall; otherwise the world Y of the highest block top in
+     * the wall slice (-Infinity if none), so a gunport trapdoor or an open port never breaks detection.
+     */
+    private static double probeWallColumn(ClientLevel level, PoseBasis b, int lx, int lz, int minY, int maxY) {
+        final double cx = lx + 0.5, cz = lz + 0.5;
+        final int lo = Math.max(minY, (int) Math.floor(b.localY(WALL_BAND_MIN_Y - 0.5, cx, cz)) - 1);
+        final int hi = Math.min(maxY, (int) Math.ceil(b.localY(WALL_TOP_BAND_MAX_Y + 0.5, cx, cz)) + 1);
+        int bandBlocks = 0;
+        double top = Double.NEGATIVE_INFINITY;
+        for (int ly = lo; ly <= hi; ly++) {
+            final BlockState state = level.getBlockState(SCRATCH_POS.set(lx, ly, lz));
+            if (state.isAir() || state.getRenderShape() == RenderShape.INVISIBLE) {
+                continue;
+            }
+            final double centerY = b.worldY(cx, ly + 0.5, cz);
+            if (centerY >= WALL_BAND_MIN_Y && centerY <= WALL_BAND_MAX_Y) {
+                bandBlocks++;
+            }
+            if (centerY >= WALL_TOP_BAND_MIN_Y && centerY <= WALL_TOP_BAND_MAX_Y) {
+                top = Math.max(top, b.worldY(cx, ly + 1.0, cz));
+            }
+        }
+        return bandBlocks >= WALL_MIN_BAND_BLOCKS ? top : Double.NaN;
+    }
+
+    /**
+     * lowestTop: world Y of the top of the lowest solid block in the column (the hull bottom).
+     * runTop:    world Y of the top of the contiguous solid run starting there (the walkable hull floor).
+     * Both are +Infinity if the column has no solid block below the scan ceiling.
+     */
+    private static void readFloorColumn(ClientLevel level, PoseBasis b, int lx, int lz, int minY, int maxY,
+                                        FloorProbe out) {
+        out.lowestTop = Double.POSITIVE_INFINITY;
+        out.runTop = Double.POSITIVE_INFINITY;
+        final double cx = lx + 0.5, cz = lz + 0.5;
+        final int scanMax = Math.min(maxY, (int) Math.ceil(b.localY(FLOOR_SCAN_CEILING_Y, cx, cz)));
+        boolean inRun = false;
+        for (int ly = minY; ly <= scanMax; ly++) {
+            final double height = solidHeight(level, lx, ly, lz);
+            if (Double.isNaN(height)) {
+                if (inRun) {
+                    break;
+                }
+                continue;
+            }
+            final double top = b.worldY(cx, ly + height, cz);
+            if (!inRun) {
+                out.lowestTop = top;
+                inRun = true;
+            }
+            out.runTop = top;
+        }
+    }
+
+    /** Collision height of the block above its own floor, NaN when it is not solid. */
+    private static double solidHeight(ClientLevel level, int x, int y, int z) {
+        final BlockPos.MutableBlockPos pos = SCRATCH_POS.set(x, y, z);
+        final BlockState state = level.getBlockState(pos);
+        if (state.isAir()) {
+            return Double.NaN;
+        }
+        final VoxelShape shape = state.getCollisionShape(level, pos);
+        return shape.isEmpty() ? Double.NaN : shape.max(Direction.Axis.Y);
+    }
+
+    // =========================================================================================
+    //  GEOMETRY
+    // =========================================================================================
+
+    /**
+     * Walks every contiguous run of flagged cells in every valid row and reports it as a parallelogram on the
+     * horizontal plane planeY. All runs share one reference height (local Y of the plane at the ship centre),
+     * so shared edges are bit-identical and the barrier is watertight even when the ship pitches or rolls.
+     * The plane stays horizontal in world space because the water it hides is.
+     */
+    private static void forEachEligibleRun(HoldEnvelope env, int flag, double planeY, RunSink sink) {
+        final PoseBasis b = env.basis;
+        final double ly = b.localY(planeY, env.centerX, env.centerZ);
+        for (int row = 0; row < env.depth; row++) {
+            final int port = env.portX[row];
+            if (port < 0) {
+                continue;
+            }
+            final int star = env.starboardX[row];
+            final int lz = env.minZ + row;
+            final int base = row * env.width - env.minX;
+            int lx = port;
+            while (lx <= star) {
+                if ((env.cellFlags[base + lx] & flag) == 0) {
+                    lx++;
+                    continue;
+                }
+                final int start = lx;
+                while (lx <= star && (env.cellFlags[base + lx] & flag) != 0) {
+                    lx++;
+                }
+                // cells [start, lx) of row lz form one run
+                final double ox = b.worldX(start, ly, lz);
+                final double oz = b.worldZ(start, ly, lz);
+                sink.accept(ox, oz,
+                        b.worldX(lx, ly, lz) - ox, b.worldZ(lx, ly, lz) - oz,
+                        b.worldX(start, ly, lz + 1) - ox, b.worldZ(start, ly, lz + 1) - oz);
+            }
+        }
+    }
+
+    private static void emitPlane(BufferBuilder buffer, Matrix4f viewPose, Vec3 cam, HoldEnvelope env,
+                                  float planeY, int flag) {
+        final float y = (float) (planeY - cam.y);
+        forEachEligibleRun(env, flag, planeY, (ox, oz, ux, uz, vx, vz) -> {
+            addDepthVertex(buffer, viewPose, ox - cam.x, y, oz - cam.z);
+            addDepthVertex(buffer, viewPose, ox + ux - cam.x, y, oz + uz - cam.z);
+            addDepthVertex(buffer, viewPose, ox + ux + vx - cam.x, y, oz + uz + vz - cam.z);
+            addDepthVertex(buffer, viewPose, ox + vx - cam.x, y, oz + vz - cam.z);
+        });
+    }
+
+    /** Opaque white; the colour mask discards it, only depth is written. */
+    private static void addDepthVertex(BufferBuilder buffer, Matrix4f viewPose, double x, float y, double z) {
+        buffer.addVertex(viewPose, (float) x, y, (float) z).setColor(255, 255, 255, 255);
+    }
+
+    /** Marks grid cells whose sample point lies inside the parallelogram O + s*U + t*V, s,t in [0,1]. */
+    private static void rasterizeIntoMask(boolean[][] mask, double originX, double originZ, double cell,
+                                          double ox, double oz, double ux, double uz, double vx, double vz) {
+        final double det = ux * vz - uz * vx;
+        if (Math.abs(det) < 1.0e-9) {
+            return;
+        }
+        final double minWX = ox + Math.min(0.0, ux) + Math.min(0.0, vx);
+        final double maxWX = ox + Math.max(0.0, ux) + Math.max(0.0, vx);
+        final double minWZ = oz + Math.min(0.0, uz) + Math.min(0.0, vz);
+        final double maxWZ = oz + Math.max(0.0, uz) + Math.max(0.0, vz);
+
+        final int gx0 = Math.max(0, (int) Math.floor((minWX - originX) / cell - WAVE_MASK_SAMPLE_OFFSET));
+        final int gx1 = Math.min(mask.length - 1, (int) Math.ceil((maxWX - originX) / cell - WAVE_MASK_SAMPLE_OFFSET));
+        for (int gx = gx0; gx <= gx1; gx++) {
+            final boolean[] column = mask[gx];
+            if (column == null || column.length == 0) {
+                continue;
+            }
+            final int gz0 = Math.max(0, (int) Math.floor((minWZ - originZ) / cell - WAVE_MASK_SAMPLE_OFFSET));
+            final int gz1 = Math.min(column.length - 1, (int) Math.ceil((maxWZ - originZ) / cell - WAVE_MASK_SAMPLE_OFFSET));
+            final double dx = originX + (gx + WAVE_MASK_SAMPLE_OFFSET) * cell - ox;
+            for (int gz = gz0; gz <= gz1; gz++) {
+                final double dz = originZ + (gz + WAVE_MASK_SAMPLE_OFFSET) * cell - oz;
+                final double s = (dx * vz - dz * vx) / det;
+                final double t = (ux * dz - uz * dx) / det;
+                if (s >= 0.0 && s <= 1.0 && t >= 0.0 && t <= 1.0) {
+                    column[gz] = true;
+                }
+            }
         }
     }
 
     @SubscribeEvent
     public static void onClientLoggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
         lastShipPos.clear();
+        invalidateHoldEnvelopes();
     }
 
     @SubscribeEvent
     public static void onClientLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
         if (event.getLevel().isClientSide()) {
             lastShipPos.clear();
+            invalidateHoldEnvelopes();
         }
     }
 }
