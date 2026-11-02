@@ -544,31 +544,24 @@ public class ClientWaveRenderer {
                                 { wxCenter, wzCenter }
                         };
 
-                        int coveredCount = 0;
-                        float minEdgeWaterlineY = PINNED_WATER_Y + 0.05f;
-
-                        for (double[] pt : probePoints) {
-                            ColumnContactResult contact = checkColumnWaterContact(subLevel, pose, subLevelWorld,
-                                    pt[0], pt[1], colOpenWaterY, worldProbe, localProbe, subProbePos);
-                            if (contact.inContact) {
-                                coveredCount++;
-                                minEdgeWaterlineY = Math.min(minEdgeWaterlineY, contact.edgeWaterlineY);
-                            } else if (hasEnclosedHold && isInsideShipEnclosedHold(subLevel, pose, subLevelWorld,
-                                    pt[0], pt[1], worldProbe, localProbe, subProbePos)) {
-                                coveredCount++;
+                        if (hasEnclosedHold) {
+                            int insideHoldCount = 0;
+                            for (double[] pt : probePoints) {
+                                if (isInsideShipEnclosedHold(subLevel, pose, subLevelWorld,
+                                        pt[0], pt[1], worldProbe, localProbe, subProbePos)) {
+                                    insideHoldCount++;
+                                }
                             }
-                        }
 
-                        // Only mask cell if ALL 4 corners and center are strictly covered/inside hull footprint
-                        if (coveredCount == probePoints.length) {
-                            maskedByShipHull[gx][gz] = true;
-                            cellEdgeWaterlineY[gx][gz] = minEdgeWaterlineY;
-                            maskedCells.add(new MaskedCellInfo(gx, gz, minEdgeWaterlineY));
-                        } else if (coveredCount > 0) {
-                            // Perimeter partially-overlapping cell: NOT masked out so wave quad is drawn!
-                            // Register waterline contact so vertices clamp smoothly below deck face
-                            cellEdgeWaterlineY[gx][gz] = minEdgeWaterlineY;
-                            maskedCells.add(new MaskedCellInfo(gx, gz, minEdgeWaterlineY));
+                            // Only mask cell if ALL 4 corners and center are strictly inside enclosed hold
+                            if (insideHoldCount == probePoints.length) {
+                                maskedByShipHull[gx][gz] = true;
+                                cellEdgeWaterlineY[gx][gz] = PINNED_WATER_Y + 0.05f;
+                                maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
+                            } else if (insideHoldCount > 0) {
+                                cellEdgeWaterlineY[gx][gz] = PINNED_WATER_Y + 0.05f;
+                                maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
+                            }
                         }
                     }
                 }
@@ -805,14 +798,12 @@ public class ClientWaveRenderer {
 
                 float taperedBoost = elevationBoost * shoreTaper;
                 float taperedH = (float) h * shoreTaper;
-                float openWaterY = Math.max(safeFloor, VANILLA_WATER_TOP_Y + taperedBoost + taperedH);
-
-                // Continuous Ship Wave Feathering: smooth transition near ship hull/deck
+                // Gently attenuate extreme wave crest spikes by at most 30% near vessels while maintaining natural base elevation
                 float smoothHullFeather = vertHullFeather[vi][vj];
-                float edgeWaterlineY = vertEdgeWaterlineY[vi][vj];
                 if (smoothHullFeather < 1.0f) {
-                    openWaterY = Mth.lerp(smoothHullFeather, Math.min(openWaterY, edgeWaterlineY), openWaterY);
+                    taperedH *= Mth.lerp(smoothHullFeather, 0.70f, 1.0f);
                 }
+                float openWaterY = Math.max(safeFloor, VANILLA_WATER_TOP_Y + taperedBoost + taperedH);
 
                 vertFinalY[vi][vj] = openWaterY;
             }
@@ -1029,9 +1020,12 @@ public class ClientWaveRenderer {
                 BufferUploader.drawWithShader(meshData);
             }
         } finally {
-            RenderSystem.enableCull();
+            RenderSystem.colorMask(true, true, true, true);
             RenderSystem.depthMask(true);
+            RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
+            RenderSystem.enableCull();
             RenderSystem.disableBlend();
+            RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
             poseStack.popPose();
         }
     }
@@ -1393,13 +1387,15 @@ public class ClientWaveRenderer {
 
     /**
      * Determines if a sub-level has a submerged hull hold by checking that it extends below
-     * the ocean waterline (minY <= 62.8f) and has a vertical height >= 2.0 blocks.
+    /**
+     * Determines if a sub-level has a submerged hull hold by checking that it extends at least
+     * 2.5 blocks below the ocean waterline (worldMinY < 60.5f) and has a vertical height >= 2.5 blocks.
      */
     private static boolean checkHasEnclosedHold(ClientSubLevel subLevel, Pose3dc pose, Level subLevelWorld,
                                                 double minX, double maxX, double minY, double maxY, double minZ, double maxZ,
                                                 Vector3d worldProbe, Vector3d localProbe,
                                                 BlockPos.MutableBlockPos subProbePos) {
-        if (minY > 62.8f || (maxY - minY) < 2.0) {
+        if (minY >= 60.5f || (maxY - minY) < 2.5) {
             return false;
         }
         int minSampleX = (int) Math.floor(minX + 1.0);
@@ -1424,38 +1420,60 @@ public class ClientWaveRenderer {
 
     /**
      * Checks if a world grid point (wx, wz) is strictly inside a dry ship hull/hold:
-     * - Solid floor / keel below the waterline (wy between 54.0 and 62.2 in local space).
-     * - Open interior cavity at the waterline (wy = 62.5).
-     * - Bounded laterally by solid hull walls within Â±16 blocks in X and Â±28 blocks in Z.
-     * Does NOT require a ceiling overhead, allowing wide holds, open hatches, stairs, and open-deck hulls.
+     * - Sub-level extends at least 2.5 blocks below waterline (worldMinY < 60.5f).
+     * - Solid hull floor strictly deep below sea level (hullFloorTopWorldY < 61.3f).
+     * - Open dry air at the waterline (worldY = 62.2f AND worldY = 62.8f are non-solid air).
+     * - Enclosed on all 4 cardinal directions (+X, -X, +Z, -Z) by solid hull walls at the waterline (worldY = 62.2f..62.8f).
      */
     private static boolean isInsideShipEnclosedHold(ClientSubLevel subLevel, Pose3dc pose,
                                                     Level subLevelWorld, double wx, double wz,
                                                     Vector3d worldProbe, Vector3d localProbe,
                                                     BlockPos.MutableBlockPos subProbePos) {
-        // 1. Keel/Floor check: solid floor below (wy ~ 54.0 to 62.2)
+        var bounds = subLevel.boundingBox();
+        if (bounds != null && bounds.minY() >= 60.5f) {
+            return false;
+        }
+
+        // 1. Solid hull floor strictly deep below sea level (hullFloorTopWorldY < 61.3f)
         boolean hasSolidFloorBelow = false;
-        for (double wy = 54.0; wy <= 62.2; wy += 0.5) {
+        double highestFloorTopY = Double.NEGATIVE_INFINITY;
+        for (double wy = 54.0; wy <= 62.0; wy += 0.5) {
             worldProbe.set(wx, wy, wz);
             pose.transformPositionInverse(worldProbe, localProbe);
             subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
             if (isSolidSubBlock(subLevelWorld, subProbePos)) {
                 hasSolidFloorBelow = true;
-                break;
+                localProbe.set(subProbePos.getX() + 0.5, subProbePos.getY() + 1.0, subProbePos.getZ() + 0.5);
+                pose.transformPosition(localProbe, worldProbe);
+                if (worldProbe.y > highestFloorTopY) {
+                    highestFloorTopY = worldProbe.y;
+                }
             }
         }
-        if (!hasSolidFloorBelow) {
+        if (!hasSolidFloorBelow || highestFloorTopY >= 61.3) {
             return false;
         }
 
-        // 2. Interior cavity check at wy = 62.5 in local space:
-        worldProbe.set(wx, 62.5, wz);
+        // 2. Open dry air at the waterline (worldY = 62.2f AND worldY = 62.8f are non-solid air)
+        worldProbe.set(wx, 62.2, wz);
         pose.transformPositionInverse(worldProbe, localProbe);
+        subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+        if (isSolidSubBlock(subLevelWorld, subProbePos)) {
+            return false;
+        }
+
+        worldProbe.set(wx, 62.8, wz);
+        pose.transformPositionInverse(worldProbe, localProbe);
+        subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
+        if (isSolidSubBlock(subLevelWorld, subProbePos)) {
+            return false;
+        }
+
+        // 3. Enclosed on all 4 cardinal directions (±X, ±Z) by solid hull walls at the waterline (worldY = 62.2f..62.8f)
         int lx = Mth.floor(localProbe.x);
         int ly = Mth.floor(localProbe.y);
         int lz = Mth.floor(localProbe.z);
 
-        // 3. Enclosed laterally on 4 sides (Â±X, Â±Z) by hull walls:
         boolean wallNegX = false, wallPosX = false, wallNegZ = false, wallPosZ = false;
         for (int d = 1; d <= 16; d++) {
             if (!wallNegX && (isSolidSubBlock(subLevelWorld, subProbePos.set(lx - d, ly, lz))
@@ -1549,29 +1567,7 @@ public class ClientWaveRenderer {
                     for (int gz = startGZ; gz <= endGZ; gz++) {
                         int ix = gx - startGX;
                         int iz = gz - startGZ;
-                        boolean include = rawHold[ix][iz];
-                        if (!include) {
-                            // Dilate 1 cell into adjacent hull walls (3x3 neighborhood)
-                            for (int dx = -1; dx <= 1 && !include; dx++) {
-                                for (int dz = -1; dz <= 1 && !include; dz++) {
-                                    int nx = ix + dx;
-                                    int nz = iz + dz;
-                                    if (nx >= 0 && nx < spanX && nz >= 0 && nz < spanZ && rawHold[nx][nz]) {
-                                        for (double wy = 54.0; wy <= 62.5; wy += 0.5) {
-                                            worldProbe.set(gx + 0.5, wy, gz + 0.5);
-                                            pose.transformPositionInverse(worldProbe, localProbe);
-                                            subProbePos.set(Mth.floor(localProbe.x), Mth.floor(localProbe.y), Mth.floor(localProbe.z));
-                                            if (isSolidSubBlock(subLevelWorld, subProbePos)) {
-                                                include = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (include) {
+                        if (rawHold[ix][iz]) {
                             worldQuads.add(new float[] { (float) gx, (float) gz, (float) (gx + 1.0f), (float) (gz + 1.0f) });
                         }
                     }
@@ -1737,6 +1733,8 @@ public class ClientWaveRenderer {
             RenderSystem.enableCull();
             RenderSystem.depthMask(true);
             RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL);
+            RenderSystem.disableBlend();
+            RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
             poseStack.popPose();
         }
     }

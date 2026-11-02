@@ -27,7 +27,7 @@ public abstract class EntityAirPocketMixin {
     @Shadow protected boolean wasTouchingWater;
     @Shadow protected boolean wasEyeInWater;
 
-    @Inject(method = "updateInWaterStateAndDoFluidPushing", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "updateInWaterStateAndDoFluidPushing", at = @At("HEAD"), cancellable = true, require = 0)
     private void serenesailing$cancelWaterUpdateInDryHold(CallbackInfoReturnable<Boolean> cir) {
         if (ShipHullAirPocketHelper.isEntityInDryShipHold(this.level(), this.position())) {
             this.wasTouchingWater = false;
@@ -36,7 +36,7 @@ public abstract class EntityAirPocketMixin {
         }
     }
 
-    @Inject(method = "doWaterSplashEffect", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "doWaterSplashEffect", at = @At("HEAD"), cancellable = true, require = 0)
     private void serenesailing$cancelSplashEffectInDryHold(CallbackInfo ci) {
         if (ShipHullAirPocketHelper.isEntityInDryShipHold(this.level(), this.position())) {
             this.wasTouchingWater = false;
@@ -44,7 +44,7 @@ public abstract class EntityAirPocketMixin {
         }
     }
 
-    @Inject(method = "updateSwimming", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "updateSwimming", at = @At("HEAD"), cancellable = true, require = 0)
     private void serenesailing$cancelSwimmingInDryHold(CallbackInfo ci) {
         if (ShipHullAirPocketHelper.isEntityInDryShipHold(this.level(), this.position())) {
             this.setSwimming(false);
@@ -52,14 +52,14 @@ public abstract class EntityAirPocketMixin {
         }
     }
 
-    @Inject(method = "isInWater", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "isInWater", at = @At("HEAD"), cancellable = true, require = 0)
     private void serenesailing$overrideIsInWaterInDryHold(CallbackInfoReturnable<Boolean> cir) {
         if (ShipHullAirPocketHelper.isEntityInDryShipHold(this.level(), this.position())) {
             cir.setReturnValue(false);
         }
     }
 
-    @Inject(method = "isEyeInFluid", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "isEyeInFluid", at = @At("HEAD"), cancellable = true, require = 0)
     private void serenesailing$overrideIsEyeInFluidInDryHold(TagKey<Fluid> fluidTag, CallbackInfoReturnable<Boolean> cir) {
         if (fluidTag == FluidTags.WATER && ShipHullAirPocketHelper.isEntityInDryShipHold(this.level(), this.position())) {
             cir.setReturnValue(false);

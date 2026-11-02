@@ -44,7 +44,10 @@ import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import weather2.util.WindReader;
 
@@ -145,6 +148,7 @@ public class ServerPhysicsHandler {
 
     /** Dimension-level wind cache keyed by Dimension ResourceKey sampled on the main server thread. */
     private static final Map<ResourceKey<Level>, CachedWind> DIMENSION_WIND_CACHE = new ConcurrentHashMap<>();
+    private static final Map<ResourceKey<Level>, double[]> DIMENSION_WIND_VEC_CACHE = new ConcurrentHashMap<>();
 
     public static CachedWind getDimensionWind(ResourceKey<Level> dimension) {
         if (dimension == null) {
@@ -210,18 +214,25 @@ public class ServerPhysicsHandler {
             return;
         }
 
-        if (server.getTickCount() % 20 != 0) {
-            return;
-        }
-
-        // Cache wind per dimension on the main server thread once every 20 ticks.
-        // This decouples Weather2 queries from high-frequency physics substeps and
-        // avoids querying chunk heightmaps on Sable sublevels or unprimed chunks.
+        // Low-pass filter wind vector: 0.985 * current + 0.015 * target in Cartesian space
+        // Prevents angle jumping, sudden 180 flips, and ensures natural gradual drift over minutes
         for (ServerLevel serverLevel : server.getAllLevels()) {
             ServerLevel weatherLevel = resolveWeatherQueryLevel(serverLevel);
-            float dimAngle = weatherLevel != null ? WindReader.getWindAngle(weatherLevel) : 0.0f;
-            float dimSpeed = weatherLevel != null ? WindReader.getWindSpeed(weatherLevel) : 0.0f;
-            DIMENSION_WIND_CACHE.put(serverLevel.dimension(), new CachedWind(dimAngle, dimSpeed));
+            float targetAngle = weatherLevel != null ? WindReader.getWindAngle(weatherLevel) : 0.0f;
+            float targetSpeed = weatherLevel != null ? WindReader.getWindSpeed(weatherLevel) : 0.0f;
+
+            double targetRad = Math.toRadians(targetAngle);
+            double targetX = -Math.sin(targetRad) * targetSpeed;
+            double targetZ = Math.cos(targetRad) * targetSpeed;
+
+            double[] currentVec = DIMENSION_WIND_VEC_CACHE.computeIfAbsent(serverLevel.dimension(),
+                    k -> new double[] { targetX, targetZ });
+            currentVec[0] = 0.985 * currentVec[0] + 0.015 * targetX;
+            currentVec[1] = 0.985 * currentVec[1] + 0.015 * targetZ;
+
+            double smoothedSpeed = Math.sqrt(currentVec[0] * currentVec[0] + currentVec[1] * currentVec[1]);
+            float smoothedAngle = (float) Math.toDegrees(Math.atan2(-currentVec[0], currentVec[1]));
+            DIMENSION_WIND_CACHE.put(serverLevel.dimension(), new CachedWind(smoothedAngle, (float) smoothedSpeed));
         }
     }
 
@@ -1980,6 +1991,7 @@ public class ServerPhysicsHandler {
     public static void onLevelUnload(net.neoforged.neoforge.event.level.LevelEvent.Unload event) {
         if (event.getLevel() instanceof ServerLevel serverLevel) {
             DIMENSION_WIND_CACHE.remove(serverLevel.dimension());
+            DIMENSION_WIND_VEC_CACHE.remove(serverLevel.dimension());
             // FIX (Audit 106): Only evict sub-level entries belonging to the
             // unloading dimension. The old code called .clear() which wiped
             // ALL cached physics state across ALL dimensions whenever a SINGLE
@@ -2012,7 +2024,24 @@ public class ServerPhysicsHandler {
                 PREV_HEADING_CACHE.clear();
                 PHYS_DEBUG_TICK.clear();
                 LAST_BILGE_PURGE_TICK.clear();
+                DIMENSION_WIND_VEC_CACHE.clear();
             }
+        }
+    }
+
+    private static final List<ResourceLocation> SERENE_RECIPES = List.of(
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "canvas_sail"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "rudder"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "helm"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "wind_vane"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "capstan"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "taffrail_log")
+    );
+
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer serverPlayer) {
+            serverPlayer.awardRecipesByKey(SERENE_RECIPES);
         }
     }
 }
