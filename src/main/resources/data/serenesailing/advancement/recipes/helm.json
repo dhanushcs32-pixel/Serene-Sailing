@@ -11,6 +11,16 @@
         ]
       }
     },
+    "has_logs": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "#minecraft:logs"
+          }
+        ]
+      }
+    },
     "has_the_recipe": {
       "trigger": "minecraft:recipe_unlocked",
       "conditions": {
@@ -21,6 +31,7 @@
   "requirements": [
     [
       "has_planks",
+      "has_logs",
       "has_the_recipe"
     ]
   ],

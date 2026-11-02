@@ -17,6 +17,7 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -25,8 +26,8 @@ import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 
 /**
- * Masthead Wind Vane. {@code ServerPhysicsHandler} and internal tickers refresh the live wind
- * telemetry; right-clicking the block reads it out.
+ * Masthead Wind Vane. Computes live wind telemetry in local coordinate frame
+ * and smoothly tracks apparent wind direction without wrap-around flipping.
  */
 public class WindVaneBlockEntity extends BlockEntity {
 
@@ -39,11 +40,10 @@ public class WindVaneBlockEntity extends BlockEntity {
     private int telemetryTick;
     private int tickCount = 0;
 
-    // Smooth angular interpolation state (degrees, world-Y rotation).
-    /** Angle last tick, for partial-tick interpolation. */
-    private float prevApparentWindAngle;
-    /** Current authoritative angle (synced via NBT update packets). */
-    private float apparentWindAngle;
+    // Smooth angular interpolation state (degrees).
+    private float prevAngle;
+    private float currentAngle;
+    private float targetAngle;
 
     public WindVaneBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.WIND_VANE.get(), pos, state);
@@ -51,10 +51,6 @@ public class WindVaneBlockEntity extends BlockEntity {
 
     /**
      * Called by the physics bridge each step with live world-frame vectors.
-     *
-     * @param forwardWorld  ship bow direction (planar, normalized)
-     * @param trueWindWorld true wind velocity (m/s, world frame)
-     * @param shipVelWorld  ship linear velocity (m/s, world frame)
      */
     public void updateWindTelemetry(org.joml.Vector3dc forwardWorld,
                                     org.joml.Vector3dc trueWindWorld,
@@ -62,42 +58,39 @@ public class WindVaneBlockEntity extends BlockEntity {
         this.trueWindSpeed = (float) Math.sqrt(
                 trueWindWorld.x() * trueWindWorld.x() + trueWindWorld.z() * trueWindWorld.z());
 
-        // Apparent wind = true wind - ship velocity (planar).
         double ax = trueWindWorld.x() - shipVelWorld.x();
         double az = trueWindWorld.z() - shipVelWorld.z();
         this.apparentWindSpeed = (float) Math.sqrt(ax * ax + az * az);
 
-        if (apparentWindSpeed < 1.0e-4) {
+        if (this.apparentWindSpeed < 1.0e-4) {
             this.relativeWindAngleDeg = 0.0f;
-            this.apparentWindAngle = 0.0f;
+            this.targetAngle = 0.0f;
             this.pointOfSail = "Calm";
             return;
         }
 
-        double fwdLen = Math.sqrt(forwardWorld.x() * forwardWorld.x()
-                + forwardWorld.z() * forwardWorld.z());
+        double fwdLen = Math.sqrt(forwardWorld.x() * forwardWorld.x() + forwardWorld.z() * forwardWorld.z());
         if (fwdLen < 1.0e-6) {
             this.pointOfSail = "Calm";
             return;
         }
         double fx = forwardWorld.x() / fwdLen;
         double fz = forwardWorld.z() / fwdLen;
-        // Negate: apparent wind velocity points where the wind travels TO,
-        // but sailing convention measures from the bow toward where the
-        // wind comes FROM. 0° = head-to-wind, 180° = dead downwind.
         double adx = -ax / apparentWindSpeed;
         double adz = -az / apparentWindSpeed;
 
-        // Signed angle from bow to apparent wind (CCW positive when viewed
-        // from above): cos = dot, sin = cross-y component.
         double dot = fx * adx + fz * adz;
-        double sin = fx * adz - fz * adx; // y-component of forward x apparent
+        double sin = fx * adz - fz * adx;
         double angle = Math.toDegrees(Math.atan2(sin, dot));
-        this.relativeWindAngleDeg = (float) angle;
-        this.apparentWindAngle = (float) angle;
+        this.targetAngle = (float) angle;
 
-        double abs = Math.abs(angle);
-        String side = angle < 0 ? "Port" : "Starboard";
+        float diff = Mth.wrapDegrees(this.targetAngle - this.currentAngle);
+        this.prevAngle = this.currentAngle;
+        this.currentAngle = Mth.wrapDegrees(this.currentAngle + diff * 0.12f);
+        this.relativeWindAngleDeg = this.currentAngle;
+
+        double abs = Math.abs(this.currentAngle);
+        String side = this.currentAngle < 0 ? "Port" : "Starboard";
         if (abs < 30.0) {
             this.pointOfSail = "In Irons (" + (int) abs + "\u00B0 " + side + ")";
         } else if (abs < 60.0) {
@@ -110,13 +103,9 @@ public class WindVaneBlockEntity extends BlockEntity {
             this.pointOfSail = "Running / Dead Downwind";
         }
 
-        // Throttled server->client sync (~5 Hz): the masthead pennant is
-        // rendered client-side by the BER from the relative wind angle, and
-        // physics steps run far faster than vanilla block updates.
         if (level != null && !level.isClientSide && ++this.telemetryTick % 4 == 0) {
             this.setChanged();
-            this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(),
-                    this.getBlockState(), 3);
+            this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
         }
     }
 
@@ -132,25 +121,39 @@ public class WindVaneBlockEntity extends BlockEntity {
         return pointOfSail;
     }
 
-    /**
-     * @return signed apparent wind angle in degrees relative to the ship's
-     *         bow (negative = wind on port, positive = starboard). Drives the
-     *         rotating pennant in {@code WindVaneRenderer}.
-     */
+    public float getPrevAngle() {
+        return this.prevAngle;
+    }
+
+    public float getCurrentAngle() {
+        return this.currentAngle;
+    }
+
     public float getApparentWindAngle() {
-        return this.apparentWindAngle;
+        return this.currentAngle;
+    }
+
+    /**
+     * @return the apparent wind angle interpolated between previous and
+     *         current tick with shortest-arc rotational interpolation.
+     */
+    public float getInterpolatedWindAngle(float partialTick) {
+        return Mth.rotLerp(partialTick, this.prevAngle, this.currentAngle);
     }
 
     /**
      * Per-tick interpolation bookkeeping and authoritative wind telemetry resolution.
      */
     public void tick() {
-        this.prevApparentWindAngle = this.apparentWindAngle;
-        if (this.level == null || this.level.isClientSide) {
+        this.prevAngle = this.currentAngle;
+
+        if (this.level != null && this.level.isClientSide) {
+            float diff = Mth.wrapDegrees(this.targetAngle - this.currentAngle);
+            this.currentAngle = Mth.wrapDegrees(this.currentAngle + diff * 0.12f);
             return;
         }
 
-        if (!(this.level instanceof ServerLevel serverLevel)) {
+        if (this.level == null || !(this.level instanceof ServerLevel serverLevel)) {
             return;
         }
 
@@ -175,17 +178,11 @@ public class WindVaneBlockEntity extends BlockEntity {
         float trueSpeed = cachedWind.speed();
         float trueAngle = cachedWind.angle();
 
-        if (this.tickCount++ % 20 == 0) {
-            SereneSailing.LOGGER.debug("[WINDVANE] True Wind: speed={}, angle={} | Pos: {} | Level: {}",
-                    trueSpeed, trueAngle, this.worldPosition, serverLevel.dimension().location());
-        }
-
         double effectiveWindSpeed = Math.max(SailingConfig.MIN_WIND_SPEED.get(), trueSpeed * 20.0);
         double windRad = Math.toRadians(trueAngle);
         Vector3d trueWindWorld = new Vector3d(-Math.sin(windRad), 0.0, Math.cos(windRad)).mul(effectiveWindSpeed);
 
         Vector3d shipVelWorld;
-        Vector3d forwardWorld;
         if (subLevel != null) {
             RigidBodyHandle body = RigidBodyHandle.of(subLevel);
             if (body != null && body.isValid()) {
@@ -193,37 +190,54 @@ public class WindVaneBlockEntity extends BlockEntity {
             } else {
                 shipVelWorld = ServerPhysicsHandler.getVesselVelocity(subLevel.getUniqueId());
             }
-            Quaterniondc orientation = subLevel.logicalPose().orientation();
-            forwardWorld = new Vector3d(0.0, 0.0, -1.0).rotate(orientation);
-            forwardWorld.y = 0.0;
-            if (forwardWorld.lengthSquared() > 1.0e-4) {
-                forwardWorld.normalize();
-            } else {
-                forwardWorld.set(0.0, 0.0, -1.0);
-            }
         } else {
             shipVelWorld = new Vector3d(0.0, 0.0, 0.0);
-            Direction facing = getBlockState().hasProperty(WindVaneBlock.FACING)
-                    ? getBlockState().getValue(WindVaneBlock.FACING)
-                    : Direction.NORTH;
-            forwardWorld = new Vector3d(facing.getStepX(), 0.0, facing.getStepZ());
-            if (forwardWorld.lengthSquared() > 1.0e-4) {
-                forwardWorld.normalize();
+        }
+
+        double ax = trueWindWorld.x - shipVelWorld.x;
+        double az = trueWindWorld.z - shipVelWorld.z;
+        this.trueWindSpeed = (float) Math.sqrt(trueWindWorld.x * trueWindWorld.x + trueWindWorld.z * trueWindWorld.z);
+        this.apparentWindSpeed = (float) Math.sqrt(ax * ax + az * az);
+
+        // Transform apparent wind vector into sub-level local coordinate frame
+        double localWindX = ax;
+        double localWindZ = az;
+        if (subLevel != null) {
+            Pose3dc pose = subLevel.logicalPose();
+            Vector3d localWind = pose.transformNormalInverse(new Vector3d(ax, 0.0, az), new Vector3d());
+            localWindX = localWind.x;
+            localWindZ = localWind.z;
+        }
+
+        if (this.apparentWindSpeed < 1.0e-4) {
+            this.pointOfSail = "Calm";
+            this.targetAngle = 0.0f;
+        } else {
+            this.targetAngle = (float) Math.toDegrees(Math.atan2(-localWindX, localWindZ));
+
+            double abs = Math.abs(this.currentAngle);
+            String side = this.currentAngle < 0 ? "Port" : "Starboard";
+            if (abs < 30.0) {
+                this.pointOfSail = "In Irons (" + (int) abs + "\u00B0 " + side + ")";
+            } else if (abs < 60.0) {
+                this.pointOfSail = "Close-Hauled (" + (int) abs + "\u00B0 " + side + ")";
+            } else if (abs < 120.0) {
+                this.pointOfSail = "Beam Reach (" + (int) abs + "\u00B0 " + side + ")";
+            } else if (abs < 150.0) {
+                this.pointOfSail = "Broad Reach (" + (int) abs + "\u00B0 " + side + ")";
             } else {
-                forwardWorld.set(0.0, 0.0, -1.0);
+                this.pointOfSail = "Running / Dead Downwind";
             }
         }
 
-        updateWindTelemetry(forwardWorld, trueWindWorld, shipVelWorld);
-    }
+        float diff = Mth.wrapDegrees(this.targetAngle - this.currentAngle);
+        this.currentAngle = Mth.wrapDegrees(this.currentAngle + diff * 0.12f);
+        this.relativeWindAngleDeg = this.currentAngle;
 
-    /**
-     * @return the apparent wind angle interpolated between the previous and
-     *         current tick for smooth, frame-rate-independent pennant motion.
-     */
-    public float getInterpolatedWindAngle(float partialTick) {
-        return net.minecraft.util.Mth.rotLerp(partialTick,
-                this.prevApparentWindAngle, this.apparentWindAngle);
+        if (serverLevel.getServer() != null && serverLevel.getServer().getTickCount() % 4 == 0) {
+            this.setChanged();
+            serverLevel.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
+        }
     }
 
     @Override
@@ -232,6 +246,7 @@ public class WindVaneBlockEntity extends BlockEntity {
         tag.putFloat("TrueWind", this.trueWindSpeed);
         tag.putFloat("ApparentWind", this.apparentWindSpeed);
         tag.putFloat("RelWindAngle", this.relativeWindAngleDeg);
+        tag.putFloat("TargetAngle", this.targetAngle);
         tag.putString("PointOfSail", this.pointOfSail);
     }
 
@@ -241,15 +256,18 @@ public class WindVaneBlockEntity extends BlockEntity {
         this.trueWindSpeed = tag.getFloat("TrueWind");
         this.apparentWindSpeed = tag.getFloat("ApparentWind");
         this.relativeWindAngleDeg = tag.getFloat("RelWindAngle");
+        this.targetAngle = tag.contains("TargetAngle") ? tag.getFloat("TargetAngle") : this.relativeWindAngleDeg;
         this.pointOfSail = tag.getString("PointOfSail");
 
         if (Float.isNaN(this.trueWindSpeed) || Float.isInfinite(this.trueWindSpeed)) this.trueWindSpeed = 0.0f;
         if (Float.isNaN(this.apparentWindSpeed) || Float.isInfinite(this.apparentWindSpeed)) this.apparentWindSpeed = 0.0f;
         if (Float.isNaN(this.relativeWindAngleDeg) || Float.isInfinite(this.relativeWindAngleDeg)) this.relativeWindAngleDeg = 0.0f;
+        if (Float.isNaN(this.targetAngle) || Float.isInfinite(this.targetAngle)) this.targetAngle = 0.0f;
 
-        // Avoid a visible spin from 0 deg on (re)load: snap both interp states.
-        this.apparentWindAngle = this.relativeWindAngleDeg;
-        this.prevApparentWindAngle = this.relativeWindAngleDeg;
+        if (this.currentAngle == 0.0f && this.prevAngle == 0.0f) {
+            this.currentAngle = this.targetAngle;
+            this.prevAngle = this.targetAngle;
+        }
     }
 
     @Override

@@ -4,22 +4,36 @@
   "textures": {
     "particle": "minecraft:block/white_wool",
     "timber": "minecraft:block/stripped_oak_log",
+    "planks": "minecraft:block/spruce_planks",
     "canvas": "minecraft:block/white_wool",
     "seam": "minecraft:block/light_gray_wool",
     "iron": "minecraft:block/iron_block"
   },
   "elements": [
     {
-      "name": "yardarm_mast_clamp",
-      "from": [5.0, 13.5, 0.25],
-      "to": [11.0, 16.0, 2.0],
+      "name": "vertical_mast_post",
+      "from": [6.5, 0.0, 0.0],
+      "to": [9.5, 16.0, 2.0],
       "faces": {
-        "north": { "uv": [5, 0, 11, 3], "texture": "#timber" },
-        "south": { "uv": [5, 0, 11, 3], "texture": "#timber" },
-        "west":  { "uv": [0, 0, 3, 3],  "texture": "#timber" },
-        "east":  { "uv": [13, 0, 16, 3], "texture": "#timber" },
-        "up":    { "uv": [5, 0, 11, 3], "texture": "#timber" },
-        "down":  { "uv": [5, 0, 11, 3], "texture": "#timber" }
+        "north": { "uv": [6.5, 0, 9.5, 16], "texture": "#timber" },
+        "south": { "uv": [6.5, 0, 9.5, 16], "texture": "#timber" },
+        "west":  { "uv": [0, 0, 2, 16],     "texture": "#timber" },
+        "east":  { "uv": [14, 0, 16, 16],   "texture": "#timber" },
+        "up":    { "uv": [6.5, 0, 9.5, 2],   "texture": "#timber" },
+        "down":  { "uv": [6.5, 14, 9.5, 16], "texture": "#timber" }
+      }
+    },
+    {
+      "name": "yardarm_mast_collar",
+      "from": [6.0, 13.5, 0.0],
+      "to": [10.0, 16.0, 2.4],
+      "faces": {
+        "north": { "uv": [6, 0, 10, 2.5],   "texture": "#planks" },
+        "south": { "uv": [6, 0, 10, 2.5],   "texture": "#planks" },
+        "west":  { "uv": [0, 0, 2.4, 2.5],  "texture": "#planks" },
+        "east":  { "uv": [13.6, 0, 16, 2.5],"texture": "#planks" },
+        "up":    { "uv": [6, 0, 10, 2.4],    "texture": "#planks" },
+        "down":  { "uv": [6, 13.6, 10, 16], "texture": "#planks" }
       }
     },
     {

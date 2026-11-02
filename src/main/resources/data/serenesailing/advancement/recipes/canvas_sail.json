@@ -1,12 +1,22 @@
 {
   "parent": "minecraft:recipes/root",
   "criteria": {
-    "has_wool": {
+    "has_planks": {
       "trigger": "minecraft:inventory_changed",
       "conditions": {
         "items": [
           {
-            "items": "#minecraft:wool"
+            "items": "#minecraft:planks"
+          }
+        ]
+      }
+    },
+    "has_logs": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "#minecraft:logs"
           }
         ]
       }
@@ -20,7 +30,8 @@
   },
   "requirements": [
     [
-      "has_wool",
+      "has_planks",
+      "has_logs",
       "has_the_recipe"
     ]
   ],

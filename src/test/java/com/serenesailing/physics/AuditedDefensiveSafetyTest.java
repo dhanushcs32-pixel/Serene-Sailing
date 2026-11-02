@@ -11,6 +11,12 @@ import net.minecraft.nbt.CompoundTag;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -410,5 +416,115 @@ public class AuditedDefensiveSafetyTest {
 
         SetHelmAnglePayload helm = new SetHelmAnglePayload(BlockPos.ZERO, -0.0f);
         assertFalse(Float.isNaN(helm.angle()), "Negative zero helm must not be NaN");
+    }
+
+    @Test
+    @DisplayName("Audit: All 6 crafting recipes exist under data/serenesailing/recipe/ and have valid shaped format")
+    public void testAllRecipesExistAndAreValidCraftingShaped() throws Exception {
+        List<String> items = List.of(
+                "canvas_sail",
+                "rudder",
+                "helm",
+                "wind_vane",
+                "capstan",
+                "taffrail_log"
+        );
+        Path recipeDir = Path.of("src", "main", "resources", "data", "serenesailing", "recipe");
+        assertTrue(Files.isDirectory(recipeDir), "Recipe directory data/serenesailing/recipe/ must exist");
+
+        for (String item : items) {
+            Path file = recipeDir.resolve(item + ".json");
+            assertTrue(Files.exists(file), "Recipe file must exist: " + file);
+
+            String content = Files.readString(file);
+            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+
+            assertEquals("minecraft:crafting_shaped", json.get("type").getAsString(),
+                    "Recipe type for " + item + " must be minecraft:crafting_shaped");
+            assertTrue(json.has("category"), "Recipe for " + item + " must have a category");
+            assertTrue(json.has("result"), "Recipe for " + item + " must have a result");
+
+            JsonObject result = json.getAsJsonObject("result");
+            assertEquals("serenesailing:" + item, result.get("id").getAsString(),
+                    "Result id must match serenesailing:" + item);
+            assertTrue(result.get("count").getAsInt() >= 1, "Result count must be >= 1");
+        }
+    }
+
+    @Test
+    @DisplayName("Audit: All 6 recipe advancements exist under data/serenesailing/advancement/recipes/ (and misc/) with planks/logs/recipe criteria")
+    public void testAllRecipeAdvancementsExistAndContainPlanksLogsCriteria() throws Exception {
+        List<String> items = List.of(
+                "canvas_sail",
+                "rudder",
+                "helm",
+                "wind_vane",
+                "capstan",
+                "taffrail_log"
+        );
+        List<Path> dirs = List.of(
+                Path.of("src", "main", "resources", "data", "serenesailing", "advancement", "recipes"),
+                Path.of("src", "main", "resources", "data", "serenesailing", "advancement", "recipes", "misc")
+        );
+
+        for (Path dir : dirs) {
+            assertTrue(Files.isDirectory(dir), "Advancement directory must exist: " + dir);
+            for (String item : items) {
+                Path file = dir.resolve(item + ".json");
+                assertTrue(Files.exists(file), "Advancement file must exist: " + file);
+
+                String content = Files.readString(file);
+                JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+
+                assertTrue(json.has("criteria"), "Advancement " + file + " must have criteria");
+                JsonObject criteria = json.getAsJsonObject("criteria");
+                assertTrue(criteria.has("has_planks"), "Advancement " + file + " must have has_planks criterion");
+                assertTrue(criteria.has("has_logs"), "Advancement " + file + " must have has_logs criterion");
+                assertTrue(criteria.has("has_the_recipe"), "Advancement " + file + " must have has_the_recipe criterion");
+
+                assertTrue(json.has("rewards"), "Advancement " + file + " must have rewards");
+                JsonObject rewards = json.getAsJsonObject("rewards");
+                assertTrue(rewards.has("recipes"), "Advancement rewards must specify recipes");
+                assertTrue(rewards.getAsJsonArray("recipes").toString().contains("serenesailing:" + item),
+                        "Advancement rewards must grant serenesailing:" + item);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Audit: en_us.json contains both block and item translation keys with exact display names")
+    public void testLangFileContainsBothBlockAndItemKeysWithExactNames() throws Exception {
+        Path langPath = Path.of("src", "main", "resources", "assets", "serenesailing", "lang", "en_us.json");
+        assertTrue(Files.exists(langPath), "en_us.json must exist");
+
+        String content = Files.readString(langPath);
+        JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+
+        assertEquals("Serene Sailing", json.get("itemGroup.serenesailing").getAsString(),
+                "itemGroup.serenesailing must be 'Serene Sailing'");
+
+        Map<String, String> expectedNames = Map.of(
+                "taffrail_log", "Taffrail Log",
+                "canvas_sail", "Canvas Sail",
+                "helm", "Ship's Helm",
+                "rudder", "Ship's Rudder",
+                "capstan", "Ship's Capstan",
+                "wind_vane", "Masthead Wind Vane"
+        );
+
+        for (Map.Entry<String, String> entry : expectedNames.entrySet()) {
+            String id = entry.getKey();
+            String expected = entry.getValue();
+
+            String blockKey = "block.serenesailing." + id;
+            assertTrue(json.has(blockKey), "en_us.json must have key: " + blockKey);
+            assertEquals(expected, json.get(blockKey).getAsString(),
+                    blockKey + " display name must match " + expected);
+
+            String itemKey = "item.serenesailing." + id;
+            assertTrue(json.has(itemKey), "en_us.json must have key: " + itemKey);
+            assertEquals(expected, json.get(itemKey).getAsString(),
+                    itemKey + " display name must match " + expected);
+        }
     }
 }
