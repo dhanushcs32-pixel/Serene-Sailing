@@ -1,4 +1,0 @@
-[submodule "weather2"]
-	path = weather2
-	url = https://github.com/Corosauce/weather2.git
-	branch = 1.21

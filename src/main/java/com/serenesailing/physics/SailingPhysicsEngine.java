@@ -17,7 +17,17 @@ public class SailingPhysicsEngine {
     public ShipPhysicsEngine.PhysicsState tick(SubLevelHandle subLevel, double worldTimeSeconds) {
         if (subLevel == null || !subLevel.isSimulated()) return null;
 
-        List<ShipPhysicsEngine.BlockNode> hullBlocks = gatherHullBlocks(subLevel);
+        return tick(subLevel, gatherHullBlocks(subLevel), worldTimeSeconds);
+    }
+
+    /**
+     * Evaluates physics for an already-gathered hull and applies the resulting
+     * impulses. Split out from {@link #tick(SubLevelHandle, double)} so it can be
+     * tested without Minecraft BlockStates.
+     */
+    ShipPhysicsEngine.PhysicsState tick(SubLevelHandle subLevel,
+                                        List<ShipPhysicsEngine.BlockNode> hullBlocks,
+                                        double worldTimeSeconds) {
         if (hullBlocks.isEmpty()) return null;
 
         Vector3d linearVelocity = subLevel.getLinearVelocity();
@@ -44,9 +54,11 @@ public class SailingPhysicsEngine {
                 config
         );
 
+        // JOML's mul() mutates in place. Scale copies so the returned state keeps
+        // totalForce (N) and totalTorque (N*m) rather than being turned into impulses.
         double dt = subLevel.getDeltaTime();
-        subLevel.applyImpulseAt(state.totalForce.mul(dt), state.centerOfMass);
-        subLevel.applyAngularImpulse(state.totalTorque.mul(dt));
+        subLevel.applyImpulseAt(new Vector3d(state.totalForce).mul(dt), state.centerOfMass);
+        subLevel.applyAngularImpulse(new Vector3d(state.totalTorque).mul(dt));
 
         return state;
     }
