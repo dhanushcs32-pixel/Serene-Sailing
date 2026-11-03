@@ -11,6 +11,12 @@ public final class SailAerodynamics {
      *  dead into the apparent wind (within 30 degrees). This bleeds speed,
      *  initiates sternway, and lets the rudder kick the bow out of irons. */
     private static final double IN_IRONS_PUSHBACK = 0.15;
+    /** Alignment at which the headwind dead zone ends and the sails start to draw. */
+    private static final double IRONS_EDGE = -0.1;
+    /** Alignment at which thrust has fully faded in. Between IRONS_EDGE and this
+     *  value the polar thrust is blended in with a smoothstep, so the force is
+     *  continuous (0 at the dead-zone edge) instead of popping to ~0.6x thrust. */
+    private static final double IRONS_EXIT_FULL_THRUST = 0.0;
 
     private SailAerodynamics() {}
 
@@ -41,7 +47,7 @@ public final class SailAerodynamics {
         double alignment = apparentWindDir.dot(shipForwardDir);
 
         // IN IRONS: Pointing into apparent wind produces zero forward propulsion.
-        if (alignment < -0.1) {
+        if (alignment < IRONS_EDGE) {
             double dynamicPressure = 0.5 * AIR_DENSITY * apparentSpeed * apparentSpeed;
             if (alignment < -0.866) {
                 // Dead ahead (apparent wind within 30 degrees of the bow): apply
@@ -55,7 +61,7 @@ public final class SailAerodynamics {
             }
             // Close-hauled headwind band: no forward drive, with continuous aerodynamic
             // drag ramping smoothly toward sternway pushback so the vessel bleeds speed.
-            double headwindFactor = (-alignment - 0.1) / (0.866 - 0.1);
+            double headwindFactor = (-alignment + IRONS_EDGE) / (0.866 + IRONS_EDGE);
             double dragMag = dynamicPressure * DEFAULT_SAIL_AREA * sailEfficiency
                     * (headwindFactor * IN_IRONS_PUSHBACK) * SAIL_THRUST_MULTIPLIER;
             return new Vector3d(apparentWindDir).mul(dragMag);
@@ -65,6 +71,15 @@ public final class SailAerodynamics {
         // Downwind (1.0) -> coeff = 1.0
         // Beam reach (0.0) -> coeff = 0.65 (aerodynamic foil lift)
         double propulsionCoeff = 0.65 + 0.35 * alignment;
+
+        // Exit from the dead zone: the drag branch above goes to exactly 0 at
+        // IRONS_EDGE, so fade thrust in from 0 rather than jumping straight to
+        // the polar value (~0.615). Smoothstep keeps zero slope at both ends.
+        // For alignment >= IRONS_EXIT_FULL_THRUST the blend is exactly 1.0, so
+        // beam-reach and downwind behaviour is unchanged.
+        double t = (alignment - IRONS_EDGE) / (IRONS_EXIT_FULL_THRUST - IRONS_EDGE);
+        t = Math.max(0.0, Math.min(1.0, t));
+        propulsionCoeff *= t * t * (3.0 - 2.0 * t);
 
         // Dynamic pressure: q = 0.5 * rho * v_app^2
         double dynamicPressure = 0.5 * AIR_DENSITY * apparentSpeed * apparentSpeed;
