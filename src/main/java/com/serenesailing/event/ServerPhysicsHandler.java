@@ -70,6 +70,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * apparent-wind thrust scaled by reefed sail area, dual linear+quadratic
  * hydrodynamic drag, pure local-frame yaw steering with roll/pitch
  * stabilization, and capstan anchor lock.
+ *
+ * <p>This is the <b>only</b> ship physics that runs in-game. The separate engine in
+ * {@code com.serenesailing.physics} ({@code SailingPhysicsEngine}, {@code ShipPhysicsEngine},
+ * {@code WaterlineProvider}, {@code SailingPhysicsConfig}, {@code BlockMassTable}) is not
+ * called from here and is kept for reference only.
  */
 @EventBusSubscriber(modid = SereneSailing.MOD_ID)
 public class ServerPhysicsHandler {
@@ -864,8 +869,8 @@ public class ServerPhysicsHandler {
             body.addLinearAndAngularVelocity(planarDelta, new Vector3d());
 
             // Rotational yaw damping: a stationary AND centered-helm ship
-            // generates no rudder lift â€” there is no water flowing past the
-            // foil â€” so leftover yaw angular velocity is damped hard.
+            // generates no rudder lift — there is no water flowing past the
+            // foil — so leftover yaw angular velocity is damped hard.
             // FIX: Skip this when the rudder is deflected, otherwise the
             // damping wipes out the steering torque applied right after.
             if (Math.abs(activeHelmAngle) < 0.5f) {
@@ -997,7 +1002,7 @@ public class ServerPhysicsHandler {
                 }
 
                 if (submergedRudderCount > 0 && Math.abs(facingSignSum) > 1.0e-5) {
-                    // FIX: Direct inline torque formula â€” STEER_TORQUE_COEFF is
+                    // FIX: Direct inline torque formula — STEER_TORQUE_COEFF is
                     // applied directly as tau = -coeff * v * sin(theta) * facingSignSum.
                     // The old RudderHydrodynamics bridge divided by 800, zeroing
                     // the result. This formula is proven and well-scaled.
@@ -1120,7 +1125,7 @@ public class ServerPhysicsHandler {
         Long stamp = STEERING_CACHE_STEP.get(id);
         // FIX (Bug 6): Always reuse cache for STEERING_RESCAN_STEPS regardless
         // of rudder count. The old condition `!cached.rudders().isEmpty()` caused
-        // every physics step to rescan O(chunksÃ—16Â³) on rudderless vessels.
+        // every physics step to rescan O(chunks×16³) on rudderless vessels.
         if (cached != null && stamp != null
                 && (stepCounter.get() - stamp) < STEERING_RESCAN_STEPS) {
             return cached;

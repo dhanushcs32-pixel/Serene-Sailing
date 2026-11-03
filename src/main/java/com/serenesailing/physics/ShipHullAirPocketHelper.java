@@ -121,7 +121,7 @@ public class ShipHullAirPocketHelper {
         }
         if (!hasFloor) return false;
 
-        // 2. Surrounded on 4 horizontal sides (Â±X, Â±Z) by hull blocks at entity's Y level / waterline
+        // 2. Surrounded on 4 horizontal sides (±X, ±Z) by hull blocks at entity's Y level / waterline
         worldProbe.set(wx, Math.max(wy + 0.5, 62.5), wz);
         pose.transformPositionInverse(worldProbe, localProbe);
         int lx = Mth.floor(localProbe.x);

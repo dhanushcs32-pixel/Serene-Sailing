@@ -1,5 +1,12 @@
 package com.serenesailing.physics;
 
+/**
+ * Tunables for the standalone engine.
+ *
+ * <p><b>Status: not wired into the game.</b> Read only by {@link ShipPhysicsEngine} and {@link SailingPhysicsEngine}; the live mod tunables are in {@code SailingConfig}.
+ * Part of the standalone engine described in {@link SailingPhysicsEngine}; changes here do not
+ * affect gameplay (the live physics is in {@link com.serenesailing.event.ServerPhysicsHandler}).
+ */
 public class SailingPhysicsConfig {
     public double buoyancyScalar = 1.0;           // Tune buoyancy strength against Sable physics
     public double metacentricTorqueScale = 0.85;  // Higher = stiffer righting, Lower = rolls smoother
