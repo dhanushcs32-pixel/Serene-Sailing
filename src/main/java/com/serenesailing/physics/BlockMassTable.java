@@ -4,6 +4,13 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
+/**
+ * Per-block mass estimates for the standalone engine.
+ *
+ * <p><b>Status: not wired into the game.</b> Used only by {@link SailingPhysicsEngine}.
+ * Part of the standalone engine described in {@link SailingPhysicsEngine}; changes here do not
+ * affect gameplay (the live physics is in {@link com.serenesailing.event.ServerPhysicsHandler}).
+ */
 public class BlockMassTable {
 
     /**

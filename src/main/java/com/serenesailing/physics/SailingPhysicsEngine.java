@@ -4,6 +4,18 @@ import org.joml.Vector3d;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Integration layer around {@link ShipPhysicsEngine}: gathers hull blocks from a
+ * {@link SubLevelHandle}, evaluates the physics and applies the resulting impulses.
+ *
+ * <p><b>Status: not wired into the game.</b> Nothing in the mod's runtime calls this
+ * class; it is exercised only by unit tests. The live ship physics runs in
+ * {@link com.serenesailing.event.ServerPhysicsHandler}, which has its own separate,
+ * hand-rolled implementation. This class together with {@link ShipPhysicsEngine},
+ * {@link WaterlineProvider}, {@link SailingPhysicsConfig} and {@link BlockMassTable}
+ * forms a self-contained alternative engine that is kept for reference.
+ * Changes here do <b>not</b> affect gameplay; change {@code ServerPhysicsHandler} for that.
+ */
 public class SailingPhysicsEngine {
 
     private final SailingPhysicsConfig config;

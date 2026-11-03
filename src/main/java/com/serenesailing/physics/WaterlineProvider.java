@@ -1,5 +1,12 @@
 package com.serenesailing.physics;
 
+/**
+ * Supplies the water surface height for the standalone engine.
+ *
+ * <p><b>Status: not wired into the game.</b> Used only by {@link ShipPhysicsEngine} and {@link SailingPhysicsEngine}.
+ * Part of the standalone engine described in {@link SailingPhysicsEngine}; changes here do not
+ * affect gameplay (the live physics is in {@link com.serenesailing.event.ServerPhysicsHandler}).
+ */
 @FunctionalInterface
 public interface WaterlineProvider {
     /**

@@ -5,6 +5,13 @@ import org.joml.Quaterniondc;
 import org.joml.Vector3d;
 import java.util.List;
 
+/**
+ * Pure-math 6-DOF evaluation: buoyancy, gravity, sail force, righting torque and drag.
+ *
+ * <p><b>Status: not wired into the game.</b> Used only by {@link SailingPhysicsEngine} and unit tests.
+ * Part of the standalone engine described in {@link SailingPhysicsEngine}; changes here do not
+ * affect gameplay (the live physics is in {@link com.serenesailing.event.ServerPhysicsHandler}).
+ */
 public class ShipPhysicsEngine {
 
     public static class BlockNode {
