@@ -248,10 +248,9 @@ public class CapstanBlockEntity extends BlockEntity {
         if (this.level instanceof ServerLevel serverLevel) {
             ServerSubLevel subLevel = resolveSubLevel(serverLevel);
             if (subLevel != null) {
-                ServerLevel parentLevel = ServerPhysicsHandler.resolveWeatherQueryLevel(serverLevel);
-                if (parentLevel != null) {
-                    overworldLevel = parentLevel;
-                }
+                // The plot's blocks and the water column under the ship live in this very level. (This used to swap in
+                // resolveWeatherQueryLevel(), a Weather2 helper that can return the OVERWORLD for a ship in another
+                // dimension: seabed depth was then read from, and could force-load, the wrong dimension.)
                 Pose3dc pose = subLevel.logicalPose();
                 Vec3 localCenter = Vec3.atCenterOf(this.worldPosition);
                 Vec3 worldCenter = pose.transformPosition(localCenter);
@@ -319,6 +318,11 @@ public class CapstanBlockEntity extends BlockEntity {
         if (Float.isNaN(this.chainLength) || Float.isInfinite(this.chainLength)) this.chainLength = 0.0f;
         if (Float.isNaN(this.trailX) || Float.isInfinite(this.trailX)) this.trailX = 0.0f;
         if (Float.isNaN(this.trailZ) || Float.isInfinite(this.trailZ)) this.trailZ = 0.0f;
+
+        this.seabedDepth = Mth.clamp(this.seabedDepth, 0.0f, (float) MAX_SEABED_SEARCH);
+        this.chainLength = Mth.clamp(this.chainLength, 0.0f, (float) MAX_SEABED_SEARCH);
+        this.trailX = Mth.clamp(this.trailX, -15.0f, 15.0f);
+        this.trailZ = Mth.clamp(this.trailZ, -15.0f, 15.0f);
 
         // Snap interpolation state so the chain does not visibly rewind.
         this.prevChainLength = this.chainLength;

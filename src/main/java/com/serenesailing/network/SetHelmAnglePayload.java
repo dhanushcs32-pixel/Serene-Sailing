@@ -67,15 +67,15 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
             }
             if (context.player() instanceof ServerPlayer serverPlayer
                     && serverPlayer.level() instanceof ServerLevel serverLevel) {
-                if (serverPlayer.isRemoved()) {
+                if (serverPlayer.isRemoved() || serverPlayer.isSpectator()) {
                     return;
                 }
 
-                // Rate limiting: allow at most 20 steer packets per player per game tick
+                // Rate limiting: allow at most 8 steer packets per player per game tick (the client sends ~1 per 2-10 ticks)
                 long currentTick = serverLevel.getGameTime();
                 long[] burst = RATE_LIMIT_MAP.computeIfAbsent(serverPlayer.getUUID(), k -> new long[]{currentTick, 0});
                 if (burst[0] == currentTick) {
-                    if (++burst[1] > 20) {
+                    if (++burst[1] > 8) {
                         return; // Drop excess packet burst
                     }
                 } else {
@@ -100,9 +100,14 @@ public record SetHelmAnglePayload(BlockPos pos, float angle) implements CustomPa
                 HelmBlockEntity helm = null;
                 ServerSubLevel helmSubLevel = null;
 
-                BlockEntity directBe = serverLevel.getBlockEntity(payload.pos());
-                if (directBe instanceof HelmBlockEntity h) {
-                    helm = h;
+                // SECURITY: the position is client-controlled. Level#getBlockEntity resolves the chunk with
+                // load=true, so an unguarded lookup lets any client force the server to load / generate arbitrary
+                // chunks (up to +-30M blocks away). Only look at chunks that are already loaded.
+                if (serverLevel.hasChunkAt(payload.pos())) {
+                    BlockEntity directBe = serverLevel.getBlockEntity(payload.pos());
+                    if (directBe instanceof HelmBlockEntity h) {
+                        helm = h;
+                    }
                 }
 
                 SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);

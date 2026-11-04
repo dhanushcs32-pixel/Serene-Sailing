@@ -56,6 +56,10 @@ public class Weather2Compat {
         if (level == null || level.isClientSide()) {
             return null;
         }
+        // Optional dependency: never probe Weather2 classes when it is not installed (this runs every physics substep).
+        if (!Weather2Wind.isLoaded()) {
+            return null;
+        }
 
         try {
             if (level instanceof ServerLevel serverLevel) {

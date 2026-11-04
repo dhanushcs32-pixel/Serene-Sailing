@@ -46,6 +46,17 @@ public class HelmBlockEntity extends BlockEntity {
     /** True while a player is actively holding the mouse button on the helm. */
     private boolean activelyHeld = false;
 
+    /**
+     * A held helm is released by the server if no steer packet arrived for this many ticks. The client sends a
+     * heartbeat every {@code HOLD_HEARTBEAT_TICKS}; without this a disconnect, a crash or a hostile client could
+     * pin the rudder hard over for good (activelyHeld is also saved to disk).
+     */
+    public static final int HOLD_TIMEOUT_TICKS = 40;
+    /** Client heartbeat interval while the wheel is held. */
+    public static final int HOLD_HEARTBEAT_TICKS = 10;
+    /** Server game time of the last accepted steer packet. */
+    private long lastInputGameTime = Long.MIN_VALUE;
+
     public HelmBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.HELM.get(), pos, state);
     }
@@ -92,6 +103,9 @@ public class HelmBlockEntity extends BlockEntity {
         }
         this.targetRudderAngle = Mth.clamp(rudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
         this.activelyHeld = held;
+        if (level != null) {
+            this.lastInputGameTime = level.getGameTime();
+        }
         setChanged();
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
@@ -138,6 +152,14 @@ public class HelmBlockEntity extends BlockEntity {
      * </ul>
      */
     public void tick() {
+        // Server: release a hold whose player stopped talking to us (see HOLD_TIMEOUT_TICKS).
+        if (this.activelyHeld && level != null && !level.isClientSide
+                && level.getGameTime() - this.lastInputGameTime > HOLD_TIMEOUT_TICKS) {
+            this.activelyHeld = false;
+            setChanged();
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        }
+
         // Spring back to center when no player is actively steering
         if (!this.activelyHeld) {
             // Reduced from 0.15f -> 0.09f for a slower, heavier helm feel
@@ -278,6 +300,9 @@ public class HelmBlockEntity extends BlockEntity {
         if (Float.isNaN(this.currentRudderAngle) || Float.isInfinite(this.currentRudderAngle)) {
             this.currentRudderAngle = 0.0f;
         }
+        // Edited / corrupt NBT must not exceed the physical stop.
+        this.targetRudderAngle = Mth.clamp(this.targetRudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
+        this.currentRudderAngle = Mth.clamp(this.currentRudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
     }
 
     @Override

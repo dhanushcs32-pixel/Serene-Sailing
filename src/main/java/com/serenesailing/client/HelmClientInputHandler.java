@@ -59,6 +59,9 @@ public class HelmClientInputHandler {
     /** Tick counter for network throttling (send every 2 ticks). */
     private static int sendCooldown = 0;
 
+    /** Ticks since the last packet of any kind while steering; drives the keep-alive heartbeat. */
+    private static int heartbeatTicks = 0;
+
     /** Last rudder value actually sent to the server, for delta detection. */
     private static float lastSentRudder = 0.0f;
 
@@ -96,6 +99,7 @@ public class HelmClientInputHandler {
                     isSteeringHelm = true;
                     activeHelmPos = pos;
                     sendCooldown = 0;
+                    heartbeatTicks = 0;
                     lastSentRudder = 0.0f;
 
                     // Initialize relative camera tracking
@@ -214,6 +218,16 @@ public class HelmClientInputHandler {
         // Auto-release if player walks > 4 blocks away from activeHelmPos
         if (mc.player.distanceToSqr(activeHelmPos.getX() + 0.5, activeHelmPos.getY() + 0.5, activeHelmPos.getZ() + 0.5) > 16.0) {
             releaseSteering();
+            return;
+        }
+
+        // Keep-alive: the server releases a held wheel that has been silent for HOLD_TIMEOUT_TICKS, and packets
+        // are otherwise only sent while the mouse moves.
+        if (++heartbeatTicks >= HelmBlockEntity.HOLD_HEARTBEAT_TICKS) {
+            PacketDistributor.sendToServer(
+                    new ServerboundSteerPayload(activeHelmPos, accumulatedRudder, true));
+            lastSentRudder = accumulatedRudder;
+            heartbeatTicks = 0;
         }
     }
 
@@ -232,6 +246,7 @@ public class HelmClientInputHandler {
                     new ServerboundSteerPayload(activeHelmPos, accumulatedRudder, true));
             lastSentRudder = accumulatedRudder;
             sendCooldown = 2;
+            heartbeatTicks = 0;
         }
     }
 

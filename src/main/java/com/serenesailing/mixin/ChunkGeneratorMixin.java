@@ -28,7 +28,9 @@ public abstract class ChunkGeneratorMixin {
     private static final int SABLE_PLOT_COORD_LIMIT = 100_000_000;
 
     private static boolean serenesailing$isPlotSpaceCoordinate(int x, int z) {
-        return Math.abs(x) > SABLE_PLOT_COORD_LIMIT || Math.abs(z) > SABLE_PLOT_COORD_LIMIT;
+        // Not Math.abs: Math.abs(Integer.MIN_VALUE) is still negative, and -2^31 is exactly the plot boundary.
+        return x > SABLE_PLOT_COORD_LIMIT || x < -SABLE_PLOT_COORD_LIMIT
+                || z > SABLE_PLOT_COORD_LIMIT || z < -SABLE_PLOT_COORD_LIMIT;
     }
 
     /**

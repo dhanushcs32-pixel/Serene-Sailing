@@ -27,7 +27,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
     private void serenesailing$guardBaseHeight(int x, int z, Heightmap.Types type,
                                                LevelHeightAccessor level, RandomState random,
                                                CallbackInfoReturnable<Integer> cir) {
-        if (Math.abs(x) > 100_000_000 || Math.abs(z) > 100_000_000) {
+        // Not Math.abs: Math.abs(Integer.MIN_VALUE) is still negative, and -2^31 is exactly the plot boundary.
+        if (x > 100_000_000 || x < -100_000_000 || z > 100_000_000 || z < -100_000_000) {
             cir.setReturnValue(level.getMinBuildHeight());
         }
     }
