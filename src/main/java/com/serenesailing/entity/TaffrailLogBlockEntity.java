@@ -138,7 +138,7 @@ public class TaffrailLogBlockEntity extends BlockEntity {
             this.speedMs = 0.0f;
         }
         this.prevSpeedMs = this.speedMs;
-        this.redstoneSignal = tag.getInt("Signal");
+        this.redstoneSignal = Mth.clamp(tag.getInt("Signal"), 0, 15);
     }
 
     @Override

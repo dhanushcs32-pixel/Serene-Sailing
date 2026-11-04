@@ -49,7 +49,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import weather2.util.WindReader;
+import com.serenesailing.compat.weather2.Weather2Wind;
 
 import com.serenesailing.registry.ModSounds;
 import net.minecraft.sounds.SoundSource;
@@ -203,9 +203,12 @@ public class ServerPhysicsHandler {
                     ? level.getServer().getLevel(Level.OVERWORLD)
                     : null;
         }
-        if (WindReader.getWeatherManagerFor(serverLevel) == null) {
+        if (!Weather2Wind.isLoaded()) {
+            return serverLevel; // optional dependency absent
+        }
+        if (!Weather2Wind.hasManager(serverLevel)) {
             ServerLevel overworld = serverLevel.getServer().getLevel(Level.OVERWORLD);
-            if (overworld != null && WindReader.getWeatherManagerFor(overworld) != null) {
+            if (overworld != null && Weather2Wind.hasManager(overworld)) {
                 return overworld;
             }
         }
@@ -223,8 +226,9 @@ public class ServerPhysicsHandler {
         // Prevents angle jumping, sudden 180 flips, and ensures natural gradual drift over minutes
         for (ServerLevel serverLevel : server.getAllLevels()) {
             ServerLevel weatherLevel = resolveWeatherQueryLevel(serverLevel);
-            float targetAngle = weatherLevel != null ? WindReader.getWindAngle(weatherLevel) : 0.0f;
-            float targetSpeed = weatherLevel != null ? WindReader.getWindSpeed(weatherLevel) : 0.0f;
+            final boolean hasWeather2 = weatherLevel != null && Weather2Wind.isLoaded();
+            float targetAngle = hasWeather2 ? Weather2Wind.windAngle(weatherLevel) : 0.0f;
+            float targetSpeed = hasWeather2 ? Weather2Wind.windSpeed(weatherLevel) : 0.0f;
 
             double targetRad = Math.toRadians(targetAngle);
             double targetX = -Math.sin(targetRad) * targetSpeed;
@@ -281,15 +285,34 @@ public class ServerPhysicsHandler {
 
         // Periodic orphan cache eviction (every 100 ticks): clean up disassembled or unloaded contraptions
         if (stepCounter.get() % 100 == 0) {
-            STEERING_CACHE.keySet().retainAll(activeSubLevelIds);
-            STEERING_CACHE_STEP.keySet().retainAll(activeSubLevelIds);
-            CREAK_COOLDOWN.keySet().retainAll(activeSubLevelIds);
-            HELM_ANGLE_CACHE.keySet().retainAll(activeSubLevelIds);
-            VESSEL_VELOCITY_CACHE.keySet().retainAll(activeSubLevelIds);
-            FORWARD_SPEED_CACHE.keySet().retainAll(activeSubLevelIds);
-            PREV_HEADING_CACHE.keySet().retainAll(activeSubLevelIds);
-            PHYS_DEBUG_TICK.keySet().retainAll(activeSubLevelIds);
-            LAST_BILGE_PURGE_TICK.keySet().retainAll(activeSubLevelIds);
+            // This event fires once per physics substep for EVERY dimension's physics system (also ones with no ships),
+            // and the caches are shared by all dimensions. Retain the ships of every level, not just this one, or a
+            // ship-less dimension wipes the helm angle / velocity / heading of ships sailing elsewhere.
+            final Set<UUID> allActive = new HashSet<>(activeSubLevelIds);
+            final MinecraftServer server = level.getServer();
+            if (server != null) {
+                for (ServerLevel other : server.getAllLevels()) {
+                    if (other == level) {
+                        continue;
+                    }
+                    if (SubLevelContainer.getContainer(other) instanceof ServerSubLevelContainer otherContainer) {
+                        for (ServerSubLevel otherSub : otherContainer.getAllSubLevels()) {
+                            if (!otherSub.isRemoved()) {
+                                allActive.add(otherSub.getUniqueId());
+                            }
+                        }
+                    }
+                }
+            }
+            STEERING_CACHE.keySet().retainAll(allActive);
+            STEERING_CACHE_STEP.keySet().retainAll(allActive);
+            CREAK_COOLDOWN.keySet().retainAll(allActive);
+            HELM_ANGLE_CACHE.keySet().retainAll(allActive);
+            VESSEL_VELOCITY_CACHE.keySet().retainAll(allActive);
+            FORWARD_SPEED_CACHE.keySet().retainAll(allActive);
+            PREV_HEADING_CACHE.keySet().retainAll(allActive);
+            PHYS_DEBUG_TICK.keySet().retainAll(allActive);
+            LAST_BILGE_PURGE_TICK.keySet().retainAll(allActive);
         }
     }
 
@@ -1892,7 +1915,13 @@ public class ServerPhysicsHandler {
         }
         double time = (double) level.getGameTime();
         double waveOffset = WAVE_HEIGHT_HOOK.getWaveHeight(level, x, z, time);
-        return level.getFluidState(BlockPos.containing(x, y - waveOffset, z)).is(FluidTags.WATER);
+        BlockPos probe = BlockPos.containing(x, y - waveOffset, z);
+        // A hull sample point can lie in an unloaded chunk; Level#getFluidState would load / generate it synchronously
+        // from inside the physics step.
+        if (!level.hasChunkAt(probe)) {
+            return false;
+        }
+        return level.getFluidState(probe).is(FluidTags.WATER);
     }
 
     private static boolean isWaterAt(ServerLevel level, double x, double y, double z) {
