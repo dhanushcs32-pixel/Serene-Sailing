@@ -48,7 +48,7 @@ Whether you're exploring tranquil coastlines on a wooden sloop or captaining a m
 
 <p align="center">
   <!-- PLACEHOLDER: Waves Screenshot -->
-  <img src="docs/images/ocean_waves.png" alt="Dynamic 3D Ocean Waves and Rolling Swells" width="85%" />
+  <img src="docs/images/ocean_waves.png" alt="SavannahDeck.png" width="85%" />
   <br>
   <em>Realistic 3D waves lift and roll your vessel as you journey across the ocean.</em>
 </p>
