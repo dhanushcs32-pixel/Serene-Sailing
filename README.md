@@ -64,7 +64,7 @@ Whether you're exploring tranquil coastlines on a wooden sloop or captaining a m
 
 <p align="center">
   <!-- PLACEHOLDER: Ship in Tornado Screenshot -->
-  <img src="docs/images/ship_in_tornado.png" alt="Ship Navigating a Fierce Storm and Tornado" width="85%" />
+  <img src="docs/images/ship_in_tornado.png" alt="ShipDeckInTornado.png" width="85%" />
   <br>
   <em>Brave violent tempests and towering waves in high-stakes survival sailing.</em>
 </p>
