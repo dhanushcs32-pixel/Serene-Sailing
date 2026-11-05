@@ -22,7 +22,9 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
@@ -40,53 +42,58 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * Hands-free shipwright inspection overlay.
  *
- * <p>
- * Activated whenever the local player wears {@link ShipwrightSpectaclesItem} in
- * their HEAD armor slot
- * or holds it in either hand. Dynamically performs connected block flood-fills
- * on unassembled structures
- * and displays color-coded wireframe bounding boxes (helm, sails, rudder,
- * capstan, hull bounds, leaks)
- * as well as a nautical HUD readout.
- * </p>
+ * <p>Activated when the local player wears {@link ShipwrightSpectaclesItem} in their HEAD armor slot
+ * or holds it in either hand.
+ *
+ * <p>Transitively links all Create Super Glue boxes across the entire vessel (bow to stern, keel to masthead),
+ * counts all glued ship blocks, and highlights <b>ONLY disconnected / unglued blocks</b> in pulsing red/orange
+ * wireframes while keeping the rest of the ship clean and readable.</p>
  */
 @EventBusSubscriber(modid = SereneSailing.MOD_ID, value = Dist.CLIENT)
 public final class ShipwrightSpectaclesOverlay {
 
-    public static final int MAX_INSPECT_BLOCKS = 1024;
-    private static final int SEARCH_RADIUS_XZ = 32;
-    private static final int SEARCH_RADIUS_Y = 24;
+    public static final int MAX_SHIP_BLOCKS = 32768;
+    private static final double GLUE_SEARCH_RADIUS = 96.0;
 
     private static BlockPos lastTargetPos = null;
     private static long lastScanTick = -1;
     private static InspectionResult cachedResult = null;
 
-    private ShipwrightSpectaclesOverlay() {
-    }
+    private ShipwrightSpectaclesOverlay() {}
 
     public static final class InspectionResult {
         public final BlockPos origin;
-        public final Set<BlockPos> connectedBlocks;
-        public final List<BlockPos> helms = new ArrayList<>();
-        public final List<BlockPos> sails = new ArrayList<>();
-        public final List<BlockPos> rudders = new ArrayList<>();
-        public final List<BlockPos> capstans = new ArrayList<>();
-        public final List<BlockPos> instruments = new ArrayList<>();
-        public final List<BlockPos> potentialLeaks = new ArrayList<>();
-        public AABB boundingBox;
+        public final Set<BlockPos> gluedBlocks = new HashSet<>();
+        public final List<AABB> linkedGlueBoxes = new ArrayList<>();
+        public final Set<BlockPos> disconnectedBlocks = new HashSet<>();
+        public AABB gluedBounds = null;
 
-        public InspectionResult(BlockPos origin, Set<BlockPos> connectedBlocks, AABB boundingBox) {
+        public int helms = 0;
+        public int sails = 0;
+        public int rudders = 0;
+        public int capstans = 0;
+        public int instruments = 0;
+
+        public InspectionResult(BlockPos origin) {
             this.origin = origin;
-            this.connectedBlocks = connectedBlocks;
-            this.boundingBox = boundingBox;
         }
+    }
+
+    public static boolean isSuperGlueEntity(Entity entity) {
+        if (entity == null) return false;
+        String className = entity.getClass().getName();
+        if (className.contains("SuperGlue")) return true;
+        var key = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
+        return key != null && key.getPath().contains("super_glue");
     }
 
     private static boolean isInspectableBlock(ClientLevel level, BlockPos pos, BlockState state) {
@@ -95,6 +102,18 @@ public final class ShipwrightSpectaclesOverlay {
         }
         FluidState fluid = state.getFluidState();
         if (!fluid.isEmpty() && !HoldBlocks.isHull(state)) {
+            return false;
+        }
+        // Exclude natural seabed terrain
+        if (state.is(BlockTags.BASE_STONE_OVERWORLD)
+                || state.is(BlockTags.DIRT)
+                || state.is(BlockTags.SAND)
+                || state.is(Blocks.GRAVEL)
+                || state.is(Blocks.CLAY)
+                || state.is(Blocks.SEAGRASS)
+                || state.is(Blocks.TALL_SEAGRASS)
+                || state.is(Blocks.KELP)
+                || state.is(Blocks.KELP_PLANT)) {
             return false;
         }
         if (state.is(ModBlocks.HELM.get())
@@ -117,12 +136,18 @@ public final class ShipwrightSpectaclesOverlay {
                 || state.is(BlockTags.WOODEN_DOORS)
                 || state.is(BlockTags.WOODEN_TRAPDOORS)
                 || state.is(BlockTags.WOOL)
+                || state.is(BlockTags.BEDS)
                 || state.is(Blocks.IRON_BLOCK)
                 || state.is(Blocks.COPPER_BLOCK)
                 || state.is(Blocks.CHAIN)
                 || state.is(Blocks.LANTERN)
+                || state.is(Blocks.SOUL_LANTERN)
                 || state.is(Blocks.CHEST)
-                || state.is(Blocks.BARREL);
+                || state.is(Blocks.TRAPPED_CHEST)
+                || state.is(Blocks.BARREL)
+                || state.is(Blocks.GLASS)
+                || state.is(Blocks.GLASS_PANE)
+                || state.is(BlockTags.IMPERMEABLE);
     }
 
     private static InspectionResult inspect(ClientLevel level, BlockPos origin) {
@@ -131,67 +156,211 @@ public final class ShipwrightSpectaclesOverlay {
             return null;
         }
 
-        Set<BlockPos> visited = new HashSet<>();
-        Deque<BlockPos> queue = new ArrayDeque<>();
-        queue.add(origin);
-        visited.add(origin);
+        InspectionResult res = new InspectionResult(origin);
 
-        int minX = origin.getX(), minY = origin.getY(), minZ = origin.getZ();
-        int maxX = origin.getX(), maxY = origin.getY(), maxZ = origin.getZ();
+        // 1. Gather all SuperGlue entities in the search volume
+        AABB searchArea = new AABB(origin).inflate(GLUE_SEARCH_RADIUS);
+        List<Entity> allGlueEntities = level.getEntities((Entity) null, searchArea, ShipwrightSpectaclesOverlay::isSuperGlueEntity);
 
-        InspectionResult res = new InspectionResult(origin, visited, null);
+        // 2. Identify the seed glue entity containing or directly adjacent to origin
+        List<Entity> seedGlue = new ArrayList<>();
+        Vec3 originCenter = Vec3.atCenterOf(origin);
+        for (Entity glue : allGlueEntities) {
+            if (glue.getBoundingBox().inflate(0.5).contains(originCenter)) {
+                seedGlue.add(glue);
+            }
+        }
+        if (seedGlue.isEmpty()) {
+            for (Entity glue : allGlueEntities) {
+                if (glue.getBoundingBox().inflate(1.5).contains(originCenter)) {
+                    seedGlue.add(glue);
+                }
+            }
+        }
 
-        while (!queue.isEmpty() && visited.size() < MAX_INSPECT_BLOCKS) {
-            BlockPos current = queue.poll();
-            BlockState st = level.getBlockState(current);
+        // 3. Transitive BFS over all intersecting / touching SuperGlue boxes
+        Set<Entity> linkedGlue = new HashSet<>(seedGlue);
+        Deque<Entity> glueQueue = new ArrayDeque<>(seedGlue);
 
-            minX = Math.min(minX, current.getX());
-            minY = Math.min(minY, current.getY());
-            minZ = Math.min(minZ, current.getZ());
-            maxX = Math.max(maxX, current.getX());
-            maxY = Math.max(maxY, current.getY());
-            maxZ = Math.max(maxZ, current.getZ());
+        while (!glueQueue.isEmpty()) {
+            Entity current = glueQueue.poll();
+            AABB boxA = current.getBoundingBox().inflate(0.25);
 
-            if (st.is(ModBlocks.HELM.get()))
-                res.helms.add(current);
-            else if (st.is(ModBlocks.CANVAS_SAIL.get()))
-                res.sails.add(current);
-            else if (st.is(ModBlocks.RUDDER.get()))
-                res.rudders.add(current);
-            else if (st.is(ModBlocks.CAPSTAN.get()))
-                res.capstans.add(current);
-            else if (st.is(ModBlocks.WIND_VANE.get()) || st.is(ModBlocks.TAFFRAIL_LOG.get()))
-                res.instruments.add(current);
+            for (Entity other : allGlueEntities) {
+                if (linkedGlue.contains(other)) continue;
+                AABB boxB = other.getBoundingBox().inflate(0.25);
+                if (boxA.intersects(boxB)) {
+                    linkedGlue.add(other);
+                    glueQueue.add(other);
+                }
+            }
+        }
 
-            // Waterline leak detection (submerged blocks bordering exterior water)
-            if (current.getY() <= 63) {
-                for (Direction dir : Direction.values()) {
-                    BlockPos neighbor = current.relative(dir);
-                    if (!visited.contains(neighbor) && level.getBlockState(neighbor).is(Blocks.WATER)) {
-                        if (!HoldBlocks.isHull(st)) {
-                            res.potentialLeaks.add(current);
-                            break;
+        int shipMinY = Integer.MAX_VALUE;
+
+        // 4. Collect all glued ship blocks inside the linked glue boxes
+        if (!linkedGlue.isEmpty()) {
+            for (Entity glue : linkedGlue) {
+                AABB bb = glue.getBoundingBox();
+                res.linkedGlueBoxes.add(bb);
+
+                int minX = (int) Math.floor(bb.minX);
+                int maxX = (int) Math.ceil(bb.maxX);
+                int minY = (int) Math.floor(bb.minY);
+                int maxY = (int) Math.ceil(bb.maxY);
+                int minZ = (int) Math.floor(bb.minZ);
+                int maxZ = (int) Math.ceil(bb.maxZ);
+
+                for (int y = minY; y < maxY; y++) {
+                    for (int z = minZ; z < maxZ; z++) {
+                        for (int x = minX; x < maxX; x++) {
+                            if (res.gluedBlocks.size() >= MAX_SHIP_BLOCKS) break;
+                            BlockPos p = new BlockPos(x, y, z);
+                            BlockState st = level.getBlockState(p);
+                            if (isInspectableBlock(level, p, st)) {
+                                res.gluedBlocks.add(p);
+                                if (p.getY() < shipMinY) {
+                                    shipMinY = p.getY();
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            for (Direction dir : Direction.values()) {
-                BlockPos next = current.relative(dir);
-                if (Math.abs(next.getX() - origin.getX()) > SEARCH_RADIUS_XZ
-                        || Math.abs(next.getZ() - origin.getZ()) > SEARCH_RADIUS_XZ
-                        || Math.abs(next.getY() - origin.getY()) > SEARCH_RADIUS_Y) {
-                    continue;
+            // Also attach self-connecting canvas sail sheets that touch glued blocks
+            List<BlockPos> sailSeeds = new ArrayList<>();
+            for (BlockPos p : res.gluedBlocks) {
+                if (level.getBlockState(p).is(ModBlocks.CANVAS_SAIL.get())) {
+                    sailSeeds.add(p);
+                } else {
+                    for (Direction dir : Direction.values()) {
+                        BlockPos np = p.relative(dir);
+                        if (!res.gluedBlocks.contains(np) && level.getBlockState(np).is(ModBlocks.CANVAS_SAIL.get())) {
+                            sailSeeds.add(np);
+                        }
+                    }
                 }
-                if (visited.add(next)) {
-                    if (isInspectableBlock(level, next, level.getBlockState(next))) {
-                        queue.add(next);
+            }
+            for (BlockPos seed : sailSeeds) {
+                List<BlockPos> sheet = com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(
+                        seed, 1024, pos -> level.getBlockState(pos).is(ModBlocks.CANVAS_SAIL.get())
+                );
+                for (BlockPos sp : sheet) {
+                    if (res.gluedBlocks.size() < MAX_SHIP_BLOCKS) {
+                        res.gluedBlocks.add(sp);
+                        if (sp.getY() < shipMinY) {
+                            shipMinY = sp.getY();
+                        }
+                    }
+                }
+            }
+
+            // Compute overall glued bounds
+            int gMinX = Integer.MAX_VALUE, gMinY = Integer.MAX_VALUE, gMinZ = Integer.MAX_VALUE;
+            int gMaxX = Integer.MIN_VALUE, gMaxY = Integer.MIN_VALUE, gMaxZ = Integer.MIN_VALUE;
+            for (BlockPos p : res.gluedBlocks) {
+                gMinX = Math.min(gMinX, p.getX());
+                gMinY = Math.min(gMinY, p.getY());
+                gMinZ = Math.min(gMinZ, p.getZ());
+                gMaxX = Math.max(gMaxX, p.getX());
+                gMaxY = Math.max(gMaxY, p.getY());
+                gMaxZ = Math.max(gMaxZ, p.getZ());
+
+                BlockState st = level.getBlockState(p);
+                if (st.is(ModBlocks.HELM.get())) res.helms++;
+                else if (st.is(ModBlocks.CANVAS_SAIL.get())) res.sails++;
+                else if (st.is(ModBlocks.RUDDER.get())) res.rudders++;
+                else if (st.is(ModBlocks.CAPSTAN.get())) res.capstans++;
+                else if (st.is(ModBlocks.WIND_VANE.get()) || st.is(ModBlocks.TAFFRAIL_LOG.get())) res.instruments++;
+            }
+            if (!res.gluedBlocks.isEmpty()) {
+                res.gluedBounds = new AABB(gMinX, gMinY, gMinZ, gMaxX + 1, gMaxY + 1, gMaxZ + 1);
+            }
+
+            // 5. Find ONLY disconnected / unglued blocks (within 4 blocks outward of gluedBlocks, above shipMinY)
+            Deque<BlockPos> frontier = new ArrayDeque<>();
+            Map<BlockPos, Integer> distanceMap = new HashMap<>();
+
+            for (BlockPos p : res.gluedBlocks) {
+                for (Direction dir : Direction.values()) {
+                    BlockPos np = p.relative(dir);
+                    if (!res.gluedBlocks.contains(np) && np.getY() >= shipMinY) {
+                        BlockState st = level.getBlockState(np);
+                        if (isInspectableBlock(level, np, st)) {
+                            if (res.disconnectedBlocks.add(np)) {
+                                frontier.add(np);
+                                distanceMap.put(np, 1);
+                            }
+                        }
+                    }
+                }
+            }
+
+            while (!frontier.isEmpty()) {
+                BlockPos curr = frontier.poll();
+                int dist = distanceMap.getOrDefault(curr, 1);
+                if (dist >= 4) continue;
+
+                for (Direction dir : Direction.values()) {
+                    BlockPos next = curr.relative(dir);
+                    if (!res.gluedBlocks.contains(next) && !res.disconnectedBlocks.contains(next) && next.getY() >= shipMinY) {
+                        BlockState st = level.getBlockState(next);
+                        if (isInspectableBlock(level, next, st)) {
+                            res.disconnectedBlocks.add(next);
+                            distanceMap.put(next, dist + 1);
+                            frontier.add(next);
+                        }
+                    }
+                }
+            }
+
+            // Also check unlinked glue entities within 6 blocks of the ship
+            if (res.gluedBounds != null) {
+                AABB nearShip = res.gluedBounds.inflate(6.0);
+                for (Entity otherGlue : allGlueEntities) {
+                    if (linkedGlue.contains(otherGlue)) continue;
+                    AABB otherBox = otherGlue.getBoundingBox();
+                    if (nearShip.intersects(otherBox)) {
+                        int minX = (int) Math.floor(otherBox.minX);
+                        int maxX = (int) Math.ceil(otherBox.maxX);
+                        int minY = (int) Math.floor(otherBox.minY);
+                        int maxY = (int) Math.ceil(otherBox.maxY);
+                        int minZ = (int) Math.floor(otherBox.minZ);
+                        int maxZ = (int) Math.ceil(otherBox.maxZ);
+                        for (int y = Math.max(minY, shipMinY); y < maxY; y++) {
+                            for (int z = minZ; z < maxZ; z++) {
+                                for (int x = minX; x < maxX; x++) {
+                                    BlockPos p = new BlockPos(x, y, z);
+                                    if (!res.gluedBlocks.contains(p) && isInspectableBlock(level, p, level.getBlockState(p))) {
+                                        res.disconnectedBlocks.add(p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // No glue present at all: scan connected structure from origin as unglued blocks
+            Deque<BlockPos> q = new ArrayDeque<>();
+            q.add(origin);
+            res.disconnectedBlocks.add(origin);
+            while (!q.isEmpty() && res.disconnectedBlocks.size() < 1024) {
+                BlockPos curr = q.poll();
+                for (Direction dir : Direction.values()) {
+                    BlockPos next = curr.relative(dir);
+                    if (res.disconnectedBlocks.add(next)) {
+                        if (isInspectableBlock(level, next, level.getBlockState(next))) {
+                            q.add(next);
+                        } else {
+                            res.disconnectedBlocks.remove(next);
+                        }
                     }
                 }
             }
         }
 
-        res.boundingBox = new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1);
         return res;
     }
 
@@ -242,8 +411,7 @@ public final class ShipwrightSpectaclesOverlay {
                 BoundingBox3dc bb = sub.boundingBox();
                 if (bb != null) {
                     AABB box = new AABB(bb.minX(), bb.minY(), bb.minZ(), bb.maxX(), bb.maxY(), bb.maxZ());
-                    if (box.inflate(4.0).contains(player.position()) || (targetPos != null
-                            && box.contains(targetPos.getX(), targetPos.getY(), targetPos.getZ()))) {
+                    if (box.inflate(4.0).contains(player.position()) || (targetPos != null && box.contains(targetPos.getX(), targetPos.getY(), targetPos.getZ()))) {
                         HoldScanner.Envelope env = HoldRegistry.activeEnvelope(sub);
                         float r = env != null ? 0.3f : 0.8f;
                         float g = env != null ? 0.9f : 0.6f;
@@ -254,50 +422,28 @@ public final class ShipwrightSpectaclesOverlay {
             }
         }
 
-        // 2. Highlight unassembled ship block structure
-        if (cachedResult != null && !cachedResult.connectedBlocks.isEmpty()) {
-            // Overall hull bounds: antique brass wireframe
-            LevelRenderer.renderLineBox(poseStack, lines, cachedResult.boundingBox, 0.95f, 0.80f, 0.25f, 0.90f);
-
-            // Targeted block: white outline
-            LevelRenderer.renderLineBox(poseStack, lines, new AABB(cachedResult.origin), 1.0f, 1.0f, 1.0f, 1.0f);
-
-            // Helms: bright gold
-            for (BlockPos pos : cachedResult.helms) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 1.0f, 0.85f, 0.1f, 1.0f);
-            }
-            // Sails: sky-blue / cyan
-            for (BlockPos pos : cachedResult.sails) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 0.35f, 0.85f, 1.0f, 0.85f);
-            }
-            // Rudders: emerald green
-            for (BlockPos pos : cachedResult.rudders) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 0.2f, 1.0f, 0.45f, 0.95f);
-            }
-            // Capstans: bronze / copper
-            for (BlockPos pos : cachedResult.capstans) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 0.85f, 0.5f, 0.15f, 0.95f);
-            }
-            // Wind Vanes & Taffrail Logs: warm amber
-            for (BlockPos pos : cachedResult.instruments) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 1.0f, 0.6f, 0.2f, 0.95f);
-            }
-            // Potential Leaks: warning red
-            for (BlockPos pos : cachedResult.potentialLeaks) {
-                LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos).inflate(0.02), 1.0f, 0.15f, 0.15f, 0.95f);
+        // 2. Render Unassembled Ship Glue & ONLY Disconnected Blocks
+        if (cachedResult != null) {
+            // (A) Draw subtle faint green boxes around each linked SuperGlueEntity zone (DO NOT clutter individual blocks!)
+            for (AABB glueBox : cachedResult.linkedGlueBoxes) {
+                LevelRenderer.renderLineBox(poseStack, lines, glueBox.inflate(0.02), 0.20f, 0.95f, 0.35f, 0.25f);
             }
 
-            // Regular hull blocks: subtle nautical cyan for blocks within 12m of target
-            double targetX = cachedResult.origin.getX();
-            double targetY = cachedResult.origin.getY();
-            double targetZ = cachedResult.origin.getZ();
-            for (BlockPos pos : cachedResult.connectedBlocks) {
-                double distSq = pos.distToCenterSqr(targetX, targetY, targetZ);
-                if (distSq <= 144.0 && !cachedResult.helms.contains(pos) && !cachedResult.sails.contains(pos)
-                        && !cachedResult.rudders.contains(pos) && !cachedResult.capstans.contains(pos)
-                        && !cachedResult.instruments.contains(pos) && !pos.equals(cachedResult.origin)) {
-                    LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 0.25f, 0.65f, 0.90f, 0.35f);
-                }
+            // (B) Faint outer brass hull bounding box
+            if (cachedResult.gluedBounds != null) {
+                LevelRenderer.renderLineBox(poseStack, lines, cachedResult.gluedBounds, 0.90f, 0.75f, 0.20f, 0.35f);
+            }
+
+            // (C) Targeted block single white outline
+            if (targetPos != null) {
+                LevelRenderer.renderLineBox(poseStack, lines, new AABB(targetPos).inflate(0.01), 1.0f, 1.0f, 1.0f, 0.75f);
+            }
+
+            // (D) ONLY Disconnected / Unglued blocks: High-visibility pulsing Red/Orange wireframe!
+            float pulse = 0.65f + 0.35f * (float) Math.sin(gameTime * 0.35f);
+            for (BlockPos pos : cachedResult.disconnectedBlocks) {
+                AABB redBox = new AABB(pos).inflate(0.005);
+                LevelRenderer.renderLineBox(poseStack, lines, redBox, 1.0f, 0.25f, 0.15f, pulse);
             }
         }
 
@@ -313,7 +459,7 @@ public final class ShipwrightSpectaclesOverlay {
             return;
         }
 
-        if (cachedResult == null || cachedResult.connectedBlocks.isEmpty()) {
+        if (cachedResult == null) {
             return;
         }
 
@@ -321,32 +467,32 @@ public final class ShipwrightSpectaclesOverlay {
         Font font = mc.font;
         int screenWidth = graphics.guiWidth();
 
-        int blockCount = cachedResult.connectedBlocks.size();
-        int helms = cachedResult.helms.size();
-        int sails = cachedResult.sails.size();
-        int rudders = cachedResult.rudders.size();
-        int capstans = cachedResult.capstans.size();
-        int leaks = cachedResult.potentialLeaks.size();
+        int gluedCount = cachedResult.gluedBlocks.size();
+        int glueZones = cachedResult.linkedGlueBoxes.size();
+        int disconnCount = cachedResult.disconnectedBlocks.size();
 
-        int dx = (int) Math.round(cachedResult.boundingBox.getXsize());
-        int dy = (int) Math.round(cachedResult.boundingBox.getYsize());
-        int dz = (int) Math.round(cachedResult.boundingBox.getZsize());
+        int helms = cachedResult.helms;
+        int sails = cachedResult.sails;
+        int rudders = cachedResult.rudders;
+        int capstans = cachedResult.capstans;
 
-        String title = "§6⚓ Shipwright's Spectacles §7(" + blockCount + " Blocks, " + dx + "×" + dy + "×" + dz + ")";
+        String title = "§6⚓ Shipwright's Spectacles §7(" + String.format("%,d", gluedCount) + " Glued Blocks | " + glueZones + " Linked Glue Zones)";
         String comp = "§fHelm: " + (helms > 0 ? "§a" + helms : "§c0")
                 + " §7| §fSails: " + (sails > 0 ? "§b" + sails : "§70")
                 + " §7| §fRudder: " + (rudders > 0 ? "§a" + rudders : "§70")
                 + " §7| §fAnchor: " + (capstans > 0 ? "§6" + capstans : "§70");
 
         String status;
-        if (leaks > 0) {
-            status = "§c⚠ " + leaks + " Leaks Detected Below Waterline!";
+        if (disconnCount > 0) {
+            status = "§c⚠ " + disconnCount + " Disconnected / Unglued Blocks Highlighted in Red!";
+        } else if (gluedCount == 0) {
+            status = "§e⚠ Looking at unglued blocks (Apply Create Super Glue)";
         } else if (helms == 0) {
             status = "§e⚠ Missing Helm (Ship's Wheel) station";
         } else if (sails == 0 && rudders == 0) {
-            status = "§e⚠ Vessel has no sails or rudder configured";
+            status = "§e⚠ Vessel has no sails or rudder attached";
         } else {
-            status = "§a✔ Watertight & Ready for Assembling";
+            status = "§a✔ All Ship Blocks Glued & Connected (0 Disconnected)";
         }
 
         int maxTextWidth = Math.max(font.width(title), Math.max(font.width(comp), font.width(status)));
