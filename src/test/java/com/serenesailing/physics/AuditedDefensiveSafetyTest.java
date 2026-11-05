@@ -597,4 +597,56 @@ public class AuditedDefensiveSafetyTest {
         // Distant sheet should only include x = 0..48 (49 blocks)
         assertEquals(49, distantSheet.size(), "Search must not exceed MAX_SEARCH_RADIUS (48 blocks)");
     }
+
+    @Test
+    @DisplayName("Audit: Shipwright's Spectacles model, recipe, and creative tab registration validity")
+    public void testShipwrightSpectaclesRegistrationAndLowercaseResourceLocations() throws Exception {
+        // 1. Check model JSON textures and parent for strictly lowercase valid resource locations and 3D rendering
+        Path modelPath = Path.of("src/main/resources/assets/serenesailing/models/item/shipwright_spectacles.json");
+        assertTrue(Files.exists(modelPath), "shipwright_spectacles.json model must exist");
+        String modelContent = Files.readString(modelPath);
+        JsonObject modelJson = JsonParser.parseString(modelContent).getAsJsonObject();
+        assertTrue(modelJson.has("parent"), "Model must have parent");
+        assertEquals("minecraft:block/block", modelJson.get("parent").getAsString(),
+                "Model parent must be 'minecraft:block/block' so 3D elements render (not 2D item/generated)");
+        assertTrue(modelJson.has("textures"), "Model must have textures block");
+        JsonObject textures = modelJson.getAsJsonObject("textures");
+        for (Map.Entry<String, com.google.gson.JsonElement> entry : textures.entrySet()) {
+            String path = entry.getValue().getAsString();
+            assertEquals(path.toLowerCase(), path, "Texture path '" + path + "' must be strictly lowercase");
+            assertTrue(path.matches("[a-z0-9_.-]+:[a-z0-9_/.-]+"), "Texture path must be a valid ResourceLocation: " + path);
+        }
+
+        // 2. Check recipe JSON for valid lowercase identifiers
+        Path recipePath = Path.of("src/main/resources/data/serenesailing/recipe/shipwright_spectacles.json");
+        assertTrue(Files.exists(recipePath), "shipwright_spectacles recipe must exist");
+        String recipeContent = Files.readString(recipePath);
+        JsonObject recipeJson = JsonParser.parseString(recipeContent).getAsJsonObject();
+        String resultId = recipeJson.getAsJsonObject("result").get("id").getAsString();
+        assertEquals("serenesailing:shipwright_spectacles", resultId);
+        assertEquals(resultId.toLowerCase(), resultId, "Recipe result must be lowercase");
+
+        // 3. Verify ModItems defines SHIPWRIGHT_SPECTACLES
+        Path itemsSourcePath = Path.of("src/main/java/com/serenesailing/registry/ModItems.java");
+        assertTrue(Files.exists(itemsSourcePath));
+        String itemsSource = Files.readString(itemsSourcePath);
+        assertTrue(itemsSource.contains("SHIPWRIGHT_SPECTACLES"), "ModItems must define SHIPWRIGHT_SPECTACLES");
+        assertTrue(itemsSource.contains("\"shipwright_spectacles\""), "ModItems must register with id 'shipwright_spectacles'");
+
+        // 4. Verify ModCreativeModeTabs source file explicitly includes SHIPWRIGHT_SPECTACLES
+        Path tabSourcePath = Path.of("src/main/java/com/serenesailing/registry/ModCreativeModeTabs.java");
+        assertTrue(Files.exists(tabSourcePath));
+        String tabSource = Files.readString(tabSourcePath);
+        assertTrue(tabSource.contains("SHIPWRIGHT_SPECTACLES"), "ModCreativeModeTabs must accept SHIPWRIGHT_SPECTACLES");
+        assertTrue(tabSource.contains("output.accept(ModItems.SHIPWRIGHT_SPECTACLES.get());"),
+                "ModCreativeModeTabs must call output.accept(ModItems.SHIPWRIGHT_SPECTACLES.get())");
+
+        // 5. Verify SereneSailing hooks BuildCreativeModeTabContentsEvent for vanilla tabs
+        Path modSourcePath = Path.of("src/main/java/com/serenesailing/SereneSailing.java");
+        assertTrue(Files.exists(modSourcePath));
+        String modSource = Files.readString(modSourcePath);
+        assertTrue(modSource.contains("BuildCreativeModeTabContentsEvent"), "SereneSailing must listen to BuildCreativeModeTabContentsEvent");
+        assertTrue(modSource.contains("TOOLS_AND_UTILITIES"), "SereneSailing must add spectacles to TOOLS_AND_UTILITIES");
+        assertTrue(modSource.contains("COMBAT"), "SereneSailing must add spectacles to COMBAT");
+    }
 }
