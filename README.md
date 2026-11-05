@@ -1,8 +1,8 @@
 # Serene Sailing
 
 <p align="center">
-  <!-- PLACEHOLDER: Mod Icon -->
-  <img src="docs/images/mod_icon.png" alt="Create-SereneSailingIcon.png" width="160" />
+  <!-- Mod Icon -->
+  <img src="Create-SereneSailingIcon.png" alt="Serene Sailing Mod Icon" width="160" />
 </p>
 
 <p align="center">
@@ -26,8 +26,8 @@
 Whether you're exploring tranquil coastlines on a wooden sloop or captaining a multi-masted galleon through a violent gale, Serene Sailing brings the romance and challenge of the Age of Sail to life.
 
 <p align="center">
-  <!-- PLACEHOLDER: Ships Screenshot -->
-  <img src="docs/images/ships_showcase.png" alt="AllBoatsWithTown.png" width="85%" />
+  <!-- Ships Screenshot -->
+  <img src="Allboatswithtown.png" alt="Build and captain authentic sailing vessels" width="85%" />
   <br>
   <em>Build and captain authentic sailing vessels, from coastal sloops to majestic frigates.</em>
 </p>
@@ -47,8 +47,8 @@ Whether you're exploring tranquil coastlines on a wooden sloop or captaining a m
 - **Coastal Breakers & Spray:** Foaming surf rolls toward beaches and shoals, accompanied by sea spray and bow wakes as your ship cuts through the water.
 
 <p align="center">
-  <!-- PLACEHOLDER: Waves Screenshot -->
-  <img src="docs/images/ocean_waves.png" alt="SavannahDeck.png" width="85%" />
+  <!-- Waves Screenshot -->
+  <img src="SavannahDeck.png" alt="Dynamic 3D ocean waves and rolling swells" width="85%" />
   <br>
   <em>Realistic 3D waves lift and roll your vessel as you journey across the ocean.</em>
 </p>
@@ -63,8 +63,8 @@ Whether you're exploring tranquil coastlines on a wooden sloop or captaining a m
 - **Weather2 Integration:** When used alongside Weather2, your ship interacts directly with real localized storms, tropical cyclones, and tornadoes. Navigate mountainous storm seas, trim your sails against hurricane-force squalls, or fight the helm to escape a waterspout!
 
 <p align="center">
-  <!-- PLACEHOLDER: Ship in Tornado Screenshot -->
-  <img src="docs/images/ship_in_tornado.png" alt="ShipDeckInTornado.png" width="85%" />
+  <!-- Ship in Tornado Screenshot -->
+  <img src="ShipDeckInTornado.png" alt="Ship navigating a fierce storm and tornado" width="85%" />
   <br>
   <em>Brave violent tempests and towering waves in high-stakes survival sailing.</em>
 </p>
