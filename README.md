@@ -27,7 +27,7 @@ Whether you're exploring tranquil coastlines on a wooden sloop or captaining a m
 
 <p align="center">
   <!-- PLACEHOLDER: Ships Screenshot -->
-  <img src="docs/images/ships_showcase.png" alt="Sailing Ships on the Open Sea" width="85%" />
+  <img src="docs/images/ships_showcase.png" alt="AllBoatsWithTown.png" width="85%" />
   <br>
   <em>Build and captain authentic sailing vessels, from coastal sloops to majestic frigates.</em>
 </p>
