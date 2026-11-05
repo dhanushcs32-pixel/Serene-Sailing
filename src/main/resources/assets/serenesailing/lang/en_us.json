@@ -13,6 +13,7 @@
   "item.serenesailing.capstan": "Ship's Capstan",
   "block.serenesailing.taffrail_log": "Taffrail Log",
   "item.serenesailing.taffrail_log": "Taffrail Log",
+  "item.serenesailing.shipwright_spectacles": "Shipwright's Spectacles",
   "serenesailing.actionbar.helm_angle": "Helm: %s",
   "serenesailing.actionbar.rudder_angle": "Rudder: %s",
   "serenesailing.actionbar.sail_state": "Sail: %s",

@@ -13,6 +13,8 @@ import com.serenesailing.entity.TaffrailLogBlockEntity;
 import com.serenesailing.entity.WindVaneBlockEntity;
 import com.serenesailing.physics.SailAerodynamics;
 import com.serenesailing.compat.weather2.Weather2Compat;
+import com.serenesailing.hold.HoldRegistry;
+import com.serenesailing.hold.HoldScanner;
 import com.serenesailing.physics.ShipHullAirPocketHelper;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -1429,8 +1431,12 @@ public class ServerPhysicsHandler {
     }
 
     /**
-     * Scans sub-level local blocks inside the hull bounding box and purges water
-     * and clears waterlogged properties from enclosed blocks.
+     * Purges water and waterlogged state from the interior of a registered sunken hold.
+     *
+     * <p>Works in plot-local space on the scanned hull volume ({@link HoldRegistry}): the chunk-section filter is
+     * the volume's own local Y range, never a hard-coded world-Y window (plot-local Y is not world Y), and the
+     * per-block test is the same sealed volume the renderer and entity physics use. The two outer wall columns
+     * of each row (the hull skin) are left alone.
      */
     public static int purgeSubLevelHoldWater(ServerSubLevel subLevel) {
         if (subLevel == null) return 0;
@@ -1438,35 +1444,45 @@ public class ServerPhysicsHandler {
         if (subLevelWorld == null) return 0;
         var plot = subLevel.getPlot();
         if (plot == null) return 0;
+        final HoldScanner.Envelope env = HoldRegistry.activeEnvelope(subLevel);
+        if (env == null || !env.hasVolume()) return 0;
 
         int purged = 0;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (PlotChunkHolder holder : plot.getLoadedChunks()) {
             LevelChunk chunk = holder.getChunk();
             if (chunk == null) continue;
+            final int chunkMinX = chunk.getPos().getMinBlockX();
+            final int chunkMinZ = chunk.getPos().getMinBlockZ();
+            if (chunkMinX + 15 < env.volumeMinX() || chunkMinX > env.volumeMaxX()
+                    || chunkMinZ + 15 < env.volumeMinZ() || chunkMinZ > env.volumeMaxZ()) continue;
             LevelChunkSection[] sections = chunk.getSections();
             for (int secIdx = 0; secIdx < sections.length; secIdx++) {
                 LevelChunkSection section = sections[secIdx];
                 if (section == null || section.hasOnlyAir()) continue;
                 int sectionY = chunk.getSectionYFromSectionIndex(secIdx);
                 int baseBlockY = sectionY << 4;
-                if (baseBlockY > 70 || (baseBlockY + 15) < 40) continue;
+                if (baseBlockY > env.volumeMaxY() || (baseBlockY + 15) < env.volumeMinY()) continue;
                 for (int sy = 0; sy < 16; sy++) {
                     for (int sz = 0; sz < 16; sz++) {
                         for (int sx = 0; sx < 16; sx++) {
                             BlockState state = section.getBlockState(sx, sy, sz);
-                            boolean isFluid = state.is(Blocks.WATER) || state.is(Blocks.BUBBLE_COLUMN);
+                            // Any block that carries water: plain / flowing water, bubble columns, waterlogged blocks AND
+                            // water plants (seagrass, kelp), which hold water without a WATERLOGGED property. Sable's
+                            // entity swimming samples this plot-level water, so missing it leaves a ship with "wet" cells.
+                            if (!state.getFluidState().is(FluidTags.WATER)) continue;
                             boolean isWaterlogged = state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED);
+                            boolean isFluid = !isWaterlogged && (state.is(Blocks.WATER) || state.is(Blocks.BUBBLE_COLUMN)
+                                    || state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlockContainer);
                             if (isFluid || isWaterlogged) {
-                                pos.set(chunk.getPos().getMinBlockX() + sx, baseBlockY + sy, chunk.getPos().getMinBlockZ() + sz);
-                                if (ShipHullAirPocketHelper.isInsideHullSpace(subLevelWorld, pos)) {
+                                pos.set(chunkMinX + sx, baseBlockY + sy, chunkMinZ + sz);
+                                if (env.containsInterior(pos.getX(), pos.getY(), pos.getZ())) {
                                     if (isFluid) {
                                         subLevelWorld.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
-                                        purged++;
                                     } else {
                                         subLevelWorld.setBlock(pos, state.setValue(BlockStateProperties.WATERLOGGED, false), 2);
-                                        purged++;
                                     }
+                                    purged++;
                                 }
                             }
                         }
@@ -2069,7 +2085,8 @@ public class ServerPhysicsHandler {
             ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "helm"),
             ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "wind_vane"),
             ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "capstan"),
-            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "taffrail_log")
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "taffrail_log"),
+            ResourceLocation.fromNamespaceAndPath(SereneSailing.MOD_ID, "shipwright_spectacles")
     );
 
     @SubscribeEvent
