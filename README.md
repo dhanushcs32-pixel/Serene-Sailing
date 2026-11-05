@@ -2,7 +2,7 @@
 
 <p align="center">
   <!-- PLACEHOLDER: Mod Icon -->
-  <img src="docs/images/mod_icon.png" alt="Create-SereneSailingIcon" width="160" />
+  <img src="docs/images/mod_icon.png" alt="Create-SereneSailingIcon.png" width="160" />
 </p>
 
 <p align="center">
