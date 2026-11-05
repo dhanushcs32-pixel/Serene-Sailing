@@ -527,4 +527,74 @@ public class AuditedDefensiveSafetyTest {
                     itemKey + " display name must match " + expected);
         }
     }
+
+    @Test
+    @DisplayName("Audit 1.13: CanvasSailBlock propagation limit is 1024 and supports diagonal steps")
+    public void testSailPropagationLimitAndDiagonals() {
+        assertEquals(1024, com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS,
+                "MAX_SAIL_BLOCKS must be 1024 to support large tall-ship sails");
+        assertEquals(48, com.serenesailing.sail.SailPropagationHelper.MAX_SEARCH_RADIUS,
+                "MAX_SEARCH_RADIUS must be 48 blocks");
+        assertEquals(1024, com.serenesailing.sail.SailPropagationHelper.MAX_SHEET_SIZE,
+                "MAX_SHEET_SIZE alias must equal MAX_SAIL_BLOCKS");
+
+        // 1. Test massive sail sheet (e.g. 200+ blocks, up to 1024 cap)
+        java.util.Set<BlockPos> world = new java.util.HashSet<>();
+        BlockPos origin = new BlockPos(0, 70, 0);
+
+        // Build a large 25 wide x 10 high sail = 250 blocks
+        for (int x = -12; x <= 12; x++) {
+            for (int y = 70; y < 80; y++) {
+                world.add(new BlockPos(x, y, 0));
+            }
+        }
+        assertEquals(250, world.size());
+
+        List<BlockPos> sheet = com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(
+                origin, com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS, world::contains
+        );
+        assertEquals(250, sheet.size(), "Large sail with 250 blocks must toggle completely in one interaction");
+
+        // 2. Test diagonal tapered sail steps (e.g. corner-to-corner steps along leeches)
+        java.util.Set<BlockPos> taperedWorld = new java.util.HashSet<>();
+        // Create a stepped triangle sail where blocks touch diagonally
+        BlockPos tip = new BlockPos(100, 80, 0);
+        taperedWorld.add(tip);
+        taperedWorld.add(new BlockPos(101, 79, 0)); // diagonal step (+1, -1, 0)
+        taperedWorld.add(new BlockPos(102, 78, 0)); // diagonal step (+1, -1, 0)
+        taperedWorld.add(new BlockPos(99, 79, 0));  // diagonal step (-1, -1, 0)
+        taperedWorld.add(new BlockPos(98, 78, 0));  // diagonal step (-1, -1, 0)
+
+        List<BlockPos> taperedSheet = com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(
+                tip, com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS, taperedWorld::contains
+        );
+        assertEquals(5, taperedSheet.size(), "Diagonal tapered sail steps must connect seamlessly");
+
+        // 3. Test safety cap stops strictly at MAX_SAIL_BLOCKS (1024)
+        java.util.Set<BlockPos> hugeWorld = new java.util.HashSet<>();
+        BlockPos hugeOrigin = new BlockPos(200, 50, 0);
+        for (int x = 200 - 30; x <= 200 + 30; x++) { // 61 wide
+            for (int y = 50; y < 50 + 25; y++) {       // 25 high = 1525 blocks
+                hugeWorld.add(new BlockPos(x, y, 0));
+            }
+        }
+        assertTrue(hugeWorld.size() > 1024, "Huge world must exceed 1024 blocks");
+
+        List<BlockPos> hugeSheet = com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(
+                hugeOrigin, com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS, hugeWorld::contains
+        );
+        assertEquals(1024, hugeSheet.size(), "Sheet flood-fill must stay bounded at MAX_SAIL_BLOCKS (1024)");
+
+        // 4. Test search radius (+-48 blocks) bounds exploration
+        java.util.Set<BlockPos> distantWorld = new java.util.HashSet<>();
+        BlockPos center = new BlockPos(0, 0, 0);
+        for (int x = 0; x <= 60; x++) { // stretches to x = 60, past 48
+            distantWorld.add(new BlockPos(x, 0, 0));
+        }
+        List<BlockPos> distantSheet = com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(
+                center, com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS, distantWorld::contains
+        );
+        // Distant sheet should only include x = 0..48 (49 blocks)
+        assertEquals(49, distantSheet.size(), "Search must not exceed MAX_SEARCH_RADIUS (48 blocks)");
+    }
 }

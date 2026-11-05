@@ -23,6 +23,7 @@ public class ModCreativeModeTabs {
                         output.accept(ModItems.WIND_VANE.get());
                         output.accept(ModItems.CAPSTAN.get());
                         output.accept(ModItems.TAFFRAIL_LOG.get());
+                        output.accept(ModItems.SHIPWRIGHT_SPECTACLES.get());
                     })
                     .build());
 }

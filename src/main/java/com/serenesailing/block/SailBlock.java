@@ -153,7 +153,7 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
 
             // Connected-component flood-fill: stacked/adjacent sails of the
             // same facing form one rig - trim/furl the whole sheet at once.
-            List<BlockPos> sheet = findConnectedSailSheet(level, pos, state, MAX_SHEET_SIZE);
+            List<BlockPos> sheet = findConnectedSailSheet(level, pos, state, MAX_SAIL_BLOCKS);
 
             int minY = Integer.MAX_VALUE;
             int maxY = Integer.MIN_VALUE;
@@ -180,7 +180,7 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
                         canvas = SailCanvas.HALF;
                     }
                 }
-                level.setBlock(p, s.setValue(SAIL_STATE, next).setValue(CANVAS, canvas), Block.UPDATE_ALL);
+                level.setBlock(p, s.setValue(SAIL_STATE, next).setValue(CANVAS, canvas), Block.UPDATE_CLIENTS);
             }
 
             if (level instanceof ServerLevel serverLevel) {
@@ -208,40 +208,36 @@ public class SailBlock extends Block implements SimpleWaterloggedBlock {
         return InteractionResult.sidedSuccess(level.isClientSide);
     }
 
-    /** Safety cap for the connected-sail-sheet flood-fill. */
-    private static final int MAX_SHEET_SIZE = 64;
+    /** Safety cap for the connected-sail-sheet flood-fill (expanded for massive course sails / tall-ships). */
+    public static final int MAX_SAIL_BLOCKS = com.serenesailing.sail.SailPropagationHelper.MAX_SAIL_BLOCKS;
+    public static final int MAX_SHEET_SIZE = com.serenesailing.sail.SailPropagationHelper.MAX_SHEET_SIZE;
+    /** Search bounding box radius (+-48 blocks) from the clicked origin. */
+    public static final int MAX_SEARCH_RADIUS = com.serenesailing.sail.SailPropagationHelper.MAX_SEARCH_RADIUS;
 
     /**
-     * Breadth-first search over all face-adjacent {@link SailBlock} blocks that
-     * share the clicked sail's {@code FACING} - i.e. one contiguous canvas
-     * sheet on the same rigging plane.
+     * Breadth-first search over all face-adjacent and vertical-planar diagonal {@link SailBlock} blocks
+     * that share the clicked sail's {@code FACING} - i.e. one contiguous canvas
+     * sheet on the same rigging plane, allowing tapered sails to toggle seamlessly.
      */
-    private static List<BlockPos> findConnectedSailSheet(Level level, BlockPos origin,
-                                                         BlockState originState, int cap) {
+    public static List<BlockPos> findConnectedSailSheet(Level level, BlockPos origin,
+                                                        BlockState originState, int cap) {
         Direction facing = originState.getValue(FACING);
-        List<BlockPos> sheet = new ArrayList<>();
-        Set<BlockPos> visited = new HashSet<>();
-        Deque<BlockPos> queue = new ArrayDeque<>();
-        queue.add(origin);
-        visited.add(origin);
-
-        while (!queue.isEmpty() && sheet.size() < cap) {
-            BlockPos current = queue.poll();
-            sheet.add(current);
-            for (Direction direction : Direction.values()) {
-                BlockPos neighbor = current.relative(direction);
-                if (visited.contains(neighbor)) {
-                    continue;
-                }
-                visited.add(neighbor);
-                BlockState neighborState = level.getBlockState(neighbor);
-                if (neighborState.getBlock() instanceof SailBlock
-                        && neighborState.getValue(FACING) == facing) {
-                    queue.add(neighbor);
-                }
+        return com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(origin, cap, pos -> {
+            if (!level.hasChunkAt(pos)) {
+                return false;
             }
-        }
-        return sheet;
+            BlockState state = level.getBlockState(pos);
+            return state.getBlock() instanceof SailBlock && state.getValue(FACING) == facing;
+        });
+    }
+
+    /**
+     * Functional delegate to {@link com.serenesailing.sail.SailPropagationHelper#findConnectedSailPositions}.
+     */
+    public static List<BlockPos> findConnectedSailPositions(BlockPos origin,
+                                                            int cap,
+                                                            java.util.function.Predicate<BlockPos> sailPredicate) {
+        return com.serenesailing.sail.SailPropagationHelper.findConnectedSailPositions(origin, cap, sailPredicate);
     }
 
     /** Human-readable label for a reefing state. */
