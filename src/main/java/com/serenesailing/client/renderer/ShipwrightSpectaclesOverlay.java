@@ -62,6 +62,10 @@ import java.util.Set;
 public final class ShipwrightSpectaclesOverlay {
 
     public static final int MAX_SHIP_BLOCKS = 32768;
+    /** Most disconnected blocks that are tracked (counted) per inspection; keeps the BFS shell bounded. */
+    public static final int MAX_DISCONNECTED_TRACKED = 20_000;
+    /** Most disconnected blocks that are OUTLINED per frame (the ones nearest the player): one line box is 24 vertices. */
+    public static final int MAX_DISCONNECTED_DRAWN = 1_500;
     private static final double GLUE_SEARCH_RADIUS = 96.0;
 
     private static BlockPos lastTargetPos = null;
@@ -75,6 +79,8 @@ public final class ShipwrightSpectaclesOverlay {
         public final Set<BlockPos> gluedBlocks = new HashSet<>();
         public final List<AABB> linkedGlueBoxes = new ArrayList<>();
         public final Set<BlockPos> disconnectedBlocks = new HashSet<>();
+        /** The nearest {@link #MAX_DISCONNECTED_DRAWN} disconnected blocks, nearest first: what actually gets drawn. */
+        public List<BlockPos> drawnDisconnected = List.of();
         public AABB gluedBounds = null;
 
         public int helms = 0;
@@ -200,6 +206,7 @@ public final class ShipwrightSpectaclesOverlay {
 
         // 4. Collect all glued ship blocks inside the linked glue boxes
         if (!linkedGlue.isEmpty()) {
+            glueBoxes:
             for (Entity glue : linkedGlue) {
                 AABB bb = glue.getBoundingBox();
                 res.linkedGlueBoxes.add(bb);
@@ -214,7 +221,7 @@ public final class ShipwrightSpectaclesOverlay {
                 for (int y = minY; y < maxY; y++) {
                     for (int z = minZ; z < maxZ; z++) {
                         for (int x = minX; x < maxX; x++) {
-                            if (res.gluedBlocks.size() >= MAX_SHIP_BLOCKS) break;
+                            if (res.gluedBlocks.size() >= MAX_SHIP_BLOCKS) break glueBoxes; // was: only left the innermost loop
                             BlockPos p = new BlockPos(x, y, z);
                             BlockState st = level.getBlockState(p);
                             if (isInspectableBlock(level, p, st)) {
@@ -285,7 +292,8 @@ public final class ShipwrightSpectaclesOverlay {
             for (BlockPos p : res.gluedBlocks) {
                 for (Direction dir : Direction.values()) {
                     BlockPos np = p.relative(dir);
-                    if (!res.gluedBlocks.contains(np) && np.getY() >= shipMinY) {
+                    if (!res.gluedBlocks.contains(np) && np.getY() >= shipMinY
+                            && res.disconnectedBlocks.size() < MAX_DISCONNECTED_TRACKED) {
                         BlockState st = level.getBlockState(np);
                         if (isInspectableBlock(level, np, st)) {
                             if (res.disconnectedBlocks.add(np)) {
@@ -300,7 +308,7 @@ public final class ShipwrightSpectaclesOverlay {
             while (!frontier.isEmpty()) {
                 BlockPos curr = frontier.poll();
                 int dist = distanceMap.getOrDefault(curr, 1);
-                if (dist >= 4) continue;
+                if (dist >= 4 || res.disconnectedBlocks.size() >= MAX_DISCONNECTED_TRACKED) continue;
 
                 for (Direction dir : Direction.values()) {
                     BlockPos next = curr.relative(dir);
@@ -332,7 +340,8 @@ public final class ShipwrightSpectaclesOverlay {
                             for (int z = minZ; z < maxZ; z++) {
                                 for (int x = minX; x < maxX; x++) {
                                     BlockPos p = new BlockPos(x, y, z);
-                                    if (!res.gluedBlocks.contains(p) && isInspectableBlock(level, p, level.getBlockState(p))) {
+                                    if (res.disconnectedBlocks.size() < MAX_DISCONNECTED_TRACKED
+                                            && !res.gluedBlocks.contains(p) && isInspectableBlock(level, p, level.getBlockState(p))) {
                                         res.disconnectedBlocks.add(p);
                                     }
                                 }
@@ -359,6 +368,16 @@ public final class ShipwrightSpectaclesOverlay {
                     }
                 }
             }
+        }
+
+        // Draw only the nearest few: an unbounded shell is tens of thousands of line boxes every frame.
+        if (!res.disconnectedBlocks.isEmpty()) {
+            final Minecraft mc = Minecraft.getInstance();
+            final Vec3 from = mc.player != null ? mc.player.position() : originCenter;
+            final List<BlockPos> sorted = new ArrayList<>(res.disconnectedBlocks);
+            sorted.sort((a, b) -> Double.compare(a.distToCenterSqr(from), b.distToCenterSqr(from)));
+            res.drawnDisconnected = List.copyOf(sorted.size() > MAX_DISCONNECTED_DRAWN
+                    ? sorted.subList(0, MAX_DISCONNECTED_DRAWN) : sorted);
         }
 
         return res;
@@ -441,7 +460,7 @@ public final class ShipwrightSpectaclesOverlay {
 
             // (D) ONLY Disconnected / Unglued blocks: High-visibility pulsing Red/Orange wireframe!
             float pulse = 0.65f + 0.35f * (float) Math.sin(gameTime * 0.35f);
-            for (BlockPos pos : cachedResult.disconnectedBlocks) {
+            for (BlockPos pos : cachedResult.drawnDisconnected) {
                 AABB redBox = new AABB(pos).inflate(0.005);
                 LevelRenderer.renderLineBox(poseStack, lines, redBox, 1.0f, 0.25f, 0.15f, pulse);
             }
@@ -484,7 +503,10 @@ public final class ShipwrightSpectaclesOverlay {
 
         String status;
         if (disconnCount > 0) {
-            status = "§c⚠ " + disconnCount + " Disconnected / Unglued Blocks Highlighted in Red!";
+            final boolean capped = disconnCount >= MAX_DISCONNECTED_TRACKED;
+            final int shown = cachedResult.drawnDisconnected.size();
+            status = "§c⚠ " + disconnCount + (capped ? "+" : "") + " Disconnected / Unglued Blocks"
+                    + (shown < disconnCount ? " (nearest " + shown + " highlighted)" : " Highlighted in Red!");
         } else if (gluedCount == 0) {
             status = "§e⚠ Looking at unglued blocks (Apply Create Super Glue)";
         } else if (helms == 0) {
