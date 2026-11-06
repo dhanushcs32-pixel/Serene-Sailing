@@ -40,11 +40,31 @@ public final class HoldScanner {
     public static final double HOLD_FLOOR_MAX_Y = 62.65;
     /** The lower (61.895) depth plane is only emitted where the floor top is below this. */
     public static final double LOWER_PLANE_FLOOR_MAX_Y = 61.85;
+    /**
+     * A row is SEALED when enough of its interior has a hull floor below this height. Deliberately well above the
+     * 62.89 surface: a floor that sits just under (or a hair over) the waterline, typically where the hull bottom
+     * curves up at the stern, still carries a thin film of ocean water that must be hidden. Whether the vessel is a
+     * hold at all is decided separately, by HOLD_FLOOR_MAX_Y / RAFT_FLOOR_MIN_Y, so a flat raft stays a raft.
+     */
+    public static final double SEAL_FLOOR_MAX_Y = 64.0;
+    /**
+     * A wall column must be a real stack: the same column holds at least this many hull blocks (over its whole local
+     * height, so heave cannot change it) in this row or within WALL_SUPPORT_ROWS rows either side. A railing, ladder
+     * or fender post hanging off the hull is a lone block and is rejected; a gunport column that is only a trapdoor
+     * in one row is accepted because its neighbouring rows are full stacks.
+     */
+    public static final int WALL_MIN_COLUMN_BLOCKS = 3;
+    public static final int WALL_SUPPORT_ROWS = 3;
     /** Perimeter walls must reach at least this high to count as rising above the surface. */
     public static final double WALL_RISE_MIN_Y = 63.2;
-    /** A column is a hull wall if enough hull blocks fall inside this waterline band... */
-    public static final double WALL_BAND_MIN_Y = 61.0;
-    public static final double WALL_BAND_MAX_Y = 64.5;
+    /**
+     * A column is a hull wall if enough hull blocks fall inside this band, which is a two-block slice AROUND THE
+     * WATERLINE (surface 62.89), not a tall band above it. The sealed span must follow the hull where it meets the
+     * sea: a hull that flares outwards as it rises (stepped bulwarks, overhanging gun decks) has wider columns higher
+     * up, and a tall band picked those as "the wall", sealing a strip of open ocean beside the hull.
+     */
+    public static final double WALL_BAND_MIN_Y = 61.5;
+    public static final double WALL_BAND_MAX_Y = 63.5;
     /** ...and its wall top is the highest block top found in this (taller) vertical slice. */
     public static final double WALL_TOP_BAND_MIN_Y = 61.5;
     public static final double WALL_TOP_BAND_MAX_Y = 65.5;
@@ -276,6 +296,21 @@ public final class HoldScanner {
             return ly >= colLo[i] && ly <= colHi[i];
         }
 
+        /**
+         * Inside the sealed volume, or within {@code pad} columns of it horizontally. Used by the bilge purge: a
+         * waterlogged block in the hull skin is a water SOURCE that keeps spilling flowing water into the hold.
+         */
+        public boolean containsPadded(int lx, int ly, int lz, int pad) {
+            for (int dx = -pad; dx <= pad; dx++) {
+                for (int dz = -pad; dz <= pad; dz++) {
+                    if (contains(lx + dx, ly, lz + dz)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         /** Like {@link #contains} but excludes the two outer wall columns of the row (the hull skin itself). */
         public boolean containsInterior(int lx, int ly, int lz) {
             if (!contains(lx, ly, lz)) {
@@ -322,6 +357,26 @@ public final class HoldScanner {
 
         final int[] bandCount = new int[width];
         final double[] wallTop = new double[width];
+        final int[] support = new int[width];
+        // Wall probing for every row up front, so a column can be judged against its neighbouring rows.
+        final int[] bandAll = new int[width * depth];
+        final double[] topAll = new double[width * depth];
+        final int[] totalAll = new int[width * depth];
+        for (int lz = minZ; lz <= maxZ; lz++) {
+            final int base = (lz - minZ) * width;
+            for (int lx = minX; lx <= maxX; lx++) {
+                probeWallColumn(grid, frame, lx, lz, minY, maxY, bandCount, wallTop, lx - minX);
+                bandAll[base + lx - minX] = bandCount[lx - minX];
+                topAll[base + lx - minX] = wallTop[lx - minX];
+                int total = 0;
+                for (int ly = minY; ly <= maxY; ly++) {
+                    if (grid.isHull(lx, ly, lz)) {
+                        total++;
+                    }
+                }
+                totalAll[base + lx - minX] = total;
+            }
+        }
         final double[] floorLowestTop = new double[width];
         final double[] floorRunTop = new double[width];
         final int[] floorLowestY = new int[width];
@@ -331,14 +386,26 @@ public final class HoldScanner {
         for (int lz = minZ; lz <= maxZ; lz++) {
             final int row = lz - minZ;
 
-            for (int lx = minX; lx <= maxX; lx++) {
-                probeWallColumn(grid, frame, lx, lz, minY, maxY, bandCount, wallTop, lx - minX);
+            System.arraycopy(bandAll, row * width, bandCount, 0, width);
+            System.arraycopy(topAll, row * width, wallTop, 0, width);
+            // Support: the tallest stack the same column reaches within a few rows either side. A real hull wall is a
+            // stack in neighbouring rows even where one row has only a trapdoor (gunport); a railing, ladder or fender
+            // hanging off the side is a lone block and must not widen the envelope into open water.
+            for (int c = 0; c < width; c++) {
+                int best = 0;
+                for (int dr = -WALL_SUPPORT_ROWS; dr <= WALL_SUPPORT_ROWS; dr++) {
+                    final int r2 = row + dr;
+                    if (r2 >= 0 && r2 < depth) {
+                        best = Math.max(best, totalAll[r2 * width + c]);
+                    }
+                }
+                support[c] = best;
             }
 
             // Port side: first outer-hull wall column scanning inwards.
             int port = -1;
             for (int lx = minX; lx <= maxX; lx++) {
-                if (isWallColumn(bandCount, lx - minX, width)) {
+                if (isWallColumn(bandCount, support, lx - minX, width)) {
                     port = lx;
                     break;
                 }
@@ -349,7 +416,7 @@ public final class HoldScanner {
             // Starboard side: last outer-hull wall column.
             int star = -1;
             for (int lx = maxX; lx > port; lx--) {
-                if (isWallColumn(bandCount, lx - minX, width)) {
+                if (isWallColumn(bandCount, support, lx - minX, width)) {
                     star = lx;
                     break;
                 }
@@ -364,11 +431,14 @@ public final class HoldScanner {
             }
 
             // Floor data for every column of the span (walls included).
-            int floored = 0, rowBasinEnter = 0, rowBasinStay = 0;
+            int floored = 0, sealable = 0, rowBasinEnter = 0, rowBasinStay = 0;
             for (int lx = port; lx <= star; lx++) {
                 final int c = lx - minX;
                 readFloorColumn(grid, frame, lx, lz, minY, maxY, floorLowestTop, floorRunTop, floorLowestY, c);
                 if (lx > port && lx < star) {
+                    if (floorLowestTop[c] < SEAL_FLOOR_MAX_Y) {
+                        sealable++;
+                    }
                     if (floorLowestTop[c] < HOLD_FLOOR_MAX_Y) {
                         floored++;
                     }
@@ -381,8 +451,8 @@ public final class HoldScanner {
                 }
             }
             final int interior = star - port - 1;
-            if (floored < Math.max(1, (int) Math.ceil(interior * ROW_MIN_FLOORED_FRACTION))) {
-                continue; // no solid hull floor between the walls
+            if (sealable < Math.max(1, (int) Math.ceil(interior * ROW_MIN_FLOORED_FRACTION))) {
+                continue; // no hull floor near or below the surface between the walls
             }
 
             // The sealed volume is defined by LOCAL geometry only (hull cells), never by a world height, so heave
@@ -481,8 +551,8 @@ public final class HoldScanner {
      * WALL_MIN_BAND_BLOCKS of them. The own-block requirement keeps the envelope from growing outwards into
      * open water next to a wall; the window keeps a trapdoor-only gunport column from being skipped.
      */
-    private static boolean isWallColumn(int[] bandCount, int c, int width) {
-        if (bandCount[c] < 1) {
+    private static boolean isWallColumn(int[] bandCount, int[] support, int c, int width) {
+        if (bandCount[c] < 1 || support[c] < WALL_MIN_COLUMN_BLOCKS) {
             return false;
         }
         int sum = 0;

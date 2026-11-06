@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.serenesailing.config.SereneSailingClientConfig;
+import com.serenesailing.hold.HoldMaskGeometry;
 import com.serenesailing.hold.HoldRegistry;
 import com.serenesailing.hold.HoldScanner;
 import com.serenesailing.hold.SableWaterOcclusion;
@@ -1299,6 +1300,12 @@ public class ClientWaveRenderer {
 
     /** Wave array sample position inside a cell: 0.5 = cell centre, 0.0 if the array is vertex-indexed. */
     private static final double WAVE_MASK_SAMPLE_OFFSET = 0.5;
+    /**
+     * The wave mask hides a whole cell when its CENTRE is inside the footprint, so it is wrong by up to half a cell
+     * at the hull outline. Insetting the outline by half a cell makes a hidden cell never leave the hull and an
+     * un-hidden cell never reach past the wall (see HoldMaskGeometry). In cell units.
+     */
+    private static final double WAVE_MASK_OUTLINE_INSET = 0.5;
 
     private static final int FLAG_UPPER = HoldScanner.FLAG_SEALED;
     private static final int FLAG_LOWER = HoldScanner.FLAG_LOWER;
@@ -1483,7 +1490,8 @@ public class ClientWaveRenderer {
             return;
         }
         for (final RenderHold hold : refreshActiveHolds(level, camPos, partialTick)) {
-            forEachEligibleRun(hold, FLAG_UPPER, PLANE_UPPER_Y, (ox, oz, ux, uz, vx, vz) ->
+            forEachEligibleRun(hold, FLAG_UPPER, PLANE_UPPER_Y, WAVE_MASK_OUTLINE_INSET * cellSize,
+                    (ox, oz, ux, uz, vx, vz) ->
                     rasterizeIntoMask(maskedByShipHull, gridOriginX, gridOriginZ, cellSize, ox, oz, ux, uz, vx, vz));
         }
     }
@@ -1528,6 +1536,11 @@ public class ClientWaveRenderer {
      * The plane stays horizontal in world space because the water it hides is.
      */
     private static void forEachEligibleRun(RenderHold hold, int flag, double planeY, RunSink sink) {
+        forEachEligibleRun(hold, flag, planeY, 0.0, sink);
+    }
+
+    /** @param inset world-unit inset of the hold outline; 0 for the exact depth planes, half a cell for the wave mask */
+    private static void forEachEligibleRun(RenderHold hold, int flag, double planeY, double inset, RunSink sink) {
         final HoldScanner.Envelope env = hold.env;
         final PoseBasis b = hold.basis;
         final double ly = b.localY(planeY, env.centerX(), env.centerZ());
@@ -1538,6 +1551,8 @@ public class ClientWaveRenderer {
             }
             final int star = env.starboardX(row);
             final int lz = env.minZ() + row;
+            final boolean prevRowValid = row > 0 && env.portX(row - 1) >= 0;
+            final boolean nextRowValid = row + 1 < env.depth() && env.portX(row + 1) >= 0;
             int lx = port;
             while (lx <= star) {
                 if ((env.flags(row, lx) & flag) == 0) {
@@ -1551,9 +1566,16 @@ public class ClientWaveRenderer {
                 // cells [start, lx) of row lz form one run
                 final double ox = b.worldX(start, ly, lz);
                 final double oz = b.worldZ(start, ly, lz);
-                sink.accept(ox, oz,
-                        b.worldX(lx, ly, lz) - ox, b.worldZ(lx, ly, lz) - oz,
-                        b.worldX(start, ly, lz + 1) - ox, b.worldZ(start, ly, lz + 1) - oz);
+                final double ux = b.worldX(lx, ly, lz) - ox, uz = b.worldZ(lx, ly, lz) - oz;
+                final double vx = b.worldX(start, ly, lz + 1) - ox, vz = b.worldZ(start, ly, lz + 1) - oz;
+                if (inset > 0.0) {
+                    final double[] q = HoldMaskGeometry.insetRun(ox, oz, ux, uz, vx, vz, inset, prevRowValid, nextRowValid);
+                    if (q != null) {
+                        sink.accept(q[0], q[1], q[2], q[3], q[4], q[5]);
+                    }
+                } else {
+                    sink.accept(ox, oz, ux, uz, vx, vz);
+                }
             }
         }
     }

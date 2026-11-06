@@ -207,17 +207,34 @@ public final class HoldRegistry {
                 sb.append(" columnY=").append(env.columnLo(lx, lz)).append("..").append(env.columnHi(lx, lz))
                         .append(" inside=").append(env.contains(lx, ly, lz));
                 int water = 0;
+                final java.util.List<String> samples = new java.util.ArrayList<>();
                 for (int z = env.volumeMinZ(); z <= env.volumeMaxZ(); z++) {
                     for (int x = env.volumeMinX(); x <= env.volumeMaxX(); x++) {
                         for (int y = env.columnLo(x, z); y <= env.columnHi(x, z); y++) {
-                            if (level.hasChunk(x >> 4, z >> 4)
-                                    && !level.getBlockState(new net.minecraft.core.BlockPos(x, y, z)).getFluidState().isEmpty()) {
+                            if (!level.hasChunk(x >> 4, z >> 4)) {
+                                continue;
+                            }
+                            final net.minecraft.world.level.block.state.BlockState st =
+                                    level.getBlockState(new net.minecraft.core.BlockPos(x, y, z));
+                            if (!st.getFluidState().isEmpty()) {
                                 water++;
+                                if (samples.size() < 4) {
+                                    final int r = z - env.minZ();
+                                    samples.add("(" + x + "," + y + "," + z + ") "
+                                            + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock())
+                                            + (st.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.WATERLOGGED)
+                                            ? " waterlogged=" + st.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.WATERLOGGED)
+                                            : "")
+                                            + (x == env.portX(r) || x == env.starboardX(r) ? " [hull wall column]" : " [interior]"));
+                                }
                             }
                         }
                     }
                 }
                 sb.append(" waterCellsInsideVolume=").append(water);
+                if (!samples.isEmpty()) {
+                    sb.append(" e.g. ").append(String.join("; ", samples));
+                }
             }
             out.add(sb.toString());
         }

@@ -196,6 +196,67 @@ public class HoldScannerTest {
     }
 
     @Test
+    @DisplayName("Stern floor a hair under the waterline: the rows are sealed, no thin film of ocean water survives")
+    public void floorJustUnderTheSurfaceIsSealed() {
+        final Hull hull = brig(0);
+        for (int z = 8; z <= 10; z++) {          // the keel line rises: floor top 62.75, above the old 62.65 limit
+            for (int x = 1; x <= 7; x++) {
+                hull.clear(x, 0, z);
+                hull.clear(x, 1, z);
+            }
+            for (int x = 2; x <= 6; x++) {
+                hull.set(x, 2, z);
+            }
+        }
+        final HoldScanner.Envelope env = hull.scan();
+        assertTrue(env.isSunken());
+        assertEquals(10, env.validRows(), "the raised stern rows must stay part of the hold");
+        for (int z = 8; z <= 10; z++) {
+            for (int x = 1; x <= 7; x++) {
+                assertTrue(env.contains(x, localCellOfSurface(0), z), "water film over the stern floor at x=" + x + " z=" + z);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Exterior railing / ladder posts one block wide never widen the envelope into open water")
+    public void exteriorRailingDoesNotLeakTheEnvelope() {
+        final Hull hull = brig(0);
+        for (int z = 1; z <= 10; z++) {
+            hull.set(-1, 2, z);   // a rail post hanging off each side at the waterline band
+            hull.set(9, 2, z);
+        }
+        final int surface = localCellOfSurface(0);
+        final HoldScanner.Envelope env = hull.scan();
+        assertTrue(env.isSunken());
+        for (int z = 1; z <= 10; z++) {
+            assertEquals(0, env.portX(z - MIN_Z), "port wall must stay on the hull at z=" + z);
+            assertEquals(8, env.starboardX(z - MIN_Z), "starboard wall must stay on the hull at z=" + z);
+            assertFalse(env.contains(-1, surface, z), "open water outside the railing must stay water");
+            assertFalse(env.contains(9, surface, z));
+        }
+    }
+
+    @Test
+    @DisplayName("Flared hull: bulwarks that overhang above the waterline do not widen the sealed span at the sea")
+    public void overhangAboveTheWaterlineDoesNotWidenTheSeal() {
+        final Hull hull = brig(0);
+        for (int z = 1; z <= 10; z++) {
+            hull.column(-1, 4, 7, z);   // flared upper hull, starts 1.1 blocks above the surface
+            hull.column(9, 4, 7, z);
+        }
+        final int surface = localCellOfSurface(0);
+        final HoldScanner.Envelope env = hull.scan();
+        assertTrue(env.isSunken());
+        for (int z = 1; z <= 10; z++) {
+            assertEquals(0, env.portX(z - MIN_Z), "span must stop at the hull as it meets the water, z=" + z);
+            assertEquals(8, env.starboardX(z - MIN_Z), "z=" + z);
+            assertFalse(env.contains(-1, surface, z), "open sea under the overhang must stay visible");
+            assertFalse(env.contains(9, surface, z));
+        }
+    }
+
+    @Test
     @DisplayName("Plot-local Y is arbitrary: the same brig at local Y 200 and -32 is found the same way")
     public void plotLocalYIsNotAssumedToBeWorldY() {
         final int baseline = brig(0).scan().validRows();
