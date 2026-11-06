@@ -1476,7 +1476,10 @@ public class ServerPhysicsHandler {
                                     || state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlockContainer);
                             if (isFluid || isWaterlogged) {
                                 pos.set(chunkMinX + sx, baseBlockY + sy, chunkMinZ + sz);
-                                if (env.containsInterior(pos.getX(), pos.getY(), pos.getZ())) {
+                                // Whole sealed volume plus one column around it, hull skin included: a waterlogged stair or slab
+                                // in the wall is a water SOURCE that keeps spilling flowing water into the hold after the
+                                // interior has been purged.
+                                if (env.containsPadded(pos.getX(), pos.getY(), pos.getZ(), 1)) {
                                     if (isFluid) {
                                         subLevelWorld.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
                                     } else {
