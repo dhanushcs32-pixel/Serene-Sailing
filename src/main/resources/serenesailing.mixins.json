@@ -8,7 +8,9 @@
     "EntityAirPocketMixin",
     "NoiseBasedChunkGeneratorMixin"
   ],
-  "client": [],
+  "client": [
+    "SableWaterOnlyOcclusionMixin"
+  ],
   "server": [],
   "injectors": {
     "defaultRequire": 1
