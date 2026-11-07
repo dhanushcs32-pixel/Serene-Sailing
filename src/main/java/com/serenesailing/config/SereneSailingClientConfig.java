@@ -17,7 +17,7 @@ public class SereneSailingClientConfig {
 
     /** When the built-in depth-only barrier planes that hide ocean water inside sunken holds are drawn. */
     public enum HoldDepthPlaneMode {
-        /** Always, alongside Sable's own water occlusion (belt and braces). */
+        /** Always, alongside Sable's own water occlusion. Hides translucent blocks below the planes from above. */
         ALWAYS,
         /** Only when Sable's water occlusion cannot do it: its client option is off, or no region is registered. */
         FALLBACK_ONLY,
@@ -39,9 +39,11 @@ public class SereneSailingClientConfig {
 
         builder.push("Ship Holds");
         HOLD_DEPTH_PLANES = builder.comment(
-                "Depth-only barrier planes that keep ocean water out of sunken ship holds. ALWAYS = alongside Sable's water occlusion,",
-                "FALLBACK_ONLY = only when Sable's sub_level_water_occlusion option is off or has no region for the ship, OFF = never.")
-                .defineEnum("holdDepthPlanes", HoldDepthPlaneMode.ALWAYS);
+                "Depth-only barrier planes that keep ocean water out of sunken ship holds.",
+                "FALLBACK_ONLY (default) = only when Sable's water occlusion is off or has no region for the ship.",
+                "ALWAYS = also alongside Sable; the planes then hide glass and other translucent blocks below them when seen from above.",
+                "OFF = never. (Key renamed from 'holdDepthPlanes' so the new default applies to existing config files.)")
+                .defineEnum("holdDepthPlaneMode", HoldDepthPlaneMode.FALLBACK_ONLY);
         builder.pop();
 
         SPEC = builder.build();
@@ -75,7 +77,7 @@ public class SereneSailingClientConfig {
         return 1.0;
     }
 
-    /** Safe read of the hold depth plane mode (ALWAYS before config load / in headless tests). */
+    /** Safe read of the hold depth plane mode (FALLBACK_ONLY before config load / in headless tests). */
     public static HoldDepthPlaneMode getHoldDepthPlaneMode() {
         try {
             if (HOLD_DEPTH_PLANES != null && SPEC.isLoaded()) {
@@ -83,6 +85,6 @@ public class SereneSailingClientConfig {
             }
         } catch (Throwable ignored) {
         }
-        return HoldDepthPlaneMode.ALWAYS;
+        return HoldDepthPlaneMode.FALLBACK_ONLY;
     }
 }
