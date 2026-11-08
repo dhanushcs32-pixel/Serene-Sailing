@@ -76,6 +76,21 @@ public final class HoldBlocks {
     @Nullable
     public static HoldScanner.Envelope scan(Level level, SubLevel sub, Pose3dc pose,
                                             HoldScanner.HullClass previous, Vector3d scratch) {
+        final Prepared p = prepare(sub, pose, scratch);
+        if (p == null) {
+            return null;
+        }
+        return HoldScanner.scan(p.minX(), p.minY(), p.minZ(), p.maxX(), p.maxY(), p.maxZ(),
+                new LevelGrid(level), p.frame(), previous);
+    }
+
+    /** A scannable plot: its block bounds and the local-to-world height map for the current pose. */
+    public record Prepared(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, HoldScanner.Frame frame) {
+    }
+
+    /** Shared by both scan engines. Null when the plot cannot be scanned right now (empty, unsynced, too big, rolled over). */
+    @Nullable
+    public static Prepared prepare(SubLevel sub, Pose3dc pose, Vector3d scratch) {
         final LevelPlot plot = sub.getPlot();
         if (plot == null || pose == null) {
             return null;
@@ -96,7 +111,7 @@ public final class HoldBlocks {
         if (frame == null) {
             return null;
         }
-        return HoldScanner.scan(minX, minY, minZ, maxX, maxY, maxZ, new LevelGrid(level), frame, previous);
+        return new Prepared(minX, minY, minZ, maxX, maxY, maxZ, frame);
     }
 
     /** The Y row of the local-to-world map from four pose transforms; null if the ship is tilted too far. */

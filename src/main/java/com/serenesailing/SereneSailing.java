@@ -33,6 +33,7 @@ public class SereneSailing {
         // Register configuration
         ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.COMMON, SailingConfig.SPEC);
         ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.CLIENT, SereneSailingClientConfig.SPEC);
+        ModLoadingContext.get().getActiveContainer().registerConfig(ModConfig.Type.SERVER, com.serenesailing.hold.HoldConfig.SPEC);
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);

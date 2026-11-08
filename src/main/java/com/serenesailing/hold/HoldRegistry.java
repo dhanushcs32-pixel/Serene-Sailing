@@ -5,7 +5,10 @@ import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import dev.ryanhcode.sable.sublevel.water_occlusion.WaterOcclusionRegion;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -30,8 +33,12 @@ import java.util.function.BiConsumer;
  */
 public final class HoldRegistry {
 
-    /** Ticks between rescans (about one second). */
+    /** Ticks between background rescans of the row scanner (about one second). */
     public static final int SCAN_INTERVAL_TICKS = 20;
+    /** Ticks between background rescans of the flood fill (heavier, about two seconds). */
+    public static final int FLOOD_SCAN_INTERVAL_TICKS = 40;
+    /** A ship whose blocks changed is rescanned at once, but never more often than this. */
+    public static final int DIRTY_MIN_SPACING_TICKS = 10;
     /** Only sub-levels whose world AABB reaches into this band can hold sea water. */
     private static final double SEA_BAND_MIN_Y = 56.0;
     private static final double SEA_BAND_MAX_Y = 72.0;
@@ -46,6 +53,8 @@ public final class HoldRegistry {
     private final Level level;
     private final Map<SubLevel, Entry> entries = new ConcurrentHashMap<>();
     private long lastScanTick = Long.MIN_VALUE;
+    /** True when some entry may have been marked dirty since the last pass (a hint; the entry flag is authoritative). */
+    private volatile boolean anyDirty;
 
     private HoldRegistry(Level level) {
         this.level = level;
@@ -54,6 +63,12 @@ public final class HoldRegistry {
     private static final class Entry {
         HoldDebounce debounce = new HoldDebounce(0);
         HoldScanner.HullClass lastClass = HoldScanner.HullClass.FLAT_RAFT;
+        /** The engine that produced {@link #active} / the debounce state; a config change resets the entry. */
+        HoldScanMode mode = HoldScanMode.ROW_SCANNER;
+        /** Flood fill only: the previous analysis, for waterline hysteresis. */
+        @Nullable HoldFlood.Result floodPrev;
+        /** When to rescan this ship: block changes, minimum spacing, bounded confirmation scans. */
+        final HoldScanSchedule schedule = new HoldScanSchedule();
         @Nullable WaterOcclusionRegion region;
         /** The envelope currently applied (Sable region, wave mask, depth planes, purge, physics). */
         volatile @Nullable HoldScanner.Envelope active;
@@ -179,6 +194,7 @@ public final class HoldRegistry {
     /** Human-readable state of every tracked hold of the level relative to a world position. */
     public static java.util.List<String> describe(Level level, Vec3 world) {
         final java.util.List<String> out = new java.util.ArrayList<>();
+        out.add("hold scan mode (server config): " + HoldConfig.scanMode());
         final HoldRegistry registry = peek(level);
         if (registry == null) {
             out.add("no hold registry for this level (no sub-levels scanned yet, or the level has no Sable container)");
@@ -265,48 +281,125 @@ public final class HoldRegistry {
 
     private void tickInternal(SubLevelContainer container, @Nullable Vec3 focus) {
         final long now = level.getGameTime();
-        if (lastScanTick != Long.MIN_VALUE && now >= lastScanTick && now - lastScanTick < SCAN_INTERVAL_TICKS) {
+        final HoldScanMode mode = HoldConfig.scanMode();
+        final int interval = mode == HoldScanMode.FLOOD_FILL ? FLOOD_SCAN_INTERVAL_TICKS : SCAN_INTERVAL_TICKS;
+        final boolean full = lastScanTick == Long.MIN_VALUE || now < lastScanTick || now - lastScanTick >= interval;
+        if (!full && !anyDirty) {
             return;
         }
-        lastScanTick = now;
+        if (full) {
+            lastScanTick = now;
+        }
+        anyDirty = false;
 
         final Vector3d scratch = SCRATCH.get()[0];
-        final java.util.Set<SubLevel> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        final java.util.Set<SubLevel> seen =
+                full ? java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()) : null;
+        boolean stillDirty = false;
 
         for (final SubLevel sub : container.getAllSubLevels()) {
             if (level.isClientSide && sub instanceof ClientSubLevel client && !client.isFinalized()) {
                 continue;
             }
-            seen.add(sub);
+            if (seen != null) {
+                seen.add(sub);
+            }
+            Entry entry = entries.get(sub);
+            if (!full && (entry == null || !entry.schedule.isDirty())) {
+                continue; // an extra pass only serves ships whose blocks changed
+            }
             if (!isNearSeaBand(sub, focus)) {
                 // Left the sea band (or the client's range): release the region, rescan when it comes back.
-                final Entry stale = entries.get(sub);
-                if (stale != null && (stale.active != null || stale.region != null)) {
-                    release(stale);
-                    stale.debounce = new HoldDebounce(0);
-                    stale.lastClass = HoldScanner.HullClass.FLAT_RAFT;
+                if (entry != null) {
+                    entry.schedule.clearDirty();
+                    if (entry.active != null || entry.region != null) {
+                        release(entry);
+                        entry.debounce = new HoldDebounce(0);
+                        entry.lastClass = HoldScanner.HullClass.FLAT_RAFT;
+                        entry.floodPrev = null;
+                    }
                 }
                 continue;
             }
-            final Entry entry = entries.computeIfAbsent(sub, k -> new Entry());
-            final HoldScanner.Envelope env =
-                    HoldBlocks.scan(level, sub, sub.logicalPose(), entry.lastClass, scratch);
-            if (env == null) {
-                continue; // cannot scan right now: keep whatever is applied
+            if (entry == null) {
+                entry = entries.computeIfAbsent(sub, k -> new Entry());
             }
-            entry.lastClass = env.hullClass();
-            if (entry.debounce.offer(env.volumeHash())) {
-                apply(entry, sub, env);
+            if (!entry.schedule.due(now, full, DIRTY_MIN_SPACING_TICKS)) {
+                stillDirty = true; // too soon after the last scan of this ship: try again on a later tick
+                continue;
             }
+            final boolean externalChange = entry.schedule.beginScan(now);
+            scanOne(entry, sub, mode, scratch, externalChange);
+            stillDirty |= entry.schedule.isDirty();
+        }
+        if (stillDirty) {
+            anyDirty = true;
         }
 
-        // Sub-levels that vanished (disassembled / unloaded): release their regions.
-        for (final Iterator<Map.Entry<SubLevel, Entry>> it = entries.entrySet().iterator(); it.hasNext(); ) {
-            final Map.Entry<SubLevel, Entry> e = it.next();
-            if (!seen.contains(e.getKey())) {
-                release(e.getValue());
-                it.remove();
+        if (seen != null) {
+            // Sub-levels that vanished (disassembled / unloaded): release their regions.
+            for (final Iterator<Map.Entry<SubLevel, Entry>> it = entries.entrySet().iterator(); it.hasNext(); ) {
+                final Map.Entry<SubLevel, Entry> e = it.next();
+                if (!seen.contains(e.getKey())) {
+                    release(e.getValue());
+                    it.remove();
+                }
             }
+        }
+    }
+
+    /** One scan of one ship with whichever engine is configured. */
+    private void scanOne(Entry entry, SubLevel sub, HoldScanMode mode, Vector3d scratch, boolean externalChange) {
+        if (entry.mode != mode) {
+            // The engine was switched in the config: start this ship from scratch.
+            release(entry);
+            entry.debounce = new HoldDebounce(0);
+            entry.lastClass = HoldScanner.HullClass.FLAT_RAFT;
+            entry.floodPrev = null;
+            entry.mode = mode;
+        }
+        final HoldScanner.Envelope env;
+        if (mode == HoldScanMode.FLOOD_FILL) {
+            final HoldFloodBlocks.Outcome outcome =
+                    HoldFloodBlocks.scan(level, sub, sub.logicalPose(), entry.floodPrev, scratch);
+            if (outcome == null) {
+                return; // cannot scan right now: keep whatever is applied
+            }
+            entry.floodPrev = outcome.result();
+            env = outcome.envelope();
+        } else {
+            env = HoldBlocks.scan(level, sub, sub.logicalPose(), entry.lastClass, scratch);
+            if (env == null) {
+                return;
+            }
+        }
+        entry.lastClass = env.hullClass();
+        final boolean applied = entry.debounce.offer(env.volumeHash());
+        if (applied) {
+            apply(entry, sub, env);
+        }
+        entry.schedule.afterScan(applied, !applied && env.volumeHash() != entry.debounce.appliedHash(), externalChange);
+    }
+
+    /**
+     * Server: a block next to this position changed. If it lies in a ship's plot, that ship is rescanned soon (never more
+     * than once per {@link #DIRTY_MIN_SPACING_TICKS}). Cheap enough to call for every neighbour update.
+     */
+    public static void markDirty(Level level, BlockPos pos) {
+        final HoldRegistry registry = INSTANCES.get(level);
+        if (registry == null || registry.entries.isEmpty()) {
+            return;
+        }
+        final SubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) {
+            return;
+        }
+        final LevelPlot plot = container.getPlot(new ChunkPos(pos));
+        final SubLevel sub = plot == null ? null : plot.getSubLevel();
+        final Entry entry = sub == null ? null : registry.entries.get(sub);
+        if (entry != null) {
+            entry.schedule.markChanged();
+            registry.anyDirty = true;
         }
     }
 

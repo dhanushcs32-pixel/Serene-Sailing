@@ -40,10 +40,12 @@ public final class HoldFlood {
     public static final class Result {
         private final int minX, minY, minZ, width, height, depth;
         private final boolean[] dry;
+        /** Padded by one cell on every side (see analyse): which cells were below the waterline in this scan. */
+        private final boolean[] belowPadded;
         private final int dryCells, floodedCells, openCellsBelowWater;
 
         private Result(int minX, int minY, int minZ, int width, int height, int depth, boolean[] dry,
-                       int dryCells, int floodedCells, int openCellsBelowWater) {
+                       boolean[] belowPadded, int dryCells, int floodedCells, int openCellsBelowWater) {
             this.minX = minX;
             this.minY = minY;
             this.minZ = minZ;
@@ -51,6 +53,7 @@ public final class HoldFlood {
             this.height = height;
             this.depth = depth;
             this.dry = dry;
+            this.belowPadded = belowPadded;
             this.dryCells = dryCells;
             this.floodedCells = floodedCells;
             this.openCellsBelowWater = openCellsBelowWater;
@@ -61,6 +64,13 @@ public final class HoldFlood {
             final int lx = x - minX, ly = y - minY, lz = z - minZ;
             return lx >= 0 && lx < width && ly >= 0 && ly < height && lz >= 0 && lz < depth
                     && dry[(ly * depth + lz) * width + lx];
+        }
+
+        /** Was this cell (the ring of padding included) below the waterline in this scan? Drives hysteresis. */
+        public boolean wasBelow(int x, int y, int z) {
+            final int px = x - minX + 1, py = y - minY + 1, pz = z - minZ + 1;
+            return px >= 0 && px < width + 2 && py >= 0 && py < height + 2 && pz >= 0 && pz < depth + 2
+                    && belowPadded[(py * (depth + 2) + pz) * (width + 2) + px];
         }
 
         public int dryCells() { return dryCells; }
@@ -75,6 +85,20 @@ public final class HoldFlood {
      */
     public static Result analyse(int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
                                  Grid grid, HoldScanner.Frame frame, double waterY) {
+        return analyse(minX, minY, minZ, maxX, maxY, maxZ, grid, frame, waterY, 0.0, null);
+    }
+
+    /**
+     * As above, with hysteresis so the swell cannot flip surface cells between wet and dry every scan.
+     *
+     * @param hysteresis half-width in blocks of the dead band around the waterline: a cell that was below the
+     *                   waterline in {@code previous} stays below until its centre is {@code hysteresis} above the
+     *                   surface, and a cell that was above stays above until its centre is {@code hysteresis} below it
+     * @param previous   the result of the previous scan of the same ship, or null
+     */
+    public static Result analyse(int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
+                                 Grid grid, HoldScanner.Frame frame, double waterY,
+                                 double hysteresis, Result previous) {
         final int w = maxX - minX + 1, h = maxY - minY + 1, d = maxZ - minZ + 1;
         // Padded by one cell on every side: the padding ring is open sea (where it lies below the waterline).
         final int pw = w + 2, ph = h + 2, pd = d + 2;
@@ -88,7 +112,9 @@ public final class HoldFlood {
                 for (int px = 0; px < pw; px++) {
                     final int x = minX + px - 1, y = minY + py - 1, z = minZ + pz - 1;
                     final int i = (py * pd + pz) * pw + px;
-                    below[i] = frame.worldY(x + 0.5, y + 0.5, z + 0.5) < waterY;
+                    final double threshold = previous == null || hysteresis == 0.0 ? waterY
+                            : waterY + (previous.wasBelow(x, y, z) ? hysteresis : -hysteresis);
+                    below[i] = frame.worldY(x + 0.5, y + 0.5, z + 0.5) < threshold;
                     final boolean ring = px == 0 || py == 0 || pz == 0 || px == pw - 1 || py == ph - 1 || pz == pd - 1;
                     if (ring && below[i]) {
                         seen[i] = true;
@@ -151,6 +177,6 @@ public final class HoldFlood {
                 }
             }
         }
-        return new Result(minX, minY, minZ, w, h, d, dry, dryCells, flooded, openBelow);
+        return new Result(minX, minY, minZ, w, h, d, dry, below, dryCells, flooded, openBelow);
     }
 }

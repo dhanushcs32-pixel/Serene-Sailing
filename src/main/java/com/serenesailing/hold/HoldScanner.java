@@ -321,6 +321,20 @@ public final class HoldScanner {
         }
     }
 
+    /**
+     * Builds an envelope from per-column data produced by another analysis (see {@link HoldFloodEnvelope}); the volume
+     * hash and bounds are derived exactly as for a row scan, so every consumer reads it the same way.
+     *
+     * @param cellFlags FLAG_SEALED / FLAG_LOWER per column (footprint, which may be wider than the dry columns)
+     * @param colLo     per column sealed interval, lo > hi where the column holds no sealed volume
+     */
+    public static Envelope fromColumns(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, HullClass hullClass,
+                                       int[] portX, int[] starboardX, byte[] cellFlags, int[] colLo, int[] colHi,
+                                       int validRows) {
+        return new Envelope(minX, minY, minZ, maxX, maxY, maxZ, hullClass, portX, starboardX, cellFlags, colLo, colHi,
+                validRows);
+    }
+
     // =========================================================================================
     //  SCAN
     // =========================================================================================

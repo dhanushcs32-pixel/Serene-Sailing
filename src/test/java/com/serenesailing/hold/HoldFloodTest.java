@@ -143,6 +143,28 @@ public class HoldFloodTest {
         assertEquals(0, ((Ship) breached()).analyse(heeled).dryCells());
     }
 
+    @Test
+    @DisplayName("Hysteresis: a cell right at the waterline keeps its previous wet/dry state inside the dead band")
+    public void hysteresisKeepsSurfaceCellsStable() {
+        final Ship ship = Ship.bowl(8);
+        // Cell y=3 has its centre at world 63.5 at rest; the waterline is 62.8889, so it starts out ABOVE the surface.
+        final HoldScanner.Frame base = HoldScanner.Frame.level(0, 0, 0, 60.0);
+        final HoldFlood.Grid grid = (x, y, z, dir) -> ship.at(x, y, z);
+        HoldFlood.Result first = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, base, WATER_Y, 0.25, null);
+        assertFalse(first.wasBelow(5, 3, 5));
+        // The swell lowers the hull by 0.7: the centre of y=3 is now 62.8, i.e. 0.09 BELOW the surface. Without
+        // hysteresis that already flips it; with a 0.25 dead band it must stay "above" until it is 0.25 below.
+        final HoldScanner.Frame sunk = HoldScanner.Frame.level(0, 0, 0, 59.3);
+        final HoldFlood.Result noHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, sunk, WATER_Y);
+        final HoldFlood.Result withHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, sunk, WATER_Y, 0.25, first);
+        assertTrue(noHyst.wasBelow(5, 3, 5), "plain analysis flips as soon as the centre crosses the surface");
+        assertFalse(withHyst.wasBelow(5, 3, 5), "within 0.25 of the surface it keeps its previous state (above)");
+        // a deeper dip (centre 0.5 below the surface) does flip it
+        final HoldFlood.Result deep = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid,
+                HoldScanner.Frame.level(0, 0, 0, 58.8), WATER_Y, 0.25, first);
+        assertTrue(deep.wasBelow(5, 3, 5));
+    }
+
     private static Ship breached() {
         final Ship s = Ship.bowl(8);
         s.set(0, 1, 5, false);
@@ -158,3 +180,4 @@ public class HoldFloodTest {
         assertEquals(0, sealed.dryCells(), "a block that does not cover its faces is an opening");
     }
 }
+
