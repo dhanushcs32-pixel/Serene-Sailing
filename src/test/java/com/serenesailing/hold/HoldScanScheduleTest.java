@@ -102,3 +102,4 @@ public class HoldScanScheduleTest {
         assertFalse(s.due(100, false, SPACING));
     }
 }
+

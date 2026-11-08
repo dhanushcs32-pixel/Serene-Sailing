@@ -41,3 +41,4 @@ public final class HoldConfig {
         return HoldScanMode.ROW_SCANNER;
     }
 }
+

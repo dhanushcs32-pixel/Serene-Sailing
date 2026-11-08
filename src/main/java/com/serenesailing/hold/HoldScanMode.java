@@ -7,3 +7,4 @@ public enum HoldScanMode {
     /** Flood fill from the sea ({@link HoldFlood}): only air pockets the sea cannot reach are dry, breaches flood. */
     FLOOD_FILL
 }
+
