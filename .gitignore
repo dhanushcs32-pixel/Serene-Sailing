@@ -24,3 +24,6 @@ out/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# Local project state notes
+Serene_Sailing_state_file.txt
