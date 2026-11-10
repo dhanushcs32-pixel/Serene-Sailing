@@ -19,6 +19,7 @@ import com.serenesailing.physics.ShipHullAirPocketHelper;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
+import com.serenesailing.physics.waves.WaveSurface;
 import com.serenesailing.registry.ModBlocks;
 import java.util.Set;
 import java.util.HashSet;
@@ -442,6 +443,16 @@ public class ServerPhysicsHandler {
         float targetDraft = steering.targetDraft();
 
         double baseWaterSurfaceY = waterSurfaceY(level, subLevel, keelWorldY, hullHeight);
+        // Open sea: waterSurfaceY() reports the first block ABOVE the water row (63.0), but the visible mean
+        // plane (and the wave mesh the player sees) is at WaveSurface.MEAN_WATER_Y. Use the shared datum.
+        final var hullBounds = subLevel.boundingBox();
+        final boolean waveColumn = baseWaterSurfaceY > Double.NEGATIVE_INFINITY
+                && WaveSurface.isWaveColumn(level,
+                        Mth.floor((hullBounds.minX() + hullBounds.maxX()) * 0.5),
+                        Mth.floor((hullBounds.minZ() + hullBounds.maxZ()) * 0.5));
+        if (waveColumn) {
+            baseWaterSurfaceY = WaveSurface.MEAN_WATER_Y;
+        }
 
         // 4-point wave surface sampling around hull extremes (bow, stern, port, starboard)
         double halfLength = hullLength * 0.5;
@@ -462,7 +473,10 @@ public class ServerPhysicsHandler {
         double stormIntensity = GerstnerWaveEngine.getStormIntensity(level);
         boolean isCalmWeather = (level != null && !level.isRaining() && !level.isThundering()) && (stormIntensity <= 0.18);
 
-        boolean hasActiveWaves = !isCalmWeather && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
+        // No calm-weather deadzone any more: the renderer draws the swell at every storm intensity >= 0.04
+        // (including the default 0.15), so a hull that ignores it sits flat while the waves pass through it.
+        // WaveSurface.offset() is 0 outside open sea / when waves are off, so docks and rivers stay still.
+        boolean hasActiveWaves = waveColumn && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
                 || Math.abs(offsetPort) > 1.0e-4 || Math.abs(offsetStarboard) > 1.0e-4);
 
         // Heavy hull inertia filtering: large multi-deck ships span wave crests and cut through swells
@@ -479,7 +493,7 @@ public class ServerPhysicsHandler {
         }
 
         double rawMeanWaveOffset = (offsetBow + offsetStern + offsetPort + offsetStarboard) * 0.25;
-        double attenuatedWaveOffset = isCalmWeather ? 0.0 : (rawMeanWaveOffset * heaveAttenuation);
+        double attenuatedWaveOffset = waveColumn ? (rawMeanWaveOffset * heaveAttenuation) : 0.0;
 
         // 3-point longitudinal keel slope sampling (Bow, Midships, Stern) for surge/sway wave slope dynamics
         var waveState = GerstnerWaveEngine.getDimensionState(level);
@@ -496,17 +510,11 @@ public class ServerPhysicsHandler {
         double avgSlopeX = (slopeBow.x + slopeMid.x + slopeStern.x) / 3.0;
         double avgSlopeZ = (slopeBow.z + slopeMid.z + slopeStern.z) / 3.0;
 
+        // Ride-height reference = the shared wave surface (shaped offsets are >= 0, so the old
+        // "anti-flooding trough clamp" is no longer needed; heave attenuation still lets heavy hulls cut through).
         double meanWaterSurfaceY = baseWaterSurfaceY;
-        if (isCalmWeather) {
-            // Calm-Weather Deadzone: static integer water surface (63.0) when afloat
-            if (baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
-                meanWaterSurfaceY = 63.0;
-            }
-        } else if (hasActiveWaves && baseWaterSurfaceY > Double.NEGATIVE_INFINITY) {
-            // Anti-flooding floor: clamp negative wave trough offset on meanWaterSurfaceY to >= baseWaterSurfaceY - 0.35,
-            // while allowing full positive heave lift (+0.0 to +2.5m) on wave crests!
-            double clampedWaveOffset = Math.max(-0.35, attenuatedWaveOffset);
-            meanWaterSurfaceY = baseWaterSurfaceY + clampedWaveOffset;
+        if (waveColumn) {
+            meanWaterSurfaceY = baseWaterSurfaceY + attenuatedWaveOffset;
         }
 
         // Automatic Sub-Level Interior Bilge Purge on Assembly & Periodically every 40 ticks
@@ -1907,10 +1915,10 @@ public class ServerPhysicsHandler {
         double getWaveHeight(Level level, double x, double z, double time);
     }
 
-    public static volatile WaveHeightHook WAVE_HEIGHT_HOOK = GerstnerWaveEngine::getWaveHeightOffset;
+    public static volatile WaveHeightHook WAVE_HEIGHT_HOOK = WaveSurface::offset;
 
     public static void setWaveHeightHook(WaveHeightHook hook) {
-        WAVE_HEIGHT_HOOK = hook != null ? hook : GerstnerWaveEngine::getWaveHeightOffset;
+        WAVE_HEIGHT_HOOK = hook != null ? hook : WaveSurface::offset;
     }
 
     /**

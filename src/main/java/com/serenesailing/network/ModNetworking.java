@@ -14,7 +14,7 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 public final class ModNetworking {
 
     /** Protocol version for the payload set - bump on wire-format changes. */
-    private static final String PROTOCOL_VERSION = "2";
+    private static final String PROTOCOL_VERSION = "3";
 
     private ModNetworking() {
     }
@@ -26,6 +26,10 @@ public final class ModNetworking {
         // Legacy slider-based helm angle payload (kept for backward compat)
         registrar.playToServer(SetHelmAnglePayload.TYPE, SetHelmAnglePayload.STREAM_CODEC,
                 SetHelmAnglePayload::handle);
+
+        // Server -> client: authoritative wave state so remote clients render and ride the same ocean.
+        registrar.playToClient(WaveStatePayload.TYPE, WaveStatePayload.STREAM_CODEC,
+                com.serenesailing.client.ClientWaveStateHandler::handle);
 
         // New mouse-drag steering payload with activelyHeld flag
         registrar.playToServer(ServerboundSteerPayload.TYPE, ServerboundSteerPayload.STREAM_CODEC,

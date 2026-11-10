@@ -4,8 +4,10 @@
   "package": "com.serenesailing.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "BoatWaveMixin",
     "ChunkGeneratorMixin",
     "EntityAirPocketMixin",
+    "EntityWaveFluidMixin",
     "NoiseBasedChunkGeneratorMixin"
   ],
   "client": [

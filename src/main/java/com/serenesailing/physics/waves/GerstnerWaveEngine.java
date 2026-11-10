@@ -83,12 +83,50 @@ public final class GerstnerWaveEngine {
         public volatile double smoothedStormIntensity = 0.15;
         public volatile long lastUpdateTick = -1L;
 
+        // Smoothing targets. On the server (and in single-player) these are derived from weather every tick;
+        // on a remote client they are received from the server (serverDriven == true) because the client does
+        // NOT know Weather2's wind (ServerPhysicsHandler's wind cache is only filled by the server tick).
+        public volatile double targetWindSpeed = 1.0;
+        public volatile double targetStormIntensity = 0.15;
+        public volatile double targetWindDirX = 0.0;
+        public volatile double targetWindDirZ = -1.0;
+        /** True on a remote client once a server snapshot has been received. */
+        public volatile boolean serverDriven = false;
+
+        /** Upper bound on how many missed ticks one update() call replays (alpha=0.02 -> ~98% converged). */
+        private static final int MAX_CATCHUP_STEPS = 200;
+
+        /**
+         * Advances the smoothed state to {@code gameTime}, replaying every tick since the last update.
+         *
+         * <p>This makes the state a pure function of (targets, game time): it no longer matters whether the
+         * server, the client render thread, or the physics step happens to call it first, nor how often.
+         * Previously it advanced exactly once per call that saw a new game time, so a dedicated server with
+         * no ships (nobody querying) froze while clients kept smoothing, and the two diverged.
+         */
         public synchronized void update(Level level, long gameTime) {
-            if (gameTime == lastUpdateTick && lastUpdateTick >= 0) {
+            if (lastUpdateTick < 0) {
+                lastUpdateTick = gameTime - 1L;
+            }
+            if (gameTime < lastUpdateTick - 100L) {
+                // The clock went backwards (new world / reload): resynchronise instead of freezing forever.
+                lastUpdateTick = gameTime - 1L;
+            }
+            long steps = Math.min(gameTime - lastUpdateTick, (long) MAX_CATCHUP_STEPS);
+            if (steps <= 0L) {
                 return;
             }
             lastUpdateTick = gameTime;
 
+            if (!serverDriven) {
+                computeTargets(level);
+            }
+            for (long i = 0; i < steps; i++) {
+                stepTowardTargets();
+            }
+        }
+
+        private void computeTargets(Level level) {
             float rawSpeed = 1.0f;
             float rawAngle = 0.0f;
             if (level != null) {
@@ -130,14 +168,20 @@ public final class GerstnerWaveEngine {
                 targetDirX = 0.0;
                 targetDirZ = -1.0;
             }
+            this.targetWindSpeed = rawSpeed;
+            this.targetStormIntensity = targetStorm;
+            this.targetWindDirX = targetDirX;
+            this.targetWindDirZ = targetDirZ;
+        }
 
+        private void stepTowardTargets() {
             double alpha = 0.02; // Smooth ramp up over ~5-10 seconds
-            smoothedWindSpeed += (rawSpeed - smoothedWindSpeed) * alpha;
-            smoothedStormIntensity += (targetStorm - smoothedStormIntensity) * alpha;
+            smoothedWindSpeed += (targetWindSpeed - smoothedWindSpeed) * alpha;
+            smoothedStormIntensity += (targetStormIntensity - smoothedStormIntensity) * alpha;
             smoothedStormIntensity = Mth.clamp(smoothedStormIntensity, 0.01, 1.0);
 
-            smoothedWindDirX += (targetDirX - smoothedWindDirX) * alpha;
-            smoothedWindDirZ += (targetDirZ - smoothedWindDirZ) * alpha;
+            smoothedWindDirX += (targetWindDirX - smoothedWindDirX) * alpha;
+            smoothedWindDirZ += (targetWindDirZ - smoothedWindDirZ) * alpha;
             double dirLen = Math.sqrt(smoothedWindDirX * smoothedWindDirX + smoothedWindDirZ * smoothedWindDirZ);
             if (dirLen > 1.0e-6) {
                 smoothedWindDirX /= dirLen;
@@ -146,6 +190,25 @@ public final class GerstnerWaveEngine {
                 smoothedWindDirX = 0.0;
                 smoothedWindDirZ = -1.0;
             }
+        }
+
+        /**
+         * Applies an authoritative server snapshot (remote clients only). The snapshot describes the server's
+         * state at {@code serverTick}; the next {@link #update} replays the ticks between then and now.
+         */
+        public synchronized void applyServerSnapshot(long serverTick,
+                                                     double speed, double dirX, double dirZ, double storm,
+                                                     double tSpeed, double tDirX, double tDirZ, double tStorm) {
+            this.smoothedWindSpeed = speed;
+            this.smoothedWindDirX = dirX;
+            this.smoothedWindDirZ = dirZ;
+            this.smoothedStormIntensity = Mth.clamp(storm, 0.0, 1.0);
+            this.targetWindSpeed = tSpeed;
+            this.targetWindDirX = tDirX;
+            this.targetWindDirZ = tDirZ;
+            this.targetStormIntensity = Mth.clamp(tStorm, 0.0, 1.0);
+            this.lastUpdateTick = serverTick;
+            this.serverDriven = true;
         }
 
         public synchronized void setImmediate(double windSpeed, double dirX, double dirZ, double stormIntensity) {
@@ -170,6 +233,31 @@ public final class GerstnerWaveEngine {
             return DEFAULT_STATE;
         }
         return DIMENSION_STATES.computeIfAbsent(level.dimension(), dim -> new DimensionWaveState());
+    }
+
+    /**
+     * Wave-aggressiveness scales received from the server on a remote client ({calm, storm}), or null.
+     * The aggressiveness sliders live in the CLIENT config; if each client's own value fed the physics the
+     * visible wave would differ from the one the (server-authoritative) physics rides. On a remote client the
+     * server's values therefore win; in single-player the server reads the same config so nothing changes.
+     */
+    private static volatile double[] authoritativeScales = null;
+
+    public static void setAuthoritativeScales(double calm, double storm) {
+        authoritativeScales = new double[] { calm, storm };
+    }
+
+    public static double[] currentScales() {
+        double[] a = authoritativeScales;
+        return a != null ? new double[] { a[0], a[1] }
+                : new double[] { SereneSailingClientConfig.getCalmAggressiveness(),
+                                 SereneSailingClientConfig.getStormAggressiveness() };
+    }
+
+    /** Drops all per-world wave state (logout / server stop) so a new world never inherits a stale clock. */
+    public static void resetAll() {
+        DIMENSION_STATES.clear();
+        authoritativeScales = null;
     }
 
     public static double getStormIntensity(Level level) {
@@ -212,8 +300,9 @@ public final class GerstnerWaveEngine {
      * Safe during unit tests (defaults to 1.0).
      */
     public static double getActiveWaveScale(double stormIntensity) {
-        double calmScale = SereneSailingClientConfig.getCalmAggressiveness();
-        double stormScale = SereneSailingClientConfig.getStormAggressiveness();
+        double[] scales = currentScales();
+        double calmScale = scales[0];
+        double stormScale = scales[1];
         double stormBlend = Mth.clamp((stormIntensity - 0.15) / 0.55, 0.0, 1.0);
         return Mth.lerp(stormBlend, calmScale, stormScale);
     }
@@ -295,6 +384,36 @@ public final class GerstnerWaveEngine {
         }
 
         return totalOffset;
+    }
+
+    /**
+     * The three short-period "chop" harmonics (lambda ~ 11 m, 5.8 m, 3.4 m) that used to live only inside
+     * {@code ClientWaveRenderer}. They are part of the visible surface, so they must be part of the physical
+     * surface too. Construct once per frame / per query, then call {@link #offset} per point.
+     */
+    public static final class ChopField {
+        private final double dx1, dz1, dx2, dz2, dx3, dz3, amp1, amp2, amp3;
+
+        public ChopField(double stormIntensity, double windDirX, double windDirZ) {
+            double windAngle = Math.atan2(windDirZ, windDirX);
+            double a1 = windAngle + 0.30;  // ~ +18 deg
+            double a2 = windAngle - 0.40;  // ~ -23 deg
+            double a3 = windAngle + 0.733; // ~ +42 deg
+            dx1 = Math.cos(a1); dz1 = Math.sin(a1);
+            dx2 = Math.cos(a2); dz2 = Math.sin(a2);
+            dx3 = Math.cos(a3); dz3 = Math.sin(a3);
+            double activeWaveScale = getActiveWaveScale(stormIntensity);
+            double stormScale = stormIntensity > 0.4 ? (1.0 + (stormIntensity - 0.4) * 0.8) : 1.0;
+            amp1 = (0.12 * stormIntensity + 0.035) * stormScale * activeWaveScale;
+            amp2 = (0.07 * stormIntensity + 0.020) * stormScale * activeWaveScale;
+            amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale * activeWaveScale;
+        }
+
+        public double offset(double x, double z, double timeSeconds) {
+            return Math.sin(0.5712 * (dx1 * x + dz1 * z) - 2.367 * timeSeconds) * amp1
+                 + Math.sin(1.0833 * (dx2 * x + dz2 * z) - 3.259 * timeSeconds) * amp2
+                 + Math.sin(1.8480 * (dx3 * x + dz3 * z) - 4.150 * timeSeconds) * amp3;
+        }
     }
 
     /**

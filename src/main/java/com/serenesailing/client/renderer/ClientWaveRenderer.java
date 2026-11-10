@@ -14,6 +14,7 @@ import com.serenesailing.hold.HoldRegistry;
 import com.serenesailing.hold.HoldScanner;
 import com.serenesailing.hold.SableWaterOcclusion;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
+import com.serenesailing.physics.waves.WaveSurface;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
@@ -122,21 +123,7 @@ public class ClientWaveRenderer {
      * rather than man-made docks, planks, contraptions, or air cutouts.
      */
     private static boolean isNaturalShoreBlock(BlockState state) {
-        if (state.isAir() || state.is(BlockTags.PLANKS) || state.is(BlockTags.LOGS)
-                || state.is(BlockTags.WOODEN_SLABS) || state.is(BlockTags.WOODEN_STAIRS)
-                || state.is(BlockTags.WOODEN_FENCES) || state.is(BlockTags.FENCE_GATES)
-                || state.is(BlockTags.TRAPDOORS) || state.is(BlockTags.DOORS)) {
-            return false;
-        }
-        return state.is(BlockTags.SAND)
-                || state.is(BlockTags.DIRT)
-                || state.is(BlockTags.TERRACOTTA)
-                || state.is(BlockTags.BASE_STONE_OVERWORLD)
-                || state.is(Blocks.GRAVEL)
-                || state.is(Blocks.CLAY)
-                || state.is(Blocks.SANDSTONE)
-                || state.is(Blocks.RED_SANDSTONE)
-                || state.is(Blocks.SMOOTH_SANDSTONE);
+        return WaveSurface.isNaturalShoreBlock(state); // shared with the server-side physics taper
     }
 
     /**
@@ -258,9 +245,7 @@ public class ClientWaveRenderer {
                         cachedBlockLight[gx][gz] = (byte) level.getBrightness(LightLayer.BLOCK, probe);
 
                         // Ocean & Deep Ocean 1.25x swell boost (1.0x in coastal/rivers)
-                        var biomeHolder = level.getBiome(probe);
-                        boolean isOcean = biomeHolder.is(BiomeTags.IS_OCEAN) || biomeHolder.is(BiomeTags.IS_DEEP_OCEAN);
-                        cachedBiomeMultiplier[gx][gz] = isOcean ? 1.25f : 1.0f;
+                        cachedBiomeMultiplier[gx][gz] = WaveSurface.oceanMultiplier(level, probe);
 
                         // Check if this water column sits over a shallow shoaling seabed (Y=61, 60, or 59)
                         boolean shallow = false;
@@ -464,24 +449,13 @@ public class ClientWaveRenderer {
 
         double renderTime = (gameTime + partialTick) * 0.05;
 
-        // 3 High-Frequency visual chop harmonics (lambda ~ 11m, 5.8m, and cross-chop at 3.4m)
-        double windAngle = Math.atan2(windDirZ, windDirX);
-        double angle1 = windAngle + 0.30; // ~ +18 deg
-        double angle2 = windAngle - 0.40; // ~ -23 deg
-        double angle3 = windAngle + 0.733; // ~ +42 deg
-        double dirX1 = Math.cos(angle1), dirZ1 = Math.sin(angle1);
-        double dirX2 = Math.cos(angle2), dirZ2 = Math.sin(angle2);
-        double dirX3 = Math.cos(angle3), dirZ3 = Math.sin(angle3);
+        // Short-period chop harmonics now live in GerstnerWaveEngine so the physics evaluates the same surface.
+        final GerstnerWaveEngine.ChopField chopField =
+                new GerstnerWaveEngine.ChopField(stormIntensity, windDirX, windDirZ);
 
-        double activeWaveScale = GerstnerWaveEngine.getActiveWaveScale(stormIntensity);
-        double stormScale = stormIntensity > 0.4 ? (1.0 + (stormIntensity - 0.4) * 0.8) : 1.0;
-        double amp1 = (0.12 * stormIntensity + 0.035) * stormScale * activeWaveScale;
-        double amp2 = (0.07 * stormIntensity + 0.020) * stormScale * activeWaveScale;
-        double amp3 = (stormIntensity > 0.25 ? (0.055 * stormIntensity + 0.015) : 0.0) * stormScale * activeWaveScale;
-
-        float elevationBoost = (0.18f + (float) (0.22 * stormIntensity)) * (float) activeWaveScale;
-        float interiorBaseY = VANILLA_WATER_TOP_Y + elevationBoost;
-        float safeFloor = VANILLA_WATER_TOP_Y + 0.015f;
+        // The mesh is centred on the SAME mean plane physics uses (WaveSurface.MEAN_WATER_Y = 62.905: vanilla's 62.8889
+        // top face plus a 16 mm anti-z-fight bias). The old +0.18..+0.40 "elevation boost" lifted the whole sea above the
+        // surface boats and swimmers were actually on, which is what put the player under a second water ceiling.
 
         // --- Sable Sub-Level Hull Masking & Wave Attenuation ---
         List<MaskedCellInfo> maskedCells = new ArrayList<>();
@@ -700,10 +674,7 @@ public class ClientWaveRenderer {
                 // Un-clamped continuous Gerstner + Trochoidal wave displacement for EVERY vertex
                 double baseWave = GerstnerWaveEngine.evaluateWaveOffset(
                         vx, vz, renderTime, stormIntensity, windDirX, windDirZ);
-                double chop1 = Math.sin(0.5712 * (dirX1 * vx + dirZ1 * vz) - 2.367 * renderTime) * amp1;
-                double chop2 = Math.sin(1.0833 * (dirX2 * vx + dirZ2 * vz) - 3.259 * renderTime) * amp2;
-                double chop3 = Math.sin(1.8480 * (dirX3 * vx + dirZ3 * vz) - 4.150 * renderTime) * amp3;
-                double h = baseWave + chop1 + chop2 + chop3;
+                double h = baseWave + chopField.offset(vx, vz, renderTime);
 
                 // Smoothly interpolate Ocean & Deep Ocean 1.25x swell boost from adjacent cells
                 float b00 = (vi > 0 && vj > 0) ? cachedBiomeMultiplier[vi - 1][vj - 1] : 1.0f;
@@ -732,14 +703,15 @@ public class ClientWaveRenderer {
                 float shoreTaper = Mth.clamp((sDist - 0.5f) / 5.5f, 0.0f, 1.0f);
                 shoreTaper = shoreTaper * shoreTaper * (3.0f - 2.0f * shoreTaper); // smoothstep
 
-                float taperedBoost = elevationBoost * shoreTaper;
-                float taperedH = (float) h * shoreTaper;
+                // Same smooth floor the physics applies (WaveSurface.shape): the mesh never dips below vanilla's
+                // own flat water face, so no trough is hidden behind it while a boat floats in it.
+                float shapedH = (float) WaveSurface.shape(h * shoreTaper);
                 // Gently attenuate extreme wave crest spikes by at most 30% near vessels while maintaining natural base elevation
                 float smoothHullFeather = vertHullFeather[vi][vj];
                 if (smoothHullFeather < 1.0f) {
-                    taperedH *= Mth.lerp(smoothHullFeather, 0.70f, 1.0f);
+                    shapedH *= Mth.lerp(smoothHullFeather, 0.70f, 1.0f);
                 }
-                float openWaterY = Math.max(safeFloor, VANILLA_WATER_TOP_Y + taperedBoost + taperedH);
+                float openWaterY = (float) WaveSurface.MEAN_WATER_Y + shapedH;
 
                 vertFinalY[vi][vj] = openWaterY;
             }
@@ -1073,7 +1045,11 @@ public class ClientWaveRenderer {
         double timeSeconds = gameTime * 0.05;
 
         GerstnerWaveEngine.DimensionWaveState waveState = GerstnerWaveEngine.getDimensionState(level);
-        waveState.update(level, gameTime);
+        // Integrated server (single-player / LAN host): the server tick already advances this shared static state.
+        // Remote client: advance it here, replaying ticks since the last server snapshot.
+        if (mc.getSingleplayerServer() == null) {
+            waveState.update(level, gameTime);
+        }
 
         double stormIntensity = waveState.smoothedStormIntensity;
         if (stormIntensity < 0.10) {
@@ -1631,6 +1607,7 @@ public class ClientWaveRenderer {
 
     @SubscribeEvent
     public static void onClientLoggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+        GerstnerWaveEngine.resetAll();
         lastShipPos.clear();
         invalidateHoldEnvelopes();
     }
