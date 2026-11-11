@@ -1,5 +1,6 @@
 package com.serenesailing.mixin;
 
+import com.serenesailing.hold.HoldRegistry;
 import com.serenesailing.physics.waves.WaveSurface;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMap;
 import net.minecraft.tags.FluidTags;
@@ -21,8 +22,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * and fall-damage reset) from block fluid heights. Over a crest those blocks are air, so a swimmer falls
  * through the visible wave; in a trough the blocks are still water, so an entity floats in mid-air.
  *
- * <p>This runs at RETURN of the same overload {@link EntityAirPocketMixin} hooks at HEAD; when that mixin
- * cancels (entity inside a dry hold) this one never runs, so holds stay dry.
+ * <p>Dry holds are checked EXPLICITLY here ({@link HoldRegistry#isEntityInDryHold}). This handler runs at RETURN of
+ * the same overload {@link EntityAirPocketMixin} cancels at HEAD, and a RETURN injection can also attach to the return
+ * that a HEAD cancellation inserts, so it cannot be assumed that this code is skipped when the hold mixin cancels:
+ * without the guard an airborne entity (jumping, falling through a hatch) inside a dry hold would get wave-water
+ * physics and the underwater overlay during a storm.
  */
 @Mixin(Entity.class)
 public abstract class EntityWaveFluidMixin {
@@ -39,6 +43,11 @@ public abstract class EntityWaveFluidMixin {
         Entity self = (Entity) (Object) this;
         // Standing on a Sable deck / dock / the seabed is not swimming, whatever the crest below is doing.
         if (self.onGround() || !WaveSurface.isEntityInWaveZone(self)) {
+            return;
+        }
+        // The sea cannot reach this entity: it is inside a dry hold. Leave whatever the hold logic decided.
+        if (HoldRegistry.anyActive(self.level())
+                && HoldRegistry.isEntityInDryHold(self.level(), self.position(), self.getBoundingBox().getCenter())) {
             return;
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
@@ -77,6 +86,9 @@ public abstract class EntityWaveFluidMixin {
         Entity self = (Entity) (Object) this;
         if (self.onGround() || !WaveSurface.isEntityInWaveZone(self)) {
             return;
+        }
+        if (HoldRegistry.anyActive(self.level()) && HoldRegistry.isOccluded(self.level(), self.getEyePosition())) {
+            return; // eyes inside a dry hold: not in water, whatever the wave surface says
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
         cir.setReturnValue(self.getEyeY() - 0.11111111 < surface);

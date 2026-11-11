@@ -8,6 +8,7 @@
     "ChunkGeneratorMixin",
     "EntityAirPocketMixin",
     "EntityWaveFluidMixin",
+    "LevelBlockChangeMixin",
     "NoiseBasedChunkGeneratorMixin"
   ],
   "client": [

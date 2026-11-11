@@ -19,6 +19,7 @@ import com.serenesailing.physics.ShipHullAirPocketHelper;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import com.serenesailing.physics.waves.GerstnerWaveEngine;
+import com.serenesailing.physics.waves.WaveResponse;
 import com.serenesailing.physics.waves.WaveSurface;
 import com.serenesailing.registry.ModBlocks;
 import java.util.Set;
@@ -479,15 +480,18 @@ public class ServerPhysicsHandler {
         boolean hasActiveWaves = waveColumn && (Math.abs(offsetBow) > 1.0e-4 || Math.abs(offsetStern) > 1.0e-4
                 || Math.abs(offsetPort) > 1.0e-4 || Math.abs(offsetStarboard) > 1.0e-4);
 
-        // Heavy hull inertia filtering: large multi-deck ships span wave crests and cut through swells
-        double heaveAttenuation = 1.0 / (1.0 + (steering.blockCount() / 400.0));
+        // Hull inertia filtering by weight AND size. A small boat / raft keeps the full wave response (the
+        // maximum, 1.0 x the old behaviour); heavier and longer hulls follow the sea progressively less, so a
+        // galleon cuts through the swell that tosses a raft. See WaveResponse for the curve.
+        double heaveAttenuation = WaveResponse.heaveResponse(totalMass, hullLength, steering.blockCount());
+        double rotationAttenuation = WaveResponse.rotationResponse(totalMass, hullLength, steering.blockCount());
 
         double wavePitchTarget = 0.0;
         double waveRollTarget = 0.0;
         if (hasActiveWaves) {
             double effectiveLength = Math.max(6.0, hullLength * 0.7);
             double effectiveBeam = Math.max(4.0, hullBeam * 0.7);
-            double rotAtten = Math.max(0.35, heaveAttenuation);
+            double rotAtten = rotationAttenuation;
             wavePitchTarget = Mth.clamp(Math.atan2(offsetBow - offsetStern, effectiveLength) * rotAtten, -0.35, 0.35);
             waveRollTarget = Mth.clamp(Math.atan2(offsetPort - offsetStarboard, effectiveBeam) * rotAtten, -0.40, 0.40);
         }

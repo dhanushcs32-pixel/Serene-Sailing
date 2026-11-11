@@ -93,6 +93,14 @@ public final class HoldScanner {
 
     public enum HullClass { FLAT_RAFT, SUNKEN_HOLD }
 
+    /** Numbers behind a row-scan classification, for diagnostics: why is this ship a raft or a hold? */
+    public record ClassifyStats(int validRows, int flooredCells, int basinCells, int basinNeeded, boolean wasHold) {
+        public String describe() {
+            return "validRows=" + validRows + " (need " + MIN_HOLD_ROWS + ") flooredCells=" + flooredCells
+                    + " basinCells=" + basinCells + " (need " + basinNeeded + ", " + (wasHold ? "staying" : "entering") + ")";
+        }
+    }
+
     // =========================================================================================
     //  INPUT TYPES
     // =========================================================================================
@@ -156,6 +164,8 @@ public final class HoldScanner {
         private final int volMinX, volMinY, volMinZ, volMaxX, volMaxY, volMaxZ;
         private final boolean hasVolume;
         private final int volumeHash;
+        /** Row scanner only: the classification numbers (null for other engines). */
+        private ClassifyStats stats;
 
         private Envelope(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, HullClass hullClass,
                          int[] portX, int[] starboardX, byte[] cellFlags, int[] colLo, int[] colHi, int validRows) {
@@ -236,6 +246,11 @@ public final class HoldScanner {
 
         public int validRows() {
             return validRows;
+        }
+
+        /** Row scanner: the numbers behind the raft / hold decision; null for envelopes from another engine. */
+        public ClassifyStats stats() {
+            return stats;
         }
 
         public boolean hasVolume() {
@@ -369,28 +384,10 @@ public final class HoldScanner {
         Arrays.fill(colLo, Integer.MAX_VALUE);
         Arrays.fill(colHi, Integer.MIN_VALUE);
 
-        final int[] bandCount = new int[width];
-        final double[] wallTop = new double[width];
-        final int[] support = new int[width];
-        // Wall probing for every row up front, so a column can be judged against its neighbouring rows.
-        final int[] bandAll = new int[width * depth];
-        final double[] topAll = new double[width * depth];
-        final int[] totalAll = new int[width * depth];
-        for (int lz = minZ; lz <= maxZ; lz++) {
-            final int base = (lz - minZ) * width;
-            for (int lx = minX; lx <= maxX; lx++) {
-                probeWallColumn(grid, frame, lx, lz, minY, maxY, bandCount, wallTop, lx - minX);
-                bandAll[base + lx - minX] = bandCount[lx - minX];
-                topAll[base + lx - minX] = wallTop[lx - minX];
-                int total = 0;
-                for (int ly = minY; ly <= maxY; ly++) {
-                    if (grid.isHull(lx, ly, lz)) {
-                        total++;
-                    }
-                }
-                totalAll[base + lx - minX] = total;
-            }
-        }
+        // Wall columns are probed lazily from the two outer edges inwards, and a column's full height is only counted
+        // for the one or two candidate wall columns per row: probing every column of every row costs hundreds of
+        // thousands of block queries on a large ship.
+        final RowProbe probe = new RowProbe(grid, frame, minX, minY, minZ, maxY, width, depth);
         final double[] floorLowestTop = new double[width];
         final double[] floorRunTop = new double[width];
         final int[] floorLowestY = new int[width];
@@ -400,26 +397,12 @@ public final class HoldScanner {
         for (int lz = minZ; lz <= maxZ; lz++) {
             final int row = lz - minZ;
 
-            System.arraycopy(bandAll, row * width, bandCount, 0, width);
-            System.arraycopy(topAll, row * width, wallTop, 0, width);
-            // Support: the tallest stack the same column reaches within a few rows either side. A real hull wall is a
-            // stack in neighbouring rows even where one row has only a trapdoor (gunport); a railing, ladder or fender
-            // hanging off the side is a lone block and must not widen the envelope into open water.
-            for (int c = 0; c < width; c++) {
-                int best = 0;
-                for (int dr = -WALL_SUPPORT_ROWS; dr <= WALL_SUPPORT_ROWS; dr++) {
-                    final int r2 = row + dr;
-                    if (r2 >= 0 && r2 < depth) {
-                        best = Math.max(best, totalAll[r2 * width + c]);
-                    }
-                }
-                support[c] = best;
-            }
+            probe.startRow(row);
 
             // Port side: first outer-hull wall column scanning inwards.
             int port = -1;
             for (int lx = minX; lx <= maxX; lx++) {
-                if (isWallColumn(bandCount, support, lx - minX, width)) {
+                if (probe.isWall(lx - minX)) {
                     port = lx;
                     break;
                 }
@@ -430,7 +413,7 @@ public final class HoldScanner {
             // Starboard side: last outer-hull wall column.
             int star = -1;
             for (int lx = maxX; lx > port; lx--) {
-                if (isWallColumn(bandCount, support, lx - minX, width)) {
+                if (probe.isWall(lx - minX)) {
                     star = lx;
                     break;
                 }
@@ -438,8 +421,8 @@ public final class HoldScanner {
             if (star < 0 || star - port < 2) {
                 continue; // no interior between the walls
             }
-            final double portTop = windowTop(wallTop, port - minX, width);
-            final double starTop = windowTop(wallTop, star - minX, width);
+            final double portTop = probe.windowTop(port - minX);
+            final double starTop = probe.windowTop(star - minX);
             if (portTop < WALL_RISE_MIN_Y || starTop < WALL_RISE_MIN_Y) {
                 continue; // perimeter does not rise above the surface
             }
@@ -508,6 +491,9 @@ public final class HoldScanner {
         }
 
         final HullClass cls = classify(validRows, flooredCells, basinEnter, basinStay, previous);
+        final boolean wasHold = previous == HullClass.SUNKEN_HOLD;
+        final ClassifyStats stats = new ClassifyStats(validRows, flooredCells, wasHold ? basinStay : basinEnter,
+                Math.max(MIN_BASIN_CELLS, (int) Math.ceil(flooredCells * BASIN_FRACTION)), wasHold);
         if (cls != HullClass.SUNKEN_HOLD) {
             // A raft / flat deck owns no volume: drop everything so nothing downstream acts on it.
             Arrays.fill(portX, -1);
@@ -515,9 +501,13 @@ public final class HoldScanner {
             Arrays.fill(flags, (byte) 0);
             Arrays.fill(colLo, Integer.MAX_VALUE);
             Arrays.fill(colHi, Integer.MIN_VALUE);
-            return new Envelope(minX, minY, minZ, maxX, maxY, maxZ, cls, portX, starboardX, flags, colLo, colHi, 0);
+            final Envelope raft = new Envelope(minX, minY, minZ, maxX, maxY, maxZ, cls, portX, starboardX, flags, colLo, colHi, 0);
+            raft.stats = stats;
+            return raft;
         }
-        return new Envelope(minX, minY, minZ, maxX, maxY, maxZ, cls, portX, starboardX, flags, colLo, colHi, validRows);
+        final Envelope hold = new Envelope(minX, minY, minZ, maxX, maxY, maxZ, cls, portX, starboardX, flags, colLo, colHi, validRows);
+        hold.stats = stats;
+        return hold;
     }
 
     /**
@@ -561,33 +551,115 @@ public final class HoldScanner {
     }
 
     /**
-     * A wall column holds a hull block in the band itself, and the 3-column window around it holds at least
-     * WALL_MIN_BAND_BLOCKS of them. The own-block requirement keeps the envelope from growing outwards into
-     * open water next to a wall; the window keeps a trapdoor-only gunport column from being skipped.
+     * Lazy, memoised wall probing for one row at a time.
+     *
+     * <p>A wall column holds a hull block in the waterline band itself, and the 3-column window around it holds at least
+     * WALL_MIN_BAND_BLOCKS of them. The own-block requirement keeps the envelope from growing outwards into open water
+     * next to a wall; the window keeps a trapdoor-only gunport column from being skipped. On top of that the column must
+     * be a real stack (WALL_MIN_COLUMN_BLOCKS hull blocks over its whole height) in this row or a few rows either side:
+     * a gunport row is a stack in its neighbouring rows, a railing / ladder / fender post is a lone block everywhere and
+     * must not widen the envelope into open water.
      */
-    private static boolean isWallColumn(int[] bandCount, int[] support, int c, int width) {
-        if (bandCount[c] < 1 || support[c] < WALL_MIN_COLUMN_BLOCKS) {
+    private static final class RowProbe {
+        private final Grid grid;
+        private final Frame frame;
+        private final int minX, minY, minZ, maxY, width, depth;
+        private final int[] band;
+        private final double[] top;
+        private final boolean[] probed;
+        /** Whole-height hull count per column, shared across rows; -1 = not counted yet. */
+        private final int[] totalMemo;
+        private int row;
+
+        RowProbe(Grid grid, Frame frame, int minX, int minY, int minZ, int maxY, int width, int depth) {
+            this.grid = grid;
+            this.frame = frame;
+            this.minX = minX;
+            this.minY = minY;
+            this.minZ = minZ;
+            this.maxY = maxY;
+            this.width = width;
+            this.depth = depth;
+            this.band = new int[width];
+            this.top = new double[width];
+            this.probed = new boolean[width];
+            this.totalMemo = new int[width * depth];
+            Arrays.fill(totalMemo, -1);
+        }
+
+        void startRow(int row) {
+            this.row = row;
+            Arrays.fill(probed, false);
+        }
+
+        private void ensure(int c) {
+            if (!probed[c]) {
+                probeWallColumn(grid, frame, minX + c, minZ + row, minY, maxY, band, top, c);
+                probed[c] = true;
+            }
+        }
+
+        private int columnTotal(int r, int c) {
+            final int i = r * width + c;
+            if (totalMemo[i] < 0) {
+                int total = 0;
+                for (int ly = minY; ly <= maxY; ly++) {
+                    if (grid.isHull(minX + c, ly, minZ + r)) {
+                        total++;
+                    }
+                }
+                totalMemo[i] = total;
+            }
+            return totalMemo[i];
+        }
+
+        private boolean supported(int c) {
+            for (int dr = 0; dr <= WALL_SUPPORT_ROWS; dr++) {
+                if (stackAtRowOffset(c, dr)) {
+                    return true;
+                }
+            }
             return false;
         }
-        int sum = 0;
-        for (int d = -WALL_WINDOW_RADIUS; d <= WALL_WINDOW_RADIUS; d++) {
-            final int k = c + d;
-            if (k >= 0 && k < width) {
-                sum += bandCount[k];
-            }
-        }
-        return sum >= WALL_MIN_BAND_BLOCKS;
-    }
 
-    private static double windowTop(double[] wallTop, int c, int width) {
-        double top = Double.NEGATIVE_INFINITY;
-        for (int d = -WALL_WINDOW_RADIUS; d <= WALL_WINDOW_RADIUS; d++) {
-            final int k = c + d;
-            if (k >= 0 && k < width) {
-                top = Math.max(top, wallTop[k]);
+        /** Is column c a real stack in the row dr rows away (either side)? */
+        private boolean stackAtRowOffset(int c, int dr) {
+            final int r0 = row;
+            if (dr == 0) {
+                return columnTotal(r0, c) >= WALL_MIN_COLUMN_BLOCKS;
             }
+            final int up = r0 + dr, down = r0 - dr;
+            return (up < depth && columnTotal(up, c) >= WALL_MIN_COLUMN_BLOCKS)
+                    || (down >= 0 && columnTotal(down, c) >= WALL_MIN_COLUMN_BLOCKS);
         }
-        return top;
+
+        boolean isWall(int c) {
+            ensure(c);
+            if (band[c] < 1) {
+                return false;
+            }
+            int sum = 0;
+            for (int d = -WALL_WINDOW_RADIUS; d <= WALL_WINDOW_RADIUS; d++) {
+                final int k = c + d;
+                if (k >= 0 && k < width) {
+                    ensure(k);
+                    sum += band[k];
+                }
+            }
+            return sum >= WALL_MIN_BAND_BLOCKS && supported(c);
+        }
+
+        double windowTop(int c) {
+            double best = Double.NEGATIVE_INFINITY;
+            for (int d = -WALL_WINDOW_RADIUS; d <= WALL_WINDOW_RADIUS; d++) {
+                final int k = c + d;
+                if (k >= 0 && k < width) {
+                    ensure(k);
+                    best = Math.max(best, top[k]);
+                }
+            }
+            return best;
+        }
     }
 
     /** Highest hull cell (local Y) in the 3-column window around {@code c}; Integer.MIN_VALUE if there is none. */

@@ -35,18 +35,26 @@ public final class HoldBlocks {
 
     /** {@link HoldScanner.Grid} over a level that never forces a chunk load. */
     public static final class LevelGrid implements HoldScanner.Grid {
+        private static final BlockState AIR = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
         private final Level level;
         private final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        /** The scanner walks columns, so consecutive queries almost always hit the same chunk. */
+        private int cachedCx = Integer.MIN_VALUE, cachedCz = Integer.MIN_VALUE;
+        private net.minecraft.world.level.chunk.LevelChunk cachedChunk;
 
         public LevelGrid(Level level) {
             this.level = level;
         }
 
         private BlockState state(int x, int y, int z) {
-            if (!level.hasChunk(x >> 4, z >> 4)) {
-                return net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+            final int cx = x >> 4, cz = z >> 4;
+            if (cx != cachedCx || cz != cachedCz) {
+                cachedCx = cx;
+                cachedCz = cz;
+                // getChunkNow never loads or generates a chunk; null = not loaded (treated as air)
+                cachedChunk = level.getChunkSource().getChunkNow(cx, cz);
             }
-            return level.getBlockState(pos.set(x, y, z));
+            return cachedChunk == null ? AIR : cachedChunk.getBlockState(pos.set(x, y, z));
         }
 
         @Override

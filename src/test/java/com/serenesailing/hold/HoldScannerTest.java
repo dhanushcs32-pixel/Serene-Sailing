@@ -257,6 +257,76 @@ public class HoldScannerTest {
     }
 
     @Test
+    @DisplayName("Diagnostics: a classification carries the numbers that explain it")
+    public void classificationExplainsItself() {
+        final HoldScanner.Envelope hold = brig(0).scan();
+        assertTrue(hold.stats() != null);
+        assertTrue(hold.isSunken());
+        assertTrue(hold.stats().basinCells() >= hold.stats().basinNeeded(), "a hold has enough basin cells: " + hold.stats().describe());
+        assertEquals(10, hold.stats().validRows());
+
+        final Hull raft = new Hull(0);
+        for (int z = 0; z <= 11; z++) {
+            for (int x = 0; x <= 8; x++) {
+                raft.set(x, 2, z);
+            }
+        }
+        final HoldScanner.Envelope flat = raft.scan();
+        assertFalse(flat.isSunken());
+        assertTrue(flat.stats() != null, "a raft explains itself too");
+        assertEquals(0, flat.stats().validRows(), "no row has walls that rise above the surface");
+        assertTrue(flat.stats().describe().contains("validRows=0"));
+    }
+
+    @Test
+    @DisplayName("Cost budget: scanning a 288,000-cell ship stays under a fixed number of block queries")
+    public void scanQueryCountStaysBounded() {
+        final int w = 60, h = 40, d = 120;
+        final boolean[] solid = new boolean[w * h * d];
+        for (int x = 0; x < w; x++) {
+            for (int z = 0; z < d; z++) {
+                for (int y = 0; y <= 1; y++) {
+                    solid[(y * d + z) * w + x] = true;
+                }
+                solid[(15 * d + z) * w + x] = x >= 2 && x < w - 2 && z >= 2 && z < d - 2;   // a deck
+            }
+        }
+        for (int y = 0; y <= 30; y++) {
+            for (int x = 0; x < w; x++) {
+                for (int z = 0; z < d; z++) {
+                    if (x < 2 || x >= w - 2 || z < 2 || z >= d - 2) {
+                        solid[(y * d + z) * w + x] = true;
+                    }
+                }
+            }
+        }
+        final long[] queries = {0};
+        final HoldScanner.Grid grid = new HoldScanner.Grid() {
+            private boolean at(int x, int y, int z) {
+                return x >= 0 && x < w && y >= 0 && y < h && z >= 0 && z < d && solid[(y * d + z) * w + x];
+            }
+
+            @Override
+            public boolean isHull(int x, int y, int z) {
+                queries[0]++;
+                return at(x, y, z);
+            }
+
+            @Override
+            public double floorHeight(int x, int y, int z) {
+                queries[0]++;
+                return at(x, y, z) ? 1.0 : Double.NaN;
+            }
+        };
+        final HoldScanner.Envelope env = HoldScanner.scan(0, 0, 0, w - 1, h - 1, d - 1, grid,
+                HoldScanner.Frame.level(0, 0, 0, SURFACE_Y - 12.0), HoldScanner.HullClass.FLAT_RAFT);
+        assertTrue(env.isSunken());
+        // 389,000 queries before the lazy wall probing; about 50,000 after. The budget leaves headroom but would
+        // catch anyone re-introducing a per-column full-height count.
+        assertTrue(queries[0] < 100_000, "block queries per scan: " + queries[0]);
+    }
+
+    @Test
     @DisplayName("Plot-local Y is arbitrary: the same brig at local Y 200 and -32 is found the same way")
     public void plotLocalYIsNotAssumedToBeWorldY() {
         final int baseline = brig(0).scan().validRows();

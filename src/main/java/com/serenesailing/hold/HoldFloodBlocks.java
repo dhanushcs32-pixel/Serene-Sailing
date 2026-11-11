@@ -8,8 +8,7 @@ import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.chunk.ChunkAccess;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3d;
@@ -74,7 +73,7 @@ public final class HoldFloodBlocks {
         final byte[] masks = new byte[w * h * d];
         for (int cz = p.minZ() >> 4; cz <= p.maxZ() >> 4; cz++) {
             for (int cx = p.minX() >> 4; cx <= p.maxX() >> 4; cx++) {
-                final ChunkAccess chunk = level.getChunk(cx, cz, ChunkStatus.FULL, false); // never loads a chunk
+                final LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz); // never loads a chunk
                 if (chunk == null) {
                     continue;
                 }

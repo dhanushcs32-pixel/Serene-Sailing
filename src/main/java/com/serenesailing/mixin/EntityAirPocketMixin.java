@@ -47,7 +47,8 @@ public abstract class EntityAirPocketMixin {
     @Inject(method = "updateFluidHeightAndDoFluidPushing(Lnet/minecraft/tags/TagKey;D)Z",
             at = @At("HEAD"), cancellable = true, require = 1)
     private void serenesailing$dryHoldFluidPush(TagKey<Fluid> tag, double scale, CallbackInfoReturnable<Boolean> cir) {
-        if (!FluidTags.WATER.equals(tag)) {
+        // anyActive is the cheap common case (no hold at all): skip before allocating the bounding-box centre.
+        if (!FluidTags.WATER.equals(tag) || !HoldRegistry.anyActive(this.level())) {
             return;
         }
         if (HoldRegistry.isEntityInDryHold(this.level(), this.position(), this.getBoundingBox().getCenter())) {
@@ -59,7 +60,8 @@ public abstract class EntityAirPocketMixin {
 
     @Inject(method = "isEyeInFluid", at = @At("HEAD"), cancellable = true, require = 1)
     private void serenesailing$dryHoldEyes(TagKey<Fluid> tag, CallbackInfoReturnable<Boolean> cir) {
-        if (FluidTags.WATER.equals(tag) && HoldRegistry.isOccluded(this.level(), this.getEyePosition())) {
+        if (FluidTags.WATER.equals(tag) && HoldRegistry.anyActive(this.level())
+                && HoldRegistry.isOccluded(this.level(), this.getEyePosition())) {
             cir.setReturnValue(false);
         }
     }
