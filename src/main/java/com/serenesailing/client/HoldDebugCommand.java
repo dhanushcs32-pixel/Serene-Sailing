@@ -95,6 +95,26 @@ public final class HoldDebugCommand {
                 }
             }
         });
+        // Flood fill leak route (from /serenesailing holddebug): magenta boxes along the sea's way into the ship.
+        final AABB cell = new AABB(-0.22, -0.22, -0.22, 0.22, 0.22, 0.22);
+        registry.forEachLeakPath((sub, path) -> {
+            final Pose3dc pose = sub.logicalPose();
+            if (pose == null) {
+                return;
+            }
+            for (int i = 0; i + 2 < path.length && drawn[0] < MAX_MARKERS; i += 3) {
+                final Vector3d world = pose.transformPosition(tmp.set(path[i] + 0.5, path[i + 1] + 0.5, path[i + 2] + 0.5));
+                final double dx = world.x - cam.x, dy = world.y - cam.y, dz = world.z - cam.z;
+                if (dx * dx + dy * dy + dz * dz > DRAW_RANGE * DRAW_RANGE) {
+                    continue;
+                }
+                poseStack.pushPose();
+                poseStack.translate(dx, dy, dz);
+                LevelRenderer.renderLineBox(poseStack, lines, cell, 1.0f, 0.2f, 1.0f, 1.0f);
+                poseStack.popPose();
+                drawn[0]++;
+            }
+        });
         RenderSystem.disableDepthTest();
         buffers.endBatch(RenderType.lines());
         RenderSystem.enableDepthTest();

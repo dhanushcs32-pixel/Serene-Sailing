@@ -165,6 +165,108 @@ public class HoldFloodTest {
         assertTrue(deep.wasBelow(5, 3, 5));
     }
 
+    /** A bowl whose side walls are two layers thick: an outer layer of bottom slabs and an inner layer of top slabs. */
+    private static final class SlabHull implements HoldFlood.Grid {
+        // kinds: 0 air, 1 full block, 2 bottom slab, 3 top slab, 4 fence post
+        final byte[] kind = new byte[W * H * D];
+
+        byte at(int x, int y, int z) {
+            return x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D ? kind[(y * D + z) * W + x] : 0;
+        }
+
+        void set(int x, int y, int z, int k) {
+            kind[(y * D + z) * W + x] = (byte) k;
+        }
+
+        long[][] faces(int x, int y, int z) {
+            return switch (at(x, y, z)) {
+                case 1 -> FaceCoverage.fromBoxes(new double[][]{{0, 0, 0, 1, 1, 1}});
+                case 2 -> FaceCoverage.fromBoxes(new double[][]{{0, 0, 0, 1, 0.5, 1}});
+                case 3 -> FaceCoverage.fromBoxes(new double[][]{{0, 0.5, 0, 1, 1, 1}});
+                case 4 -> FaceCoverage.fromBoxes(new double[][]{{0.375, 0, 0.375, 0.625, 1, 0.625}});
+                default -> new long[6][FaceCoverage.WORDS];
+            };
+        }
+
+        @Override
+        public boolean blocksFace(int x, int y, int z, int dir) {
+            return FaceCoverage.isFull(faces(x, y, z)[dir]);
+        }
+
+        @Override
+        public boolean sealsBetween(int x, int y, int z, int dir) {
+            final int[] dx = {-1, 1, 0, 0, 0, 0}, dy = {0, 0, -1, 1, 0, 0}, dz = {0, 0, 0, 0, -1, 1};
+            return FaceCoverage.unionIsFull(faces(x, y, z)[dir], faces(x + dx[dir], y + dy[dir], z + dz[dir])[dir ^ 1]);
+        }
+
+        HoldFlood.Result analyse() {
+            return HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, this, HoldScanner.Frame.level(0, 0, 0, 60.0), WATER_Y);
+        }
+
+        /** Floor y=0 full; side walls (x = 0,1 and x = W-2,W-1 and the end rows) in the given outer/inner kinds, up to y=8. */
+        static SlabHull bowl(int outerKind, int innerKind) {
+            final SlabHull h = new SlabHull();
+            for (int x = 0; x < W; x++) {
+                for (int z = 0; z < D; z++) {
+                    h.set(x, 0, z, 1);
+                    final boolean outer = x == 0 || x == W - 1 || z == 0 || z == D - 1;
+                    final boolean inner = !outer && (x == 1 || x == W - 2 || z == 1 || z == D - 2);
+                    for (int y = 1; y <= 8; y++) {
+                        if (outer) {
+                            h.set(x, y, z, outerKind);
+                        } else if (inner) {
+                            h.set(x, y, z, innerKind);
+                        }
+                    }
+                }
+            }
+            return h;
+        }
+    }
+
+    @Test
+    @DisplayName("Bottom slabs outside + top slabs inside seal TOGETHER: a slab/stair hull does not leak (vanilla rule)")
+    public void interlockingSlabWallsAreWatertight() {
+        final HoldFlood.Result r = SlabHull.bowl(2, 3).analyse();
+        assertTrue(r.dryCells() > 0, "the hull interior stays dry; dry=" + r.dryCells() + " flooded=" + r.floodedCells());
+        assertTrue(r.isDry(5, 1, 5));
+    }
+
+    @Test
+    @DisplayName("Two layers of the SAME half-slab leave the other half open: that hull leaks")
+    public void sameHalfSlabWallsLeak() {
+        assertEquals(0, SlabHull.bowl(2, 2).analyse().dryCells());
+    }
+
+    @Test
+    @DisplayName("A hull made of fence posts is not watertight")
+    public void fenceWallsLeak() {
+        assertEquals(0, SlabHull.bowl(4, 4).analyse().dryCells());
+    }
+
+    @Test
+    @DisplayName("Leak path: from the deepest flooded cell, the path back to the sea runs through the hole in the hull")
+    public void pathToSeaPassesThroughTheBreach() {
+        final Ship s = Ship.bowl(8);
+        s.set(0, 1, 5, false);
+        final HoldFlood.Result r = s.analyse();
+        final int[] deepest = r.deepestFloodedCell();
+        assertTrue(deepest != null);
+        final int[] path = r.pathToSea(deepest[0], deepest[1], deepest[2]);
+        assertTrue(path.length >= 6, "at least two cells");
+        assertEquals(deepest[0], path[0]);
+        boolean passesHole = false;
+        for (int i = 0; i < path.length; i += 3) {
+            passesHole |= path[i] == 0 && path[i + 1] == 1 && path[i + 2] == 5;
+        }
+        assertTrue(passesHole, "the path to the sea must go through the one hole in the wall");
+        // the last cell of the path is open sea outside the box
+        final int lx = path[path.length - 3], lz = path[path.length - 1];
+        assertTrue(lx < 0 || lx >= W || path[path.length - 2] < 0 || path[path.length - 2] >= H || lz < 0 || lz >= D);
+        assertEquals(0, ((Ship) Ship.bowl(8)).analyse().floodedCells(), "sanity: the sealed bowl has no flooded cells");
+        assertTrue(Ship.bowl(8).analyse().pathToSea(5, 1, 5).length == 0, "a dry cell has no path to the sea");
+    }
+
     private static Ship breached() {
         final Ship s = Ship.bowl(8);
         s.set(0, 1, 5, false);

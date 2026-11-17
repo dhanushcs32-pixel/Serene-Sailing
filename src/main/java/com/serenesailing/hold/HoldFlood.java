@@ -34,6 +34,15 @@ public final class HoldFlood {
     public interface Grid {
         /** True if the block in this cell completely covers the face in direction {@code dir} (0..5), so no water passes it. */
         boolean blocksFace(int x, int y, int z, int dir);
+
+        /**
+         * Do the blocks of cell (x, y, z) and of its neighbour in direction {@code dir} TOGETHER seal the face between
+         * them? Vanilla fluids pass unless the union of both faces covers the boundary completely (see
+         * {@link FaceCoverage}). The default only knows whole faces: sealed if either block covers it alone.
+         */
+        default boolean sealsBetween(int x, int y, int z, int dir) {
+            return blocksFace(x, y, z, dir) || blocksFace(x + DX[dir], y + DY[dir], z + DZ[dir], dir ^ 1);
+        }
     }
 
     /** Result: per cell of the (unpadded) box, whether it is DRY, plus a few totals. */
@@ -42,10 +51,14 @@ public final class HoldFlood {
         private final boolean[] dry;
         /** Padded by one cell on every side (see analyse): which cells were below the waterline in this scan. */
         private final boolean[] belowPadded;
+        /** Padded: reached by the sea; and for every reached cell, the cell the sea came from. */
+        private final boolean[] seenPadded;
+        private final int[] parentPadded;
         private final int dryCells, floodedCells, openCellsBelowWater;
 
         private Result(int minX, int minY, int minZ, int width, int height, int depth, boolean[] dry,
-                       boolean[] belowPadded, int dryCells, int floodedCells, int openCellsBelowWater) {
+                       boolean[] belowPadded, boolean[] seenPadded, int[] parentPadded,
+                       int dryCells, int floodedCells, int openCellsBelowWater) {
             this.minX = minX;
             this.minY = minY;
             this.minZ = minZ;
@@ -54,23 +67,83 @@ public final class HoldFlood {
             this.depth = depth;
             this.dry = dry;
             this.belowPadded = belowPadded;
+            this.seenPadded = seenPadded;
+            this.parentPadded = parentPadded;
             this.dryCells = dryCells;
             this.floodedCells = floodedCells;
             this.openCellsBelowWater = openCellsBelowWater;
         }
 
-        /** Is this cell a trapped, dry air pocket below the waterline? */
         public boolean isDry(int x, int y, int z) {
-            final int lx = x - minX, ly = y - minY, lz = z - minZ;
-            return lx >= 0 && lx < width && ly >= 0 && ly < height && lz >= 0 && lz < depth
-                    && dry[(ly * depth + lz) * width + lx];
+            if (x < minX || x >= minX + width || y < minY || y >= minY + height || z < minZ || z >= minZ + depth) {
+                return false;
+            }
+            return dry[((y - minY) * depth + (z - minZ)) * width + (x - minX)];
         }
 
-        /** Was this cell (the ring of padding included) below the waterline in this scan? Drives hysteresis. */
+        /** True if the cell (unpadded coords) was below the waterline during this scan; false outside the box. */
         public boolean wasBelow(int x, int y, int z) {
             final int px = x - minX + 1, py = y - minY + 1, pz = z - minZ + 1;
             return px >= 0 && px < width + 2 && py >= 0 && py < height + 2 && pz >= 0 && pz < depth + 2
                     && belowPadded[(py * (depth + 2) + pz) * (width + 2) + px];
+        }
+
+        private int padIndex(int x, int y, int z) {
+            return ((y - minY + 1) * (depth + 2) + (z - minZ + 1)) * (width + 2) + (x - minX + 1);
+        }
+
+        /**
+         * How the sea gets to a flooded cell: the cells from this one back to the open sea, as x, y, z triples (first
+         * triple = the cell itself, last = the sea cell just outside the box). Empty if the cell is not flooded.
+         */
+        public int[] pathToSea(int x, int y, int z) {
+            if (x < minX || x >= minX + width || y < minY || y >= minY + height || z < minZ || z >= minZ + depth) {
+                return new int[0];
+            }
+            int i = padIndex(x, y, z);
+            if (!seenPadded[i]) {
+                return new int[0];
+            }
+            final java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
+            final int pw = width + 2, pd = depth + 2;
+            int guard = 0;
+            while (i >= 0 && guard++ < 1_000_000) {
+                out.add(minX + (i % pw) - 1);
+                out.add(minY + (i / (pw * pd)) - 1);
+                out.add(minZ + ((i / pw) % pd) - 1);
+                i = parentPadded[i];
+            }
+            final int[] arr = new int[out.size()];
+            for (int k = 0; k < arr.length; k++) {
+                arr[k] = out.get(k);
+            }
+            return arr;
+        }
+
+        /**
+         * The flooded cell furthest inside the box (greatest horizontal distance from every side of it), i.e. the best
+         * candidate for "inside the hull". Ties go to the lowest cell. Null if nothing is flooded.
+         */
+        public int[] deepestFloodedCell() {
+            int bestDepth = -1, bx = 0, by = 0, bz = 0;
+            for (int y = minY; y < minY + height; y++) {
+                for (int z = minZ; z < minZ + depth; z++) {
+                    for (int x = minX; x < minX + width; x++) {
+                        if (!seenPadded[padIndex(x, y, z)]) {
+                            continue;
+                        }
+                        final int d = Math.min(Math.min(x - minX, minX + width - 1 - x),
+                                Math.min(z - minZ, minZ + depth - 1 - z));
+                        if (d > bestDepth) {
+                            bestDepth = d;
+                            bx = x;
+                            by = y;
+                            bz = z;
+                        }
+                    }
+                }
+            }
+            return bestDepth < 0 ? null : new int[]{bx, by, bz};
         }
 
         public int dryCells() { return dryCells; }
@@ -104,6 +177,8 @@ public final class HoldFlood {
         final int pw = w + 2, ph = h + 2, pd = d + 2;
         final boolean[] below = new boolean[pw * ph * pd];
         final boolean[] seen = new boolean[pw * ph * pd];
+        final int[] parent = new int[pw * ph * pd];            // BFS tree: how the sea reached each cell (-1 = a seed)
+        Arrays.fill(parent, -1);
         final int[] queue = new int[pw * ph * pd];
         int head = 0, tail = 0, openBelow = 0;
 
@@ -139,13 +214,21 @@ public final class HoldFlood {
                     continue; // water does not climb above its own surface
                 }
                 final boolean nInside = npx > 0 && npy > 0 && npz > 0 && npx < pw - 1 && npy < ph - 1 && npz < pd - 1;
-                if (inside && grid.blocksFace(x, y, z, dir)) {
-                    continue;
+                final boolean sealed;
+                if (inside && nInside) {
+                    sealed = grid.sealsBetween(x, y, z, dir);
+                } else if (inside) {
+                    sealed = grid.blocksFace(x, y, z, dir);          // the other side is open sea
+                } else if (nInside) {
+                    sealed = grid.blocksFace(x + DX[dir], y + DY[dir], z + DZ[dir], dir ^ 1);
+                } else {
+                    sealed = false;
                 }
-                if (nInside && grid.blocksFace(x + DX[dir], y + DY[dir], z + DZ[dir], dir ^ 1)) {
+                if (sealed) {
                     continue;
                 }
                 seen[ni] = true;
+                parent[ni] = i;
                 queue[tail++] = ni;
             }
         }
@@ -177,6 +260,6 @@ public final class HoldFlood {
                 }
             }
         }
-        return new Result(minX, minY, minZ, w, h, d, dry, below, dryCells, flooded, openBelow);
+        return new Result(minX, minY, minZ, w, h, d, dry, below, seen, parent, dryCells, flooded, openBelow);
     }
 }

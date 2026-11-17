@@ -100,6 +100,8 @@ public final class HoldRegistry {
         volatile @Nullable HoldScanner.Envelope last;
         int lastHash;
         long lastScanNanos;
+        /** Flood fill diagnostics: the sea's route into the ship (x, y, z triples, local coords), set by describe(). */
+        volatile @Nullable int[] leakPath;
         /** 1 normally; doubled (up to 8) while this ship's scans are slow, which multiplies its scan intervals. */
         int slowFactor = 1;
         boolean warnedSlow;
@@ -173,6 +175,16 @@ public final class HoldRegistry {
     public boolean hasRegion(SubLevel sub) {
         final Entry entry = entries.get(sub);
         return entry != null && entry.region != null;
+    }
+
+    /** Visits the leak routes found by the last {@code /serenesailing holddebug} (diagnostics overlay). */
+    public void forEachLeakPath(BiConsumer<SubLevel, int[]> visitor) {
+        for (final Map.Entry<SubLevel, Entry> e : entries.entrySet()) {
+            final int[] path = e.getValue().leakPath;
+            if (path != null && path.length > 0) {
+                visitor.accept(e.getKey(), path);
+            }
+        }
     }
 
     public boolean hasActiveHolds() {
@@ -292,6 +304,9 @@ public final class HoldRegistry {
                 sb.append("\n    flood fill: dry cells=").append(entry.floodPrev.dryCells())
                         .append(" flooded=").append(entry.floodPrev.floodedCells())
                         .append(" openBelowWater=").append(entry.floodPrev.openCellsBelowWater());
+                if (here) {
+                    sb.append("\n    ").append(leakReport(level, entry));
+                }
             }
             if (env != null && here) {
                 final Pose3dc pose = sub.logicalPose();
@@ -336,6 +351,51 @@ public final class HoldRegistry {
             out.add("registry exists but tracks no sub-levels near the sea band and a player");
         }
         return out;
+    }
+
+    /**
+     * Where does the sea get into this ship? Takes the flooded cell furthest inside the plot box and follows the sea's
+     * route back out, naming every non-air block on the way. If the route only passes through air, the hull simply has
+     * a gap there; if it passes through stairs, slabs, trapdoors, fences ..., those are the blocks that let water by.
+     */
+    private static String leakReport(Level level, Entry entry) {
+        final HoldFlood.Result flood = entry.floodPrev;
+        final int[] deepest = flood == null ? null : flood.deepestFloodedCell();
+        if (deepest == null) {
+            entry.leakPath = null;
+            return "leak check: nothing below the waterline is flooded";
+        }
+        final int[] path = flood.pathToSea(deepest[0], deepest[1], deepest[2]);
+        entry.leakPath = path;
+        final StringBuilder sb = new StringBuilder("leak check: deepest flooded cell (")
+                .append(deepest[0]).append(',').append(deepest[1]).append(',').append(deepest[2])
+                .append(") is reached from the sea in ").append(path.length / 3).append(" steps");
+        int shown = 0, nonAir = 0;
+        final StringBuilder blocks = new StringBuilder();
+        for (int i = 0; i + 2 < path.length; i += 3) {
+            final int x = path[i], y = path[i + 1], z = path[i + 2];
+            if (!level.hasChunk(x >> 4, z >> 4)) {
+                continue;
+            }
+            final net.minecraft.world.level.block.state.BlockState st = level.getBlockState(new BlockPos(x, y, z));
+            if (!st.isAir()) {
+                nonAir++;
+                if (shown < 6) {
+                    shown++;
+                    blocks.append("\n      ").append(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock()))
+                            .append(" at (").append(x).append(',').append(y).append(',').append(z).append(')');
+                }
+            }
+        }
+        if (nonAir == 0) {
+            sb.append(": the route passes only through AIR, so the hull has a gap (magenta markers with /serenesailing holddebug draw)");
+        } else {
+            sb.append(": it passes through ").append(nonAir).append(" non-air block(s) that let water by:").append(blocks);
+            if (nonAir > shown) {
+                sb.append("\n      ... and ").append(nonAir - shown).append(" more");
+            }
+        }
+        return sb.toString();
     }
 
     private String perfSummary() {
