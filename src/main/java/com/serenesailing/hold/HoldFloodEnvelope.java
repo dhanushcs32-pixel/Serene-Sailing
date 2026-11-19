@@ -76,8 +76,7 @@ public final class HoldFloodEnvelope {
                     portX, starboardX, flags, colLo, colHi, 0);
         }
 
-        // Footprint dilation: solid neighbours (walls, bulkheads, corners) of a dry column, judged at the level of the
-        // pocket's top. An open neighbour (flooded water, air) is never added.
+        // Footprint dilation: solid/wall neighbours of a dry column across its dry height span [colLo..topDry].
         final byte[] dilated = flags.clone();
         for (int lz = minZ; lz <= maxZ; lz++) {
             for (int lx = minX; lx <= maxX; lx++) {
@@ -92,11 +91,49 @@ public final class HoldFloodEnvelope {
                             continue;
                         }
                         final int ni = (nz - minZ) * width + (nx - minX);
-                        if (flags[ni] == 0 && dilated[ni] == 0 && isWallCell(grid, lx, topDry[i], lz, nx, nz)) {
-                            dilated[ni] = (byte) HoldScanner.FLAG_SEALED;
+                        if (flags[ni] == 0 && dilated[ni] == 0) {
+                            for (int ly = topDry[i]; ly >= colLo[i]; ly--) {
+                                if (isWallCell(grid, lx, ly, lz, nx, nz)) {
+                                    dilated[ni] = (byte) HoldScanner.FLAG_SEALED;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
+            }
+        }
+
+        // Pure-topology 2D interior hole fill: enclosed pillars, masts, bulkheads and raised deck steps inside a dry
+        // hold ring join FLAG_SEALED so they never split wave-mask runs. Seeded from the plot perimeter AND any column
+        // containing a flooded cell, so open sea, breached compartments and moonpools are never sealed.
+        final boolean[] exteriorOrWet = new boolean[width * depth];
+        final int[] bfs = new int[width * depth];
+        int bfsHead = 0, bfsTail = 0;
+        for (int row = 0; row < depth; row++) {
+            for (int c = 0; c < width; c++) {
+                final int idx = row * width + c;
+                if (dilated[idx] != 0) {
+                    continue;
+                }
+                final boolean onEdge = row == 0 || row == depth - 1 || c == 0 || c == width - 1;
+                if (onEdge || hasFloodedCell(result, minX + c, minY, maxY, minZ + row)) {
+                    exteriorOrWet[idx] = true;
+                    bfs[bfsTail++] = idx;
+                }
+            }
+        }
+        while (bfsHead < bfsTail) {
+            final int cur = bfs[bfsHead++];
+            final int c = cur % width, row = cur / width;
+            if (c > 0 && dilated[cur - 1] == 0 && !exteriorOrWet[cur - 1]) { exteriorOrWet[cur - 1] = true; bfs[bfsTail++] = cur - 1; }
+            if (c + 1 < width && dilated[cur + 1] == 0 && !exteriorOrWet[cur + 1]) { exteriorOrWet[cur + 1] = true; bfs[bfsTail++] = cur + 1; }
+            if (row > 0 && dilated[cur - width] == 0 && !exteriorOrWet[cur - width]) { exteriorOrWet[cur - width] = true; bfs[bfsTail++] = cur - width; }
+            if (row + 1 < depth && dilated[cur + width] == 0 && !exteriorOrWet[cur + width]) { exteriorOrWet[cur + width] = true; bfs[bfsTail++] = cur + width; }
+        }
+        for (int idx = 0; idx < dilated.length; idx++) {
+            if (dilated[idx] == 0 && !exteriorOrWet[idx]) {
+                dilated[idx] = (byte) HoldScanner.FLAG_SEALED;
             }
         }
 
@@ -121,11 +158,23 @@ public final class HoldFloodEnvelope {
                 portX, starboardX, dilated, colLo, colHi, validRows);
     }
 
-    /** Stops vertical hold expansion at full blocks as well as slab/stair/trapdoor decks. */
+    private static boolean hasFloodedCell(HoldFlood.Result result, int lx, int minY, int maxY, int lz) {
+        for (int ly = minY; ly <= maxY; ly++) {
+            if (result.isFlooded(lx, ly, lz)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Stops vertical hold expansion once the current cell seals its top face (e.g. top-half slab/trapdoor ceiling)
+     * or the cell above seals its bottom face (full block / bottom-half slab/trapdoor).
+     */
     private static boolean isCeiling(HoldFlood.Grid grid, int x, int y, int z) {
         return grid.sealsBetween(x, y, z, 3)
-                || grid.blocksFace(x, y + 1, z, 2)
-                || grid.blocksFace(x, y + 1, z, 3);
+                || grid.blocksFace(x, y, z, 3)
+                || grid.blocksFace(x, y + 1, z, 2);
     }
 
     /** True if neighbour (nx, ly, nz) is a solid or interlocking slab/stair/trapdoor wall bounding dry cell (lx, ly, lz). */

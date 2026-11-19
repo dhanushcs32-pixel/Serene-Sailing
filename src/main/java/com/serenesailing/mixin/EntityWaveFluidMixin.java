@@ -93,4 +93,23 @@ public abstract class EntityWaveFluidMixin {
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
         cir.setReturnValue(self.getEyeY() - 0.11111111 < surface);
     }
+
+    /** Keep NeoForge getEyeInFluidType() aligned with the Gerstner wave surface and dry holds. */
+    @Inject(method = "getEyeInFluidType", at = @At("RETURN"), cancellable = true, require = 1)
+    private void serenesailing$waveEyeInFluidType(CallbackInfoReturnable<FluidType> cir) {
+        Entity self = (Entity) (Object) this;
+        if (self.onGround() || !WaveSurface.isEntityInWaveZone(self)) {
+            return;
+        }
+        if (HoldRegistry.anyActive(self.level()) && HoldRegistry.isOccluded(self.level(), self.getEyePosition())) {
+            cir.setReturnValue(NeoForgeMod.EMPTY_TYPE.value());
+            return;
+        }
+        double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
+        if (self.getEyeY() - 0.11111111 < surface) {
+            cir.setReturnValue(NeoForgeMod.WATER_TYPE.value());
+        } else if (cir.getReturnValue() == NeoForgeMod.WATER_TYPE.value()) {
+            cir.setReturnValue(NeoForgeMod.EMPTY_TYPE.value());
+        }
+    }
 }

@@ -65,4 +65,12 @@ public abstract class EntityAirPocketMixin {
             cir.setReturnValue(false);
         }
     }
+
+    /** NeoForge drowning and eye-fluid checks read getEyeInFluidType() rather than isEyeInFluid(TagKey). */
+    @Inject(method = "getEyeInFluidType", at = @At("HEAD"), cancellable = true, require = 1)
+    private void serenesailing$dryHoldEyeFluidType(CallbackInfoReturnable<FluidType> cir) {
+        if (HoldRegistry.anyActive(this.level()) && HoldRegistry.isOccluded(this.level(), this.getEyePosition())) {
+            cir.setReturnValue(NeoForgeMod.EMPTY_TYPE.value());
+        }
+    }
 }

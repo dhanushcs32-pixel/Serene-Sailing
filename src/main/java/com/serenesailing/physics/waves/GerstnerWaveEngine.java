@@ -258,6 +258,7 @@ public final class GerstnerWaveEngine {
     public static void resetAll() {
         DIMENSION_STATES.clear();
         authoritativeScales = null;
+        WaveSurface.clearCache();
     }
 
     public static double getStormIntensity(Level level) {

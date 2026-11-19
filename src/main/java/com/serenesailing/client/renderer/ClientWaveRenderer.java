@@ -749,11 +749,17 @@ public class ClientWaveRenderer {
         lightDirX /= lLen;
         lightDirY /= lLen;
         lightDirZ /= lLen;
+        final Vector3d maskTmpIn = new Vector3d();
+        final Vector3d maskTmpOut = new Vector3d();
 
         for (int gx = 0; gx < cachedGridDim; gx++) {
             for (int gz = 0; gz < cachedGridDim; gz++) {
-                if (!isWaterSurface[gx][gz] || maskedByShipHull[gx][gz]) {
-                    continue; // Skip dry land and interior/sublevel ship holds/rafts!
+                if (!isWaterSurface[gx][gz]) {
+                    continue;
+                }
+                final boolean boundaryCell = anyMaskedHull && isHoldBoundaryCell(maskedByShipHull, gx, gz, cachedGridDim);
+                if (maskedByShipHull[gx][gz] && !boundaryCell) {
+                    continue; // Strictly deep inside a dry hold
                 }
 
                 float h00 = waveOffset[gx][gz];
@@ -804,33 +810,72 @@ public class ClientWaveRenderer {
                 int a11 = (c11 >> 24) & 0xFF, r11 = (c11 >> 16) & 0xFF, g11 = (c11 >> 8) & 0xFF, b11 = c11 & 0xFF;
                 int a10 = (c10 >> 24) & 0xFF, r10 = (c10 >> 16) & 0xFF, g10 = (c10 >> 8) & 0xFF, b10 = c10 & 0xFF;
 
-                bufferBuilder
-                        .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y00 - camPos.y), (float) (wz0 - camPos.z))
-                        .setUv(u0, v0).setColor(r00, g00, b00, a00);
-                bufferBuilder
-                        .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y01 - camPos.y), (float) (wz1 - camPos.z))
-                        .setUv(u0, v1).setColor(r01, g01, b01, a01);
-                bufferBuilder
-                        .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y11 - camPos.y), (float) (wz1 - camPos.z))
-                        .setUv(u1, v1).setColor(r11, g11, b11, a11);
-                bufferBuilder
-                        .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
-                        .setUv(u1, v0).setColor(r10, g10, b10, a10);
-
-                // Seal vertical gap ("air pocket") between elevated wave sheet and flat vanilla water along masked hull edges.
-                if (anyMaskedHull) {
+                if (!boundaryCell) {
+                    bufferBuilder
+                            .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y00 - camPos.y), (float) (wz0 - camPos.z))
+                            .setUv(u0, v0).setColor(r00, g00, b00, a00);
+                    bufferBuilder
+                            .addVertex(matrix, (float) (wx0 - camPos.x), (float) (y01 - camPos.y), (float) (wz1 - camPos.z))
+                            .setUv(u0, v1).setColor(r01, g01, b01, a01);
+                    bufferBuilder
+                            .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y11 - camPos.y), (float) (wz1 - camPos.z))
+                            .setUv(u1, v1).setColor(r11, g11, b11, a11);
+                    bufferBuilder
+                            .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
+                            .setUv(u1, v0).setColor(r10, g10, b10, a10);
+                } else {
+                    // 4x4 (0.25-block) sub-cell clipping in ship-local coordinates: terminates waves inside the solid
+                    // hull wall thickness at any ship yaw/offset, preventing both interior wave bleed and exterior pockets.
+                    final boolean[][] subCulled = new boolean[4][4];
+                    for (int sx = 0; sx < 4; sx++) {
+                        for (int sz = 0; sz < 4; sz++) {
+                            final double cx = wx0 + (sx + 0.5) * 0.25;
+                            final double cz = wz0 + (sz + 0.5) * 0.25;
+                            subCulled[sx][sz] = isWorldPointMaskedByHold(cx, PLANE_UPPER_Y, cz, maskTmpIn, maskTmpOut);
+                        }
+                    }
                     final float skirtBot = PINNED_WATER_Y - 0.05f;
-                    if (gx > 0 && maskedByShipHull[gx - 1][gz] && Math.max(y00, y01) > PINNED_WATER_Y + 0.01f) {
-                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y00, wz0, c00, wx0, y01, wz1, c01, skirtBot, u0, u1, v0, v1);
-                    }
-                    if (gx + 1 < cachedGridDim && maskedByShipHull[gx + 1][gz] && Math.max(y10, y11) > PINNED_WATER_Y + 0.01f) {
-                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx1, y10, wz0, c10, wx1, y11, wz1, c11, skirtBot, u0, u1, v0, v1);
-                    }
-                    if (gz > 0 && maskedByShipHull[gx][gz - 1] && Math.max(y00, y10) > PINNED_WATER_Y + 0.01f) {
-                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y00, wz0, c00, wx1, y10, wz0, c10, skirtBot, u0, u1, v0, v1);
-                    }
-                    if (gz + 1 < cachedGridDim && maskedByShipHull[gx][gz + 1] && Math.max(y01, y11) > PINNED_WATER_Y + 0.01f) {
-                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y01, wz1, c01, wx1, y11, wz1, c11, skirtBot, u0, u1, v0, v1);
+                    for (int sx = 0; sx < 4; sx++) {
+                        final float fx0 = sx * 0.25f, fx1 = (sx + 1) * 0.25f;
+                        final float su0 = Mth.lerp(fx0, u0, u1), su1 = Mth.lerp(fx1, u0, u1);
+                        final double swx0 = wx0 + fx0, swx1 = wx0 + fx1;
+                        for (int sz = 0; sz < 4; sz++) {
+                            if (subCulled[sx][sz]) {
+                                continue;
+                            }
+                            final float fz0 = sz * 0.25f, fz1 = (sz + 1) * 0.25f;
+                            final float sv0 = Mth.lerp(fz0, v0, v1), sv1 = Mth.lerp(fz1, v0, v1);
+                            final double swz0 = wz0 + fz0, swz1 = wz0 + fz1;
+                            final float sy00 = bilerp(y00, y10, y01, y11, fx0, fz0);
+                            final float sy01 = bilerp(y00, y10, y01, y11, fx0, fz1);
+                            final float sy11 = bilerp(y00, y10, y01, y11, fx1, fz1);
+                            final float sy10 = bilerp(y00, y10, y01, y11, fx1, fz0);
+                            final int sc00 = bilerpColor(c00, c10, c01, c11, fx0, fz0);
+                            final int sc01 = bilerpColor(c00, c10, c01, c11, fx0, fz1);
+                            final int sc11 = bilerpColor(c00, c10, c01, c11, fx1, fz1);
+                            final int sc10 = bilerpColor(c00, c10, c01, c11, fx1, fz0);
+                            bufferBuilder.addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy00 - camPos.y), (float) (swz0 - camPos.z))
+                                    .setUv(su0, sv0).setColor((sc00 >> 16) & 0xFF, (sc00 >> 8) & 0xFF, sc00 & 0xFF, (sc00 >>> 24) & 0xFF);
+                            bufferBuilder.addVertex(matrix, (float) (swx0 - camPos.x), (float) (sy01 - camPos.y), (float) (swz1 - camPos.z))
+                                    .setUv(su0, sv1).setColor((sc01 >> 16) & 0xFF, (sc01 >> 8) & 0xFF, sc01 & 0xFF, (sc01 >>> 24) & 0xFF);
+                            bufferBuilder.addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy11 - camPos.y), (float) (swz1 - camPos.z))
+                                    .setUv(su1, sv1).setColor((sc11 >> 16) & 0xFF, (sc11 >> 8) & 0xFF, sc11 & 0xFF, (sc11 >>> 24) & 0xFF);
+                            bufferBuilder.addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy10 - camPos.y), (float) (swz0 - camPos.z))
+                                    .setUv(su1, sv0).setColor((sc10 >> 16) & 0xFF, (sc10 >> 8) & 0xFF, sc10 & 0xFF, (sc10 >>> 24) & 0xFF);
+
+                            if (sx > 0 && subCulled[sx - 1][sz] && Math.max(sy00, sy01) > PINNED_WATER_Y + 0.01f) {
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, swx0, sy01, swz1, sc01, skirtBot, su0, su1, sv0, sv1);
+                            }
+                            if (sx < 3 && subCulled[sx + 1][sz] && Math.max(sy10, sy11) > PINNED_WATER_Y + 0.01f) {
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy10, swz0, sc10, swx1, sy11, swz1, sc11, skirtBot, su0, su1, sv0, sv1);
+                            }
+                            if (sz > 0 && subCulled[sx][sz - 1] && Math.max(sy00, sy10) > PINNED_WATER_Y + 0.01f) {
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, swx1, sy10, swz0, sc10, skirtBot, su0, su1, sv0, sv1);
+                            }
+                            if (sz < 3 && subCulled[sx][sz + 1] && Math.max(sy01, sy11) > PINNED_WATER_Y + 0.01f) {
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy01, swz1, sc01, swx1, sy11, swz1, sc11, skirtBot, su0, su1, sv0, sv1);
+                            }
+                        }
                     }
                 }
 
@@ -1368,6 +1413,8 @@ public class ClientWaveRenderer {
     /** One applied hold for this frame: the shared envelope plus this frame's render-pose basis. */
     private static final class RenderHold {
         final PoseBasis basis = new PoseBasis();
+        Pose3dc pose;
+        double minWX, maxWX, minWZ, maxWZ;
         HoldScanner.Envelope env;
         boolean sableCovers;
     }
@@ -1484,7 +1531,7 @@ public class ClientWaveRenderer {
             return;
         }
         for (final RenderHold hold : refreshActiveHolds(level, camPos, partialTick)) {
-            forEachEligibleRun(hold, FLAG_UPPER, PLANE_UPPER_Y, WAVE_MASK_OUTLINE_INSET * cellSize,
+            forEachEligibleRun(hold, FLAG_UPPER, PLANE_UPPER_Y, 0.0,
                     (ox, oz, ux, uz, vx, vz) ->
                     rasterizeIntoMask(maskedByShipHull, gridOriginX, gridOriginZ, cellSize, ox, oz, ux, uz, vx, vz));
         }
@@ -1514,9 +1561,86 @@ public class ClientWaveRenderer {
             if (!hold.basis.update(pose, env.minX(), env.minY(), env.minZ(), SCRATCH_VEC)) {
                 return; // rolled over: draw nothing this frame
             }
+            hold.pose = pose;
+            final double ly = hold.basis.localY(PLANE_UPPER_Y, env.centerX(), env.centerZ());
+            final double x0 = env.minX(), x1 = env.maxX() + 1.0, z0 = env.minZ(), z1 = env.maxZ() + 1.0;
+            double mnX = Double.POSITIVE_INFINITY, mxX = Double.NEGATIVE_INFINITY;
+            double mnZ = Double.POSITIVE_INFINITY, mxZ = Double.NEGATIVE_INFINITY;
+            for (double cx : new double[]{x0, x1}) {
+                for (double cz : new double[]{z0, z1}) {
+                    final double wx = hold.basis.worldX(cx, ly, cz);
+                    final double wz = hold.basis.worldZ(cx, ly, cz);
+                    if (wx < mnX) mnX = wx;
+                    if (wx > mxX) mxX = wx;
+                    if (wz < mnZ) mnZ = wz;
+                    if (wz > mxZ) mxZ = wz;
+                }
+            }
+            hold.minWX = mnX - 1.0;
+            hold.maxWX = mxX + 1.0;
+            hold.minWZ = mnZ - 1.0;
+            hold.maxWZ = mxZ + 1.0;
             ACTIVE_HOLDS.add(hold);
         });
         return ACTIVE_HOLDS;
+    }
+
+    private static boolean isHoldBoundaryCell(boolean[][] mask, int gx, int gz, int dim) {
+        final boolean self = mask[gx][gz];
+        for (int dx = -1; dx <= 1; dx++) {
+            final int nx = gx + dx;
+            if (nx < 0 || nx >= dim) continue;
+            for (int dz = -1; dz <= 1; dz++) {
+                final int nz = gz + dz;
+                if (nz < 0 || nz >= dim) continue;
+                if (mask[nx][nz] != self) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tests a sub-cell world point in ship-local space: always masked inside dry columns and interior pillars/platforms,
+     * and masked inside the inner half of outer hull wall columns so waves terminate cleanly inside opaque hull planks.
+     */
+    private static boolean isWorldPointMaskedByHold(double wx, double wy, double wz, Vector3d tmpIn, Vector3d tmpOut) {
+        for (int i = 0; i < ACTIVE_HOLDS.size(); i++) {
+            final RenderHold hold = ACTIVE_HOLDS.get(i);
+            if (hold.pose == null || wx < hold.minWX || wx > hold.maxWX || wz < hold.minWZ || wz > hold.maxWZ) {
+                continue;
+            }
+            final HoldScanner.Envelope env = hold.env;
+            hold.pose.transformPositionInverse(tmpIn.set(wx, wy, wz), tmpOut);
+            final double fx = tmpOut.x, fz = tmpOut.z;
+            final int lx = (int) Math.floor(fx), lz = (int) Math.floor(fz);
+            if (lx < env.minX() || lx > env.maxX() || lz < env.minZ() || lz > env.maxZ()) {
+                continue;
+            }
+            if (env.columnLo(lx, lz) <= env.columnHi(lx, lz)) {
+                return true;
+            }
+            final int row = lz - env.minZ();
+            if ((env.flags(row, lx) & FLAG_UPPER) == 0) {
+                continue;
+            }
+            final double u = fx - lx, v = fz - lz;
+            if ((lx == env.minX() || (env.flags(row, lx - 1) & FLAG_UPPER) == 0) && u < 0.5) continue;
+            if ((lx == env.maxX() || (env.flags(row, lx + 1) & FLAG_UPPER) == 0) && u > 0.5) continue;
+            if ((row == 0 || (env.flags(row - 1, lx) & FLAG_UPPER) == 0) && v < 0.5) continue;
+            if ((row + 1 >= env.depth() || (env.flags(row + 1, lx) & FLAG_UPPER) == 0) && v > 0.5) continue;
+            return true;
+        }
+        return false;
+    }
+
+    private static int bilerpColor(int c00, int c10, int c01, int c11, float tx, float tz) {
+        int a = (int) bilerp((c00 >>> 24) & 0xFF, (c10 >>> 24) & 0xFF, (c01 >>> 24) & 0xFF, (c11 >>> 24) & 0xFF, tx, tz);
+        int r = (int) bilerp((c00 >> 16) & 0xFF, (c10 >> 16) & 0xFF, (c01 >> 16) & 0xFF, (c11 >> 16) & 0xFF, tx, tz);
+        int g = (int) bilerp((c00 >> 8) & 0xFF, (c10 >> 8) & 0xFF, (c01 >> 8) & 0xFF, (c11 >> 8) & 0xFF, tx, tz);
+        int b = (int) bilerp(c00 & 0xFF, c10 & 0xFF, c01 & 0xFF, c11 & 0xFF, tx, tz);
+        return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
     }
 
     // =========================================================================================

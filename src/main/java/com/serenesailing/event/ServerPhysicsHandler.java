@@ -499,20 +499,21 @@ public class ServerPhysicsHandler {
         double rawMeanWaveOffset = (offsetBow + offsetStern + offsetPort + offsetStarboard) * 0.25;
         double attenuatedWaveOffset = waveColumn ? (rawMeanWaveOffset * heaveAttenuation) : 0.0;
 
-        // 3-point longitudinal keel slope sampling (Bow, Midships, Stern) for surge/sway wave slope dynamics
+        // 3-point longitudinal keel slope sampling using the shared shaped/tapered WaveSurface normal.
         var waveState = GerstnerWaveEngine.getDimensionState(level);
-        Vector3d slopeBow = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
-                bowPos.x, bowPos.z, time * 0.05, stormIntensity,
-                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
-        Vector3d slopeMid = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
-                hullCenterWorld.x, hullCenterWorld.z, time * 0.05, stormIntensity,
-                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
-        Vector3d slopeStern = hasActiveWaves ? GerstnerWaveEngine.evaluateWaveSlopeAndDrift(
-                sternPos.x, sternPos.z, time * 0.05, stormIntensity,
-                waveState.smoothedWindDirX, waveState.smoothedWindDirZ) : new Vector3d();
-
-        double avgSlopeX = (slopeBow.x + slopeMid.x + slopeStern.x) / 3.0;
-        double avgSlopeZ = (slopeBow.z + slopeMid.z + slopeStern.z) / 3.0;
+        double avgSlopeX = 0.0;
+        double avgSlopeZ = 0.0;
+        if (hasActiveWaves) {
+            Vector3d nTmp = new Vector3d();
+            for (Vector3d pt : new Vector3d[]{bowPos, hullCenterWorld, sternPos}) {
+                WaveSurface.normal(level, pt.x, pt.z, 0.0f, nTmp);
+                double invY = 1.0 / Math.max(nTmp.y, 1.0e-3);
+                avgSlopeX += -nTmp.x * invY;
+                avgSlopeZ += -nTmp.z * invY;
+            }
+            avgSlopeX /= 3.0;
+            avgSlopeZ /= 3.0;
+        }
 
         // Ride-height reference = the shared wave surface (shaped offsets are >= 0, so the old
         // "anti-flooding trough clamp" is no longer needed; heave attenuation still lets heavy hulls cut through).

@@ -1,5 +1,6 @@
 package com.serenesailing.mixin;
 
+import com.serenesailing.hold.HoldRegistry;
 import com.serenesailing.physics.waves.WaveSurface;
 import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.phys.AABB;
@@ -30,6 +31,12 @@ public abstract class BoatWaveMixin {
     /** A boat is only reported UNDER_WATER (which makes it sink and eject riders) when this deep below the surface. */
     private static final double SS_SUBMERGED_MARGIN = 1.0;
 
+    private static boolean inOpenWaveZone(Boat boat) {
+        return WaveSurface.isEntityInWaveZone(boat)
+                && !(HoldRegistry.anyActive(boat.level())
+                && HoldRegistry.isEntityInDryHold(boat.level(), boat.position(), boat.getBoundingBox().getCenter()));
+    }
+
     /**
      * checkInWater(): vanilla scans fluid blocks under the hull and sets {@code waterLevel} to the highest
      * block fluid height. Replace it with the wave surface: the boat is "in water" while its keel is below it,
@@ -38,7 +45,7 @@ public abstract class BoatWaveMixin {
     @Inject(method = "checkInWater", at = @At("RETURN"), cancellable = true, require = 1)
     private void serenesailing$waveCheckInWater(CallbackInfoReturnable<Boolean> cir) {
         Boat self = (Boat) (Object) this;
-        if (!WaveSurface.isEntityInWaveZone(self)) {
+        if (!inOpenWaveZone(self)) {
             return;
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
@@ -55,7 +62,7 @@ public abstract class BoatWaveMixin {
     @Inject(method = "isUnderwater", at = @At("RETURN"), cancellable = true, require = 1)
     private void serenesailing$waveIsUnderwater(CallbackInfoReturnable<Boat.Status> cir) {
         Boat self = (Boat) (Object) this;
-        if (!WaveSurface.isEntityInWaveZone(self)) {
+        if (!inOpenWaveZone(self)) {
             return;
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
@@ -75,7 +82,7 @@ public abstract class BoatWaveMixin {
     @Inject(method = "getWaterLevelAbove", at = @At("RETURN"), cancellable = true, require = 1)
     private void serenesailing$waveWaterLevelAbove(CallbackInfoReturnable<Float> cir) {
         Boat self = (Boat) (Object) this;
-        if (!WaveSurface.isEntityInWaveZone(self)) {
+        if (!inOpenWaveZone(self)) {
             return;
         }
         cir.setReturnValue((float) WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f));

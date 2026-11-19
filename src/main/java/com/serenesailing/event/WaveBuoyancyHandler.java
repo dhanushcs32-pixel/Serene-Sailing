@@ -1,6 +1,7 @@
 package com.serenesailing.event;
 
 import com.serenesailing.SereneSailing;
+import com.serenesailing.hold.HoldRegistry;
 import com.serenesailing.physics.waves.WaveSurface;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
@@ -59,7 +60,11 @@ public final class WaveBuoyancyHandler {
     }
 
     private static boolean eligible(Entity e) {
-        return isAuthoritative(e) && !e.isRemoved() && WaveSurface.isEntityInWaveZone(e);
+        if (!isAuthoritative(e) || e.isRemoved() || !WaveSurface.isEntityInWaveZone(e)) {
+            return false;
+        }
+        return !(HoldRegistry.anyActive(e.level())
+                && HoldRegistry.isEntityInDryHold(e.level(), e.position(), e.getBoundingBox().getCenter()));
     }
 
     /** Vertical speed of the surface above this entity [blocks/tick], sampled where the entity will be next tick. */

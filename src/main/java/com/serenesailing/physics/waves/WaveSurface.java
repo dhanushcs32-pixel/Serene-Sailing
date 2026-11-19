@@ -67,6 +67,11 @@ public final class WaveSurface {
 
     private WaveSurface() {}
 
+    /** Drops cached shore-taper columns on logout / server stop so a new world never reuses stale data. */
+    public static void clearCache() {
+        TAPER_CACHE.clear();
+    }
+
     // ------------------------------------------------------------------------------------------------
     // Pure math
     // ------------------------------------------------------------------------------------------------
