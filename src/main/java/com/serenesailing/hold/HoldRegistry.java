@@ -237,6 +237,40 @@ public final class HoldRegistry {
         return registry.contains(feet.x, feet.y, feet.z) || registry.contains(boxCenter.x, boxCenter.y, boxCenter.z);
     }
 
+    /**
+     * True when the world position lies inside or directly above a registered dry hold's horizontal footprint
+     * (up to the top of the hull plot + 2 blocks), matching where {@code ClientWaveRenderer} masks waves.
+     */
+    public static boolean isOverDryHold(Level level, Vec3 worldPos) {
+        final HoldRegistry registry = peek(level);
+        if (registry == null || registry.actives.length == 0 || worldPos == null) {
+            return false;
+        }
+        Vector3d[] scratch = null;
+        for (final Active a : registry.actives) {
+            final HoldScanner.Envelope env = a.entry().active;
+            if (env == null) continue;
+            final SubLevel sub = a.sub();
+            final BoundingBox3dc box = sub.boundingBox();
+            if (box == null || worldPos.x < box.minX() - 1.0 || worldPos.x > box.maxX() + 1.0
+                    || worldPos.y < box.minY() - 1.0 || worldPos.y > box.maxY() + 3.0
+                    || worldPos.z < box.minZ() - 1.0 || worldPos.z > box.maxZ() + 1.0) {
+                continue;
+            }
+            if (scratch == null) scratch = SCRATCH.get();
+            scratch[0].set(worldPos.x, worldPos.y, worldPos.z);
+            sub.logicalPose().transformPositionInverse(scratch[0], scratch[1]);
+            final int lx = (int) Math.floor(scratch[1].x);
+            final int ly = (int) Math.floor(scratch[1].y);
+            final int lz = (int) Math.floor(scratch[1].z);
+            final int lo = env.columnLo(lx, lz);
+            if (lo <= env.columnHi(lx, lz) && ly >= lo && ly <= env.maxY() + 2) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean contains(double wx, double wy, double wz) {
         Vector3d[] scratch = null;
         for (final Active a : actives) {
@@ -337,6 +371,9 @@ public final class HoldRegistry {
                     for (int x = env.volumeMinX(); x <= env.volumeMaxX(); x++) {
                         for (int y = env.columnLo(x, z); y <= env.columnHi(x, z); y++) {
                             if (!env.contains(x, y, z)) {
+                                continue;
+                            }
+                            if (!level.hasChunk(x >> 4, z >> 4)) {
                                 continue;
                             }
                             final net.minecraft.world.level.block.state.BlockState st =
@@ -607,7 +644,7 @@ public final class HoldRegistry {
             }
             entry.floodPrev = outcome.result();
             env = outcome.envelope();
-            if (!env.isSunken() && entry.floodPrev.floodedCells() > 0 && entry.leakPath == null) {
+            if (!env.isSunken() && entry.floodPrev.floodedCells() > 0 && (entry.leakPath == null || externalChange)) {
                 final int[] deepest = entry.floodPrev.deepestFloodedCell();
                 if (deepest != null) {
                     entry.leakPath = entry.floodPrev.pathToSea(deepest[0], deepest[1], deepest[2]);

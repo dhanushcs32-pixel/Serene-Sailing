@@ -14,6 +14,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -216,7 +217,8 @@ public class HelmClientInputHandler {
         }
 
         // Auto-release if player walks > 4 blocks away from activeHelmPos
-        if (mc.player.distanceToSqr(activeHelmPos.getX() + 0.5, activeHelmPos.getY() + 0.5, activeHelmPos.getZ() + 0.5) > 16.0) {
+        Vec3 helmWorld = resolveHelmWorldCenter(mc, activeHelmPos);
+        if (mc.player.distanceToSqr(helmWorld) > 16.0) {
             releaseSteering();
             return;
         }
@@ -313,5 +315,27 @@ public class HelmClientInputHandler {
         Quaterniondc q = csl.renderPose().orientation();
         Vector3d fwd = new Vector3d(0.0, 0.0, -1.0).rotate(q);
         return (float) Math.toDegrees(Math.atan2(-fwd.x, fwd.z));
+    }
+
+    private static Vec3 resolveHelmWorldCenter(Minecraft mc, BlockPos pos) {
+        if (mc.level != null) {
+            try {
+                SubLevelContainer container = SubLevelContainer.getContainer(mc.level);
+                if (container instanceof ClientSubLevelContainer clientContainer) {
+                    LevelPlot plot = clientContainer.getPlot(new ChunkPos(pos));
+                    if (plot != null && plot.getSubLevel() instanceof ClientSubLevel csl) {
+                        return csl.logicalPose().transformPosition(Vec3.atCenterOf(pos));
+                    }
+                    for (ClientSubLevel csl : clientContainer.getAllSubLevels()) {
+                        LevelPlot subPlot = csl.getPlot();
+                        if (subPlot != null && subPlot.contains(new ChunkPos(pos))) {
+                            return csl.logicalPose().transformPosition(Vec3.atCenterOf(pos));
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return Vec3.atCenterOf(pos);
     }
 }

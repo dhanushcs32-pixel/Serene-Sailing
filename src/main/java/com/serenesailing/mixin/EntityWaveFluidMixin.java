@@ -47,7 +47,8 @@ public abstract class EntityWaveFluidMixin {
         }
         // The sea cannot reach this entity: it is inside a dry hold. Leave whatever the hold logic decided.
         if (HoldRegistry.anyActive(self.level())
-                && HoldRegistry.isEntityInDryHold(self.level(), self.position(), self.getBoundingBox().getCenter())) {
+                && (HoldRegistry.isEntityInDryHold(self.level(), self.position(), self.getBoundingBox().getCenter())
+                || HoldRegistry.isOverDryHold(self.level(), self.position()))) {
             return;
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
@@ -87,7 +88,9 @@ public abstract class EntityWaveFluidMixin {
         if (self.onGround() || !WaveSurface.isEntityInWaveZone(self)) {
             return;
         }
-        if (HoldRegistry.anyActive(self.level()) && HoldRegistry.isOccluded(self.level(), self.getEyePosition())) {
+        if (HoldRegistry.anyActive(self.level())
+                && (HoldRegistry.isOccluded(self.level(), self.getEyePosition())
+                || HoldRegistry.isOverDryHold(self.level(), self.getEyePosition()))) {
             return; // eyes inside a dry hold: not in water, whatever the wave surface says
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);
@@ -101,7 +104,9 @@ public abstract class EntityWaveFluidMixin {
         if (self.onGround() || !WaveSurface.isEntityInWaveZone(self)) {
             return;
         }
-        if (HoldRegistry.anyActive(self.level()) && HoldRegistry.isOccluded(self.level(), self.getEyePosition())) {
+        if (HoldRegistry.anyActive(self.level())
+                && (HoldRegistry.isOccluded(self.level(), self.getEyePosition())
+                || HoldRegistry.isOverDryHold(self.level(), self.getEyePosition()))) {
             cir.setReturnValue(NeoForgeMod.EMPTY_TYPE.value());
             return;
         }

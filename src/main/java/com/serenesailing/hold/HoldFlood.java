@@ -217,10 +217,10 @@ public final class HoldFlood {
                 for (int px = 0; px < pw; px++) {
                     final int x = minX + px - 1, y = minY + py - 1, z = minZ + pz - 1;
                     final int i = (py * pd + pz) * pw + px;
-                    // A cell [y, y+1] intersects the ocean whenever its bottom lies below the water surface.
-                    // One-sided upward hysteresis ensures any cell actually intersecting waterY is caught immediately
-                    // (never locked out on shallow-draft hulls), while preventing upward heave from flickering it off.
-                    final double threshold = (previous != null && hysteresis > 0.0 && previous.wasBelow(x, y, z))
+                    // Only previously DRY cells retain the +hysteresis band so heave never flickers a dry hold.
+                    // Exterior/flooded cells always test against waterY so an awash rim/gunport drains immediately
+                    // once it rises back above the sea instead of staying permanently locked flooded.
+                    final double threshold = (previous != null && hysteresis > 0.0 && previous.isDry(x, y, z))
                             ? waterY + hysteresis
                             : waterY;
                     below[i] = frame.worldY(x + 0.5, y, z + 0.5) < threshold;

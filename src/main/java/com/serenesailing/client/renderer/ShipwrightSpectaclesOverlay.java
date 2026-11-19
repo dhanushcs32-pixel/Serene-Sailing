@@ -408,12 +408,12 @@ public final class ShipwrightSpectaclesOverlay {
 
         long gameTime = level.getGameTime();
         if (targetPos != null) {
-            if (cachedResult == null || !targetPos.equals(lastTargetPos) || (gameTime - lastScanTick) > 10L) {
+            if (cachedResult == null || !targetPos.equals(lastTargetPos) || gameTime < lastScanTick || (gameTime - lastScanTick) > 10L) {
                 cachedResult = inspect(level, targetPos);
                 lastTargetPos = targetPos;
                 lastScanTick = gameTime;
             }
-        } else if ((gameTime - lastScanTick) > 20L) {
+        } else if (gameTime < lastScanTick || (gameTime - lastScanTick) > 20L) {
             cachedResult = null;
         }
 
@@ -495,26 +495,26 @@ public final class ShipwrightSpectaclesOverlay {
         int rudders = cachedResult.rudders;
         int capstans = cachedResult.capstans;
 
-        String title = "§6⚓ Shipwright's Spectacles §7(" + String.format("%,d", gluedCount) + " Glued Blocks | " + glueZones + " Linked Glue Zones)";
-        String comp = "§fHelm: " + (helms > 0 ? "§a" + helms : "§c0")
-                + " §7| §fSails: " + (sails > 0 ? "§b" + sails : "§70")
-                + " §7| §fRudder: " + (rudders > 0 ? "§a" + rudders : "§70")
-                + " §7| §fAnchor: " + (capstans > 0 ? "§6" + capstans : "§70");
+        String title = "\u00A76\u2693 Shipwright's Spectacles \u00A77(" + String.format("%,d", gluedCount) + " Glued Blocks | " + glueZones + " Linked Glue Zones)";
+        String comp = "\u00A7fHelm: " + (helms > 0 ? "\u00A7a" + helms : "\u00A7c0")
+                + " \u00A77| \u00A7fSails: " + (sails > 0 ? "\u00A7b" + sails : "\u00A770")
+                + " \u00A77| \u00A7fRudder: " + (rudders > 0 ? "\u00A7a" + rudders : "\u00A770")
+                + " \u00A77| \u00A7fAnchor: " + (capstans > 0 ? "\u00A76" + capstans : "\u00A770");
 
         String status;
         if (disconnCount > 0) {
             final boolean capped = disconnCount >= MAX_DISCONNECTED_TRACKED;
             final int shown = cachedResult.drawnDisconnected.size();
-            status = "§c⚠ " + disconnCount + (capped ? "+" : "") + " Disconnected / Unglued Blocks"
+            status = "\u00A7c\u26A0 " + disconnCount + (capped ? "+" : "") + " Disconnected / Unglued Blocks"
                     + (shown < disconnCount ? " (nearest " + shown + " highlighted)" : " Highlighted in Red!");
         } else if (gluedCount == 0) {
-            status = "§e⚠ Looking at unglued blocks (Apply Create Super Glue)";
+            status = "\u00A7e\u26A0 Looking at unglued blocks (Apply Create Super Glue)";
         } else if (helms == 0) {
-            status = "§e⚠ Missing Helm (Ship's Wheel) station";
+            status = "\u00A7e\u26A0 Missing Helm (Ship's Wheel) station";
         } else if (sails == 0 && rudders == 0) {
-            status = "§e⚠ Vessel has no sails or rudder attached";
+            status = "\u00A7e\u26A0 Vessel has no sails or rudder attached";
         } else {
-            status = "§a✔ All Ship Blocks Glued & Connected (0 Disconnected)";
+            status = "\u00A7a\u2714 All Ship Blocks Glued & Connected (0 Disconnected)";
         }
 
         int maxTextWidth = Math.max(font.width(title), Math.max(font.width(comp), font.width(status)));
@@ -533,5 +533,12 @@ public final class ShipwrightSpectaclesOverlay {
         graphics.drawString(font, title, x + (panelWidth - font.width(title)) / 2, y + 4, 0xFFFFFF, true);
         graphics.drawString(font, comp, x + (panelWidth - font.width(comp)) / 2, y + 17, 0xFFFFFF, true);
         graphics.drawString(font, status, x + (panelWidth - font.width(status)) / 2, y + 30, 0xFFFFFF, true);
+    }
+
+    @SubscribeEvent
+    public static void onLoggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+        cachedResult = null;
+        lastTargetPos = null;
+        lastScanTick = -1L;
     }
 }

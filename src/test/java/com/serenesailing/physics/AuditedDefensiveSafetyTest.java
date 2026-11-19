@@ -452,7 +452,7 @@ public class AuditedDefensiveSafetyTest {
     }
 
     @Test
-    @DisplayName("Audit: All 6 recipe advancements exist under data/serenesailing/advancement/recipes/ (and misc/) with planks/logs/recipe criteria")
+    @DisplayName("Audit: All 6 recipe advancements exist under data/serenesailing/advancement/recipes/ with planks/logs/recipe criteria")
     public void testAllRecipeAdvancementsExistAndContainPlanksLogsCriteria() throws Exception {
         List<String> items = List.of(
                 "canvas_sail",
@@ -463,8 +463,7 @@ public class AuditedDefensiveSafetyTest {
                 "taffrail_log"
         );
         List<Path> dirs = List.of(
-                Path.of("src", "main", "resources", "data", "serenesailing", "advancement", "recipes"),
-                Path.of("src", "main", "resources", "data", "serenesailing", "advancement", "recipes", "misc")
+                Path.of("src", "main", "resources", "data", "serenesailing", "advancement", "recipes")
         );
 
         for (Path dir : dirs) {

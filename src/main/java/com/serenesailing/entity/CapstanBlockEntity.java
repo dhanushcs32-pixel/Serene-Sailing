@@ -273,6 +273,9 @@ public class CapstanBlockEntity extends BlockEntity {
 
         for (int d = 0; d <= MAX_SEABED_SEARCH; d++) {
             scanPos.set(overworldX, scanStartY - d, overworldZ);
+            if (!overworldLevel.hasChunkAt(scanPos)) {
+                return (float) MAX_SEABED_SEARCH;
+            }
             BlockState state = overworldLevel.getBlockState(scanPos);
             FluidState fluid = overworldLevel.getFluidState(scanPos);
 

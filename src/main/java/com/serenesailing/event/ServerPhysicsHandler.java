@@ -1002,7 +1002,8 @@ public class ServerPhysicsHandler {
 
                 // Clamp speed factor between 0 and 12 knots for rudder lift calculations
                 double effectiveRudderSpeed = Mth.clamp(Math.abs(forwardSpeedKnots), 0.5, 12.0);
-                double vSteer = Math.copySign(effectiveRudderSpeed, vFwd);
+                // Avoid random sign flips on +-1e-9 velocity noise at rest; only invert in real sternway.
+                double vSteer = (vFwd < -0.05) ? -effectiveRudderSpeed : effectiveRudderSpeed;
 
                 double facingSignSum = 0.0;
                 for (RudderInfo rudder : rudders) {

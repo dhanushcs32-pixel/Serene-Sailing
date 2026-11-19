@@ -156,7 +156,8 @@ public class ClientWaveRenderer {
         int camBlockX = Mth.floor(camX);
         int camBlockZ = Mth.floor(camZ);
 
-        if (gameTime - lastCacheUpdateTick < 15L
+        if (lastCacheUpdateTick >= 0L && gameTime >= lastCacheUpdateTick
+                && gameTime - lastCacheUpdateTick < 15L
                 && Math.abs(camBlockX - cachedCenterX) < 4
                 && Math.abs(camBlockZ - cachedCenterZ) < 4) {
             return;
@@ -826,12 +827,15 @@ public class ClientWaveRenderer {
                 } else {
                     // 4x4 (0.25-block) sub-cell clipping in ship-local coordinates: terminates waves inside the solid
                     // hull wall thickness at any ship yaw/offset, preventing both interior wave bleed and exterior pockets.
-                    final boolean[][] subCulled = new boolean[4][4];
-                    for (int sx = 0; sx < 4; sx++) {
-                        for (int sz = 0; sz < 4; sz++) {
+                    final boolean[][] subCulled = new boolean[6][6];
+                    for (int sx = -1; sx <= 4; sx++) {
+                        final float fx = Mth.clamp((sx + 0.5f) * 0.25f, 0.0f, 1.0f);
+                        for (int sz = -1; sz <= 4; sz++) {
+                            final float fz = Mth.clamp((sz + 0.5f) * 0.25f, 0.0f, 1.0f);
                             final double cx = wx0 + (sx + 0.5) * 0.25;
                             final double cz = wz0 + (sz + 0.5) * 0.25;
-                            subCulled[sx][sz] = isWorldPointMaskedByHold(cx, PLANE_UPPER_Y, cz, maskTmpIn, maskTmpOut);
+                            final double cy = bilerp(y00, y10, y01, y11, fx, fz);
+                            subCulled[sx + 1][sz + 1] = isWorldPointMaskedByHold(cx, cy, cz, maskTmpIn, maskTmpOut);
                         }
                     }
                     final float skirtBot = PINNED_WATER_Y - 0.05f;
@@ -840,7 +844,7 @@ public class ClientWaveRenderer {
                         final float su0 = Mth.lerp(fx0, u0, u1), su1 = Mth.lerp(fx1, u0, u1);
                         final double swx0 = wx0 + fx0, swx1 = wx0 + fx1;
                         for (int sz = 0; sz < 4; sz++) {
-                            if (subCulled[sx][sz]) {
+                            if (subCulled[sx + 1][sz + 1]) {
                                 continue;
                             }
                             final float fz0 = sz * 0.25f, fz1 = (sz + 1) * 0.25f;
@@ -863,16 +867,16 @@ public class ClientWaveRenderer {
                             bufferBuilder.addVertex(matrix, (float) (swx1 - camPos.x), (float) (sy10 - camPos.y), (float) (swz0 - camPos.z))
                                     .setUv(su1, sv0).setColor((sc10 >> 16) & 0xFF, (sc10 >> 8) & 0xFF, sc10 & 0xFF, (sc10 >>> 24) & 0xFF);
 
-                            if (sx > 0 && subCulled[sx - 1][sz] && Math.max(sy00, sy01) > PINNED_WATER_Y + 0.01f) {
+                            if (subCulled[sx][sz + 1] && Math.max(sy00, sy01) > PINNED_WATER_Y + 0.01f) {
                                 emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, swx0, sy01, swz1, sc01, skirtBot, su0, su1, sv0, sv1);
                             }
-                            if (sx < 3 && subCulled[sx + 1][sz] && Math.max(sy10, sy11) > PINNED_WATER_Y + 0.01f) {
+                            if (subCulled[sx + 2][sz + 1] && Math.max(sy10, sy11) > PINNED_WATER_Y + 0.01f) {
                                 emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy10, swz0, sc10, swx1, sy11, swz1, sc11, skirtBot, su0, su1, sv0, sv1);
                             }
-                            if (sz > 0 && subCulled[sx][sz - 1] && Math.max(sy00, sy10) > PINNED_WATER_Y + 0.01f) {
+                            if (subCulled[sx + 1][sz] && Math.max(sy00, sy10) > PINNED_WATER_Y + 0.01f) {
                                 emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, swx1, sy10, swz0, sc10, skirtBot, su0, su1, sv0, sv1);
                             }
-                            if (sz < 3 && subCulled[sx][sz + 1] && Math.max(sy01, sy11) > PINNED_WATER_Y + 0.01f) {
+                            if (subCulled[sx + 1][sz + 2] && Math.max(sy01, sy11) > PINNED_WATER_Y + 0.01f) {
                                 emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy01, swz1, sc01, swx1, sy11, swz1, sc11, skirtBot, su0, su1, sv0, sv1);
                             }
                         }
@@ -907,6 +911,12 @@ public class ClientWaveRenderer {
                                 float f10 = evalSubVertexFoam(wx0, wz0, fx1, fz0, sd00, sd10, sd01, sd11, renderTime);
 
                                 if (f00 <= 0.02f && f01 <= 0.02f && f11 <= 0.02f && f10 <= 0.02f) {
+                                    continue;
+                                }
+
+                                if (boundaryCell && isWorldPointMaskedByHold(
+                                        wx0 + fx0 + 0.25, bilerp(y00, y10, y01, y11, fx0 + 0.25f, fz0 + 0.25f),
+                                        wz0 + fz0 + 0.25, maskTmpIn, maskTmpOut)) {
                                     continue;
                                 }
 
@@ -1441,6 +1451,9 @@ public class ClientWaveRenderer {
     public static void invalidateHoldEnvelopes() {
         RENDER_HOLDS.clear();
         ACTIVE_HOLDS.clear();
+        cachedCenterX = Integer.MIN_VALUE;
+        cachedCenterZ = Integer.MIN_VALUE;
+        lastCacheUpdateTick = -1L;
     }
 
     /**

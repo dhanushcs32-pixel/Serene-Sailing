@@ -62,6 +62,7 @@ public class HelmBlock extends Block implements EntityBlock {
     @Nullable
     @Override
     public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> type) {
+        if (type != com.serenesailing.registry.ModBlockEntities.HELM.get()) return null;
         return (lvl, pos, st, be) -> {
             if (be instanceof HelmBlockEntity helm) {
                 helm.tick();

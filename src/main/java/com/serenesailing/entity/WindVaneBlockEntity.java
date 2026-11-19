@@ -51,6 +51,8 @@ public class WindVaneBlockEntity extends BlockEntity {
 
     /**
      * Called by the physics bridge each step with live world-frame vectors.
+     * Updates point-of-sail readout only; {@link #tick()} owns the 20 Hz pennant angle and sync so physics substeps
+     * (60-120 Hz) do not fight {@code tick()} or overwrite {@code prevAngle} between client frames.
      */
     public void updateWindTelemetry(org.joml.Vector3dc forwardWorld,
                                     org.joml.Vector3dc trueWindWorld,
@@ -64,7 +66,6 @@ public class WindVaneBlockEntity extends BlockEntity {
 
         if (this.apparentWindSpeed < 1.0e-4) {
             this.relativeWindAngleDeg = 0.0f;
-            this.targetAngle = 0.0f;
             this.pointOfSail = "Calm";
             return;
         }
@@ -82,15 +83,9 @@ public class WindVaneBlockEntity extends BlockEntity {
         double dot = fx * adx + fz * adz;
         double sin = fx * adz - fz * adx;
         double angle = Math.toDegrees(Math.atan2(sin, dot));
-        this.targetAngle = (float) angle;
-
-        float diff = Mth.wrapDegrees(this.targetAngle - this.currentAngle);
-        this.prevAngle = this.currentAngle;
-        this.currentAngle = Mth.wrapDegrees(this.currentAngle + diff * 0.12f);
-        this.relativeWindAngleDeg = this.currentAngle;
-
-        double abs = Math.abs(this.currentAngle);
-        String side = this.currentAngle < 0 ? "Port" : "Starboard";
+        this.relativeWindAngleDeg = (float) angle;
+        double abs = Math.abs(angle);
+        String side = angle < 0 ? "Port" : "Starboard";
         if (abs < 30.0) {
             this.pointOfSail = "In Irons (" + (int) abs + "\u00B0 " + side + ")";
         } else if (abs < 60.0) {
@@ -101,11 +96,6 @@ public class WindVaneBlockEntity extends BlockEntity {
             this.pointOfSail = "Broad Reach (" + (int) abs + "\u00B0 " + side + ")";
         } else {
             this.pointOfSail = "Running / Dead Downwind";
-        }
-
-        if (level != null && !level.isClientSide && ++this.telemetryTick % 4 == 0) {
-            this.setChanged();
-            this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
         }
     }
 
@@ -213,26 +203,28 @@ public class WindVaneBlockEntity extends BlockEntity {
             this.pointOfSail = "Calm";
             this.targetAngle = 0.0f;
         } else {
-            this.targetAngle = (float) Math.toDegrees(Math.atan2(-localWindX, localWindZ));
+            // Point into the incoming apparent wind (-localWind).
+            this.targetAngle = (float) Math.toDegrees(Math.atan2(localWindX, -localWindZ));
 
-            double abs = Math.abs(this.currentAngle);
-            String side = this.currentAngle < 0 ? "Port" : "Starboard";
-            if (abs < 30.0) {
-                this.pointOfSail = "In Irons (" + (int) abs + "\u00B0 " + side + ")";
-            } else if (abs < 60.0) {
-                this.pointOfSail = "Close-Hauled (" + (int) abs + "\u00B0 " + side + ")";
-            } else if (abs < 120.0) {
-                this.pointOfSail = "Beam Reach (" + (int) abs + "\u00B0 " + side + ")";
-            } else if (abs < 150.0) {
-                this.pointOfSail = "Broad Reach (" + (int) abs + "\u00B0 " + side + ")";
-            } else {
-                this.pointOfSail = "Running / Dead Downwind";
+            if (subLevel == null) {
+                double abs = Math.abs(this.currentAngle);
+                String side = this.currentAngle < 0 ? "Port" : "Starboard";
+                if (abs < 30.0) {
+                    this.pointOfSail = "In Irons (" + (int) abs + "\u00B0 " + side + ")";
+                } else if (abs < 60.0) {
+                    this.pointOfSail = "Close-Hauled (" + (int) abs + "\u00B0 " + side + ")";
+                } else if (abs < 120.0) {
+                    this.pointOfSail = "Beam Reach (" + (int) abs + "\u00B0 " + side + ")";
+                } else if (abs < 150.0) {
+                    this.pointOfSail = "Broad Reach (" + (int) abs + "\u00B0 " + side + ")";
+                } else {
+                    this.pointOfSail = "Running / Dead Downwind";
+                }
             }
         }
 
         float diff = Mth.wrapDegrees(this.targetAngle - this.currentAngle);
         this.currentAngle = Mth.wrapDegrees(this.currentAngle + diff * 0.12f);
-        this.relativeWindAngleDeg = this.currentAngle;
 
         if (serverLevel.getServer() != null && serverLevel.getServer().getTickCount() % 4 == 0) {
             this.setChanged();

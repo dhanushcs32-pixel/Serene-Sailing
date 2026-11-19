@@ -54,6 +54,7 @@ public class RudderBlockEntity extends BlockEntity {
         if (Float.isNaN(this.steeringAngle) || Float.isInfinite(this.steeringAngle)) {
             this.steeringAngle = 0.0f;
         }
+        this.steeringAngle = Math.max(-45.0f, Math.min(45.0f, this.steeringAngle));
     }
 
     @Override

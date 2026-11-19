@@ -90,7 +90,7 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
                     var iter = RATE_LIMIT_MAP.entrySet().iterator();
                     while (iter.hasNext() && checked < 32) {
                         var e = iter.next();
-                        if (currentTick - e.getValue()[0] > 200) {
+                        if (currentTick < e.getValue()[0] || currentTick - e.getValue()[0] > 200) {
                             iter.remove();
                         }
                         checked++;
@@ -177,7 +177,7 @@ public record ServerboundSteerPayload(BlockPos pos, float rudderAngle, boolean a
 
                 if (helmSubLevel != null) {
                     com.serenesailing.event.ServerPhysicsHandler.setHelmAngle(
-                            helmSubLevel.getUniqueId(), payload.rudderAngle());
+                            helmSubLevel.getUniqueId(), helm.getCurrentRudderAngle());
                 }
             }
         });
