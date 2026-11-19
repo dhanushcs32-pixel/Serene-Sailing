@@ -147,22 +147,31 @@ public class HoldFloodTest {
     @DisplayName("Hysteresis: a cell right at the waterline keeps its previous wet/dry state inside the dead band")
     public void hysteresisKeepsSurfaceCellsStable() {
         final Ship ship = Ship.bowl(8);
-        // Cell y=3 has its centre at world 63.5 at rest; the waterline is 62.8889, so it starts out ABOVE the surface.
-        final HoldScanner.Frame base = HoldScanner.Frame.level(0, 0, 0, 60.0);
+        // Cell y=3 has its bottom at world 62.8 when oy = 59.8, below the 62.8889 waterline.
+        final HoldScanner.Frame base = HoldScanner.Frame.level(0, 0, 0, 59.8);
         final HoldFlood.Grid grid = (x, y, z, dir) -> ship.at(x, y, z);
-        HoldFlood.Result first = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, base, WATER_Y, 0.25, null);
-        assertFalse(first.wasBelow(5, 3, 5));
-        // The swell lowers the hull by 0.7: the centre of y=3 is now 62.8, i.e. 0.09 BELOW the surface. Without
-        // hysteresis that already flips it; with a 0.25 dead band it must stay "above" until it is 0.25 below.
-        final HoldScanner.Frame sunk = HoldScanner.Frame.level(0, 0, 0, 59.3);
-        final HoldFlood.Result noHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, sunk, WATER_Y);
-        final HoldFlood.Result withHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, sunk, WATER_Y, 0.25, first);
-        assertTrue(noHyst.wasBelow(5, 3, 5), "plain analysis flips as soon as the centre crosses the surface");
-        assertFalse(withHyst.wasBelow(5, 3, 5), "within 0.25 of the surface it keeps its previous state (above)");
-        // a deeper dip (centre 0.5 below the surface) does flip it
-        final HoldFlood.Result deep = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid,
-                HoldScanner.Frame.level(0, 0, 0, 58.8), WATER_Y, 0.25, first);
-        assertTrue(deep.wasBelow(5, 3, 5));
+        final HoldFlood.Result first = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, base, WATER_Y, 0.25, null);
+        assertTrue(first.wasBelow(5, 3, 5));
+        // The hull rises to oy = 60.05: cell y=3 bottom is 63.05, above 62.8889. Without hysteresis that flips it;
+        // with 0.25 upward dead band it stays below (waterY + 0.25 = 63.1389).
+        final HoldScanner.Frame risen = HoldScanner.Frame.level(0, 0, 0, 60.05);
+        final HoldFlood.Result noHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, risen, WATER_Y);
+        final HoldFlood.Result withHyst = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid, risen, WATER_Y, 0.25, first);
+        assertFalse(noHyst.wasBelow(5, 3, 5), "plain analysis flips as soon as the bottom crosses the surface");
+        assertTrue(withHyst.wasBelow(5, 3, 5), "within 0.25 of the surface it keeps its previous state (below)");
+        // a higher rise (bottom 63.3, above 63.1389) does flip it
+        final HoldFlood.Result high = HoldFlood.analyse(0, 0, 0, W - 1, H - 1, D - 1, grid,
+                HoldScanner.Frame.level(0, 0, 0, 60.3), WATER_Y, 0.25, first);
+        assertFalse(high.wasBelow(5, 3, 5));
+    }
+
+    @Test
+    @DisplayName("Shallow-draft hull at rest (oy = 61.655, floor at y = 0) has dry cells below water surface")
+    public void shallowDraftHullIsWatertight() {
+        final Ship ship = Ship.bowl(8);
+        final HoldScanner.Frame frame = HoldScanner.Frame.level(0, 0, 0, 61.655);
+        final HoldFlood.Result r = ship.analyse(frame);
+        assertTrue(r.dryCells() > 0, "shallow-draft hull should have dry cells; dry=" + r.dryCells());
     }
 
     /** A bowl whose side walls are two layers thick: an outer layer of bottom slabs and an inner layer of top slabs. */

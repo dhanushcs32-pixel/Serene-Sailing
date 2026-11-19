@@ -56,7 +56,7 @@ public final class HoldFloodEnvelope {
                 anyDry = true;
                 int hi = top;
                 final int cap = (int) Math.min(maxY, (long) lo + HoldScanner.MAX_VOLUME_HEIGHT);
-                while (hi < cap && !isSolid(grid, lx, hi + 1, lz)) {
+                while (hi < cap && !isCeiling(grid, lx, hi, lz)) {
                     hi++;
                 }
                 final int i = (lz - minZ) * width + (lx - minX);
@@ -92,7 +92,7 @@ public final class HoldFloodEnvelope {
                             continue;
                         }
                         final int ni = (nz - minZ) * width + (nx - minX);
-                        if (flags[ni] == 0 && dilated[ni] == 0 && isSolid(grid, nx, topDry[i], nz)) {
+                        if (flags[ni] == 0 && dilated[ni] == 0 && isWallCell(grid, lx, topDry[i], lz, nx, nz)) {
                             dilated[ni] = (byte) HoldScanner.FLAG_SEALED;
                         }
                     }
@@ -119,6 +119,32 @@ public final class HoldFloodEnvelope {
         }
         return HoldScanner.fromColumns(minX, minY, minZ, maxX, maxY, maxZ, HoldScanner.HullClass.SUNKEN_HOLD,
                 portX, starboardX, dilated, colLo, colHi, validRows);
+    }
+
+    /** Stops vertical hold expansion at full blocks as well as slab/stair/trapdoor decks. */
+    private static boolean isCeiling(HoldFlood.Grid grid, int x, int y, int z) {
+        return grid.sealsBetween(x, y, z, 3)
+                || grid.blocksFace(x, y + 1, z, 2)
+                || grid.blocksFace(x, y + 1, z, 3);
+    }
+
+    /** True if neighbour (nx, ly, nz) is a solid or interlocking slab/stair/trapdoor wall bounding dry cell (lx, ly, lz). */
+    private static boolean isWallCell(HoldFlood.Grid grid, int lx, int ly, int lz, int nx, int nz) {
+        if (isSolid(grid, nx, ly, nz)) {
+            return true;
+        }
+        final int dx = nx - lx, dz = nz - lz;
+        if (dx == -1 && dz == 0) return grid.sealsBetween(lx, ly, lz, 0);
+        if (dx == 1 && dz == 0) return grid.sealsBetween(lx, ly, lz, 1);
+        if (dx == 0 && dz == -1) return grid.sealsBetween(lx, ly, lz, 4);
+        if (dx == 0 && dz == 1) return grid.sealsBetween(lx, ly, lz, 5);
+        // Diagonal corner: include if it seals any face (e.g. corner stair/slab), never open/flooded air.
+        for (int dir = 0; dir < 6; dir++) {
+            if (grid.blocksFace(nx, ly, nz, dir)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A cell whose six faces are all blocked: a solid block as far as water is concerned. */

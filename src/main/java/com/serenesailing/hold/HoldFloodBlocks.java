@@ -2,6 +2,8 @@ package com.serenesailing.hold;
 
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.Level;
@@ -14,6 +16,7 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3d;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -60,7 +63,11 @@ public final class HoldFloodBlocks {
         if ((long) w * h * d > MAX_CELLS) {
             return null;
         }
-        final HoldFlood.Grid grid = new PlotGrid(snapshot(level, p, w, h, d), p.minX(), p.minY(), p.minZ(), w, d);
+        final StateInfo[] snap = snapshot(level, sub.getPlot(), p, w, h, d);
+        if (snap == null) {
+            return null; // plot chunks not loaded/synced yet: defer rather than treating missing chunks as holes
+        }
+        final HoldFlood.Grid grid = new PlotGrid(snap, p.minX(), p.minY(), p.minZ(), w, d);
         final HoldFlood.Result result = HoldFlood.analyse(p.minX(), p.minY(), p.minZ(), p.maxX(), p.maxY(), p.maxZ(),
                 grid, p.frame(), WATER_Y, HYSTERESIS, previous);
         final HoldScanner.Envelope env = HoldFloodEnvelope.build(p.minX(), p.minY(), p.minZ(), p.maxX(), p.maxY(), p.maxZ(),
@@ -68,15 +75,30 @@ public final class HoldFloodBlocks {
         return new Outcome(env, result);
     }
 
-    /** One entry per cell of the plot box: the face coverage of its block; null = open (air, fluid, unloaded). */
-    private static StateInfo[] snapshot(Level level, HoldBlocks.Prepared p, int w, int h, int d) {
+    /** One entry per cell of the plot box: the face coverage of its block; null if no plot chunks are loaded yet. */
+    @Nullable
+    private static StateInfo[] snapshot(Level level, @Nullable LevelPlot plot, HoldBlocks.Prepared p, int w, int h, int d) {
+        final Map<Long, LevelChunk> plotChunks = new HashMap<>();
+        if (plot != null) {
+            for (final PlotChunkHolder holder : plot.getLoadedChunks()) {
+                final LevelChunk c = holder.getChunk();
+                if (c != null) {
+                    plotChunks.put(c.getPos().toLong(), c);
+                }
+            }
+        }
         final StateInfo[] cells = new StateInfo[w * h * d];
+        int chunksRead = 0;
         for (int cz = p.minZ() >> 4; cz <= p.maxZ() >> 4; cz++) {
             for (int cx = p.minX() >> 4; cx <= p.maxX() >> 4; cx++) {
-                final LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz); // never loads a chunk
+                LevelChunk chunk = plotChunks.get(net.minecraft.world.level.ChunkPos.asLong(cx, cz));
+                if (chunk == null) {
+                    chunk = level.getChunkSource().getChunkNow(cx, cz); // never loads a chunk
+                }
                 if (chunk == null) {
                     continue;
                 }
+                chunksRead++;
                 final LevelChunkSection[] sections = chunk.getSections();
                 for (int si = 0; si < sections.length; si++) {
                     final LevelChunkSection section = sections[si];
@@ -115,7 +137,7 @@ public final class HoldFloodBlocks {
                 }
             }
         }
-        return cells;
+        return chunksRead == 0 ? null : cells;
     }
 
     /** Face coverage of one block state: which faces it covers completely alone, and the full 16 x 16 coverage of each face. */

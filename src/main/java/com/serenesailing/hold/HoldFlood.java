@@ -54,10 +54,11 @@ public final class HoldFlood {
         /** Padded: reached by the sea; and for every reached cell, the cell the sea came from. */
         private final boolean[] seenPadded;
         private final int[] parentPadded;
+        private final int[] distPadded;
         private final int dryCells, floodedCells, openCellsBelowWater;
 
         private Result(int minX, int minY, int minZ, int width, int height, int depth, boolean[] dry,
-                       boolean[] belowPadded, boolean[] seenPadded, int[] parentPadded,
+                       boolean[] belowPadded, boolean[] seenPadded, int[] parentPadded, int[] distPadded,
                        int dryCells, int floodedCells, int openCellsBelowWater) {
             this.minX = minX;
             this.minY = minY;
@@ -69,6 +70,7 @@ public final class HoldFlood {
             this.belowPadded = belowPadded;
             this.seenPadded = seenPadded;
             this.parentPadded = parentPadded;
+            this.distPadded = distPadded;
             this.dryCells = dryCells;
             this.floodedCells = floodedCells;
             this.openCellsBelowWater = openCellsBelowWater;
@@ -91,6 +93,28 @@ public final class HoldFlood {
         private int padIndex(int x, int y, int z) {
             return ((y - minY + 1) * (depth + 2) + (z - minZ + 1)) * (width + 2) + (x - minX + 1);
         }
+
+        public boolean isFlooded(int x, int y, int z) {
+            if (x < minX || x >= minX + width || y < minY || y >= minY + height || z < minZ || z >= minZ + depth) {
+                return false;
+            }
+            return seenPadded[padIndex(x, y, z)];
+        }
+
+        /** BFS steps from the open-sea padding ring, or -1 if not flooded / out of bounds. */
+        public int floodDistance(int x, int y, int z) {
+            if (x < minX || x >= minX + width || y < minY || y >= minY + height || z < minZ || z >= minZ + depth) {
+                return -1;
+            }
+            return distPadded[padIndex(x, y, z)];
+        }
+
+        public int minX() { return minX; }
+        public int minY() { return minY; }
+        public int minZ() { return minZ; }
+        public int width() { return width; }
+        public int height() { return height; }
+        public int depth() { return depth; }
 
         /**
          * How the sea gets to a flooded cell: the cells from this one back to the open sea, as x, y, z triples (first
@@ -121,21 +145,25 @@ public final class HoldFlood {
         }
 
         /**
-         * The flooded cell furthest inside the box (greatest horizontal distance from every side of it), i.e. the best
-         * candidate for "inside the hull". Ties go to the lowest cell. Null if nothing is flooded.
+         * The flooded cell furthest from the open sea by BFS travel steps (ties broken by horizontal margin from the
+         * plot sides). This avoids picking open-ocean cells underneath the hull at y = minY (which are only 1 step
+         * from the bottom padding face) and instead targets the interior of a breached hold.
          */
         public int[] deepestFloodedCell() {
-            int bestDepth = -1, bx = 0, by = 0, bz = 0;
+            int bestDist = -1, bestMargin = -1, bx = 0, by = 0, bz = 0;
             for (int y = minY; y < minY + height; y++) {
                 for (int z = minZ; z < minZ + depth; z++) {
                     for (int x = minX; x < minX + width; x++) {
-                        if (!seenPadded[padIndex(x, y, z)]) {
+                        final int idx = padIndex(x, y, z);
+                        if (!seenPadded[idx]) {
                             continue;
                         }
-                        final int d = Math.min(Math.min(x - minX, minX + width - 1 - x),
+                        final int steps = distPadded[idx];
+                        final int margin = Math.min(Math.min(x - minX, minX + width - 1 - x),
                                 Math.min(z - minZ, minZ + depth - 1 - z));
-                        if (d > bestDepth) {
-                            bestDepth = d;
+                        if (steps > bestDist || (steps == bestDist && margin > bestMargin)) {
+                            bestDist = steps;
+                            bestMargin = margin;
                             bx = x;
                             by = y;
                             bz = z;
@@ -143,7 +171,7 @@ public final class HoldFlood {
                     }
                 }
             }
-            return bestDepth < 0 ? null : new int[]{bx, by, bz};
+            return bestDist < 0 ? null : new int[]{bx, by, bz};
         }
 
         public int dryCells() { return dryCells; }
@@ -179,6 +207,8 @@ public final class HoldFlood {
         final boolean[] seen = new boolean[pw * ph * pd];
         final int[] parent = new int[pw * ph * pd];            // BFS tree: how the sea reached each cell (-1 = a seed)
         Arrays.fill(parent, -1);
+        final int[] dist = new int[pw * ph * pd];
+        Arrays.fill(dist, -1);
         final int[] queue = new int[pw * ph * pd];
         int head = 0, tail = 0, openBelow = 0;
 
@@ -187,12 +217,17 @@ public final class HoldFlood {
                 for (int px = 0; px < pw; px++) {
                     final int x = minX + px - 1, y = minY + py - 1, z = minZ + pz - 1;
                     final int i = (py * pd + pz) * pw + px;
-                    final double threshold = previous == null || hysteresis == 0.0 ? waterY
-                            : waterY + (previous.wasBelow(x, y, z) ? hysteresis : -hysteresis);
-                    below[i] = frame.worldY(x + 0.5, y + 0.5, z + 0.5) < threshold;
+                    // A cell [y, y+1] intersects the ocean whenever its bottom lies below the water surface.
+                    // One-sided upward hysteresis ensures any cell actually intersecting waterY is caught immediately
+                    // (never locked out on shallow-draft hulls), while preventing upward heave from flickering it off.
+                    final double threshold = (previous != null && hysteresis > 0.0 && previous.wasBelow(x, y, z))
+                            ? waterY + hysteresis
+                            : waterY;
+                    below[i] = frame.worldY(x + 0.5, y, z + 0.5) < threshold;
                     final boolean ring = px == 0 || py == 0 || pz == 0 || px == pw - 1 || py == ph - 1 || pz == pd - 1;
                     if (ring && below[i]) {
                         seen[i] = true;
+                        dist[i] = 0;
                         queue[tail++] = i;
                     }
                 }
@@ -229,6 +264,7 @@ public final class HoldFlood {
                 }
                 seen[ni] = true;
                 parent[ni] = i;
+                dist[ni] = dist[i] + 1;
                 queue[tail++] = ni;
             }
         }
@@ -260,6 +296,6 @@ public final class HoldFlood {
                 }
             }
         }
-        return new Result(minX, minY, minZ, w, h, d, dry, below, seen, parent, dryCells, flooded, openBelow);
+        return new Result(minX, minY, minZ, w, h, d, dry, below, seen, parent, dist, dryCells, flooded, openBelow);
     }
 }

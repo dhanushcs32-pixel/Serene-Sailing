@@ -187,6 +187,16 @@ public final class HoldRegistry {
         }
     }
 
+    /** Visits tracked ships that have a flood-fill result with flooded cells and no active dry hold. */
+    public void forEachFlooded(BiConsumer<SubLevel, HoldFlood.Result> visitor) {
+        for (final Map.Entry<SubLevel, Entry> e : entries.entrySet()) {
+            final Entry entry = e.getValue();
+            if (entry.active == null && entry.floodPrev != null && entry.floodPrev.floodedCells() > 0) {
+                visitor.accept(e.getKey(), entry.floodPrev);
+            }
+        }
+    }
+
     public boolean hasActiveHolds() {
         return actives.length > 0;
     }
@@ -305,7 +315,7 @@ public final class HoldRegistry {
                         .append(" flooded=").append(entry.floodPrev.floodedCells())
                         .append(" openBelowWater=").append(entry.floodPrev.openCellsBelowWater());
                 if (here) {
-                    sb.append("\n    ").append(leakReport(level, entry));
+                    sb.append("\n    ").append(leakReport(level, sub, entry, in, local));
                 }
             }
             if (env != null && here) {
@@ -326,7 +336,7 @@ public final class HoldRegistry {
                 for (int z = env.volumeMinZ(); z <= env.volumeMaxZ(); z++) {
                     for (int x = env.volumeMinX(); x <= env.volumeMaxX(); x++) {
                         for (int y = env.columnLo(x, z); y <= env.columnHi(x, z); y++) {
-                            if (env.contains(x, y, z)) {
+                            if (!env.contains(x, y, z)) {
                                 continue;
                             }
                             final net.minecraft.world.level.block.state.BlockState st =
@@ -358,17 +368,42 @@ public final class HoldRegistry {
      * route back out, naming every non-air block on the way. If the route only passes through air, the hull simply has
      * a gap there; if it passes through stairs, slabs, trapdoors, fences ..., those are the blocks that let water by.
      */
-    private static String leakReport(Level level, Entry entry) {
+    private static String leakReport(Level level, SubLevel sub, Entry entry, Vector3d worldPos, Vector3d localScratch) {
         final HoldFlood.Result flood = entry.floodPrev;
-        final int[] deepest = flood == null ? null : flood.deepestFloodedCell();
-        if (deepest == null) {
+        if (flood == null) {
             entry.leakPath = null;
             return "leak check: nothing below the waterline is flooded";
         }
-        final int[] path = flood.pathToSea(deepest[0], deepest[1], deepest[2]);
+        final int[] deepest = flood.deepestFloodedCell();
+        int[] start = deepest;
+        int startDist = deepest == null ? -1 : flood.floodDistance(deepest[0], deepest[1], deepest[2]);
+        final Pose3dc pose = sub.logicalPose();
+        if (pose != null) {
+            pose.transformPositionInverse(worldPos, localScratch);
+            final int lx = (int) Math.floor(localScratch.x);
+            final int ly = (int) Math.floor(localScratch.y);
+            final int lz = (int) Math.floor(localScratch.z);
+            // Only prefer the player's column when it actually sits over a deep flooded interior (not open ocean under an overhang).
+            int bestColY = Integer.MIN_VALUE, bestColDist = -1;
+            for (int y = ly; y >= flood.minY(); y--) {
+                final int d = flood.floodDistance(lx, y, lz);
+                if (d > bestColDist && y > flood.minY() && !flood.isFlooded(lx, y - 1, lz)) {
+                    bestColDist = d;
+                    bestColY = y;
+                }
+            }
+            if (bestColY != Integer.MIN_VALUE && bestColDist >= Math.max(3, startDist / 2)) {
+                start = new int[]{lx, bestColY, lz};
+            }
+        }
+        if (start == null) {
+            entry.leakPath = null;
+            return "leak check: nothing below the waterline is flooded";
+        }
+        final int[] path = flood.pathToSea(start[0], start[1], start[2]);
         entry.leakPath = path;
         final StringBuilder sb = new StringBuilder("leak check: deepest flooded cell (")
-                .append(deepest[0]).append(',').append(deepest[1]).append(',').append(deepest[2])
+                .append(start[0]).append(',').append(start[1]).append(',').append(start[2])
                 .append(") is reached from the sea in ").append(path.length / 3).append(" steps");
         int shown = 0, nonAir = 0;
         final StringBuilder blocks = new StringBuilder();
@@ -572,6 +607,14 @@ public final class HoldRegistry {
             }
             entry.floodPrev = outcome.result();
             env = outcome.envelope();
+            if (!env.isSunken() && entry.floodPrev.floodedCells() > 0 && entry.leakPath == null) {
+                final int[] deepest = entry.floodPrev.deepestFloodedCell();
+                if (deepest != null) {
+                    entry.leakPath = entry.floodPrev.pathToSea(deepest[0], deepest[1], deepest[2]);
+                }
+            } else if (env.isSunken()) {
+                entry.leakPath = null;
+            }
         } else {
             env = HoldBlocks.scan(level, sub, sub.logicalPose(), entry.lastClass, scratch);
             if (env == null) {

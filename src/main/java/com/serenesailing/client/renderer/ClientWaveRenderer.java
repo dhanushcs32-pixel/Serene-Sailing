@@ -458,7 +458,6 @@ public class ClientWaveRenderer {
         // surface boats and swimmers were actually on, which is what put the player under a second water ceiling.
 
         // --- Sable Sub-Level Hull Masking & Wave Attenuation ---
-        List<MaskedCellInfo> maskedCells = new ArrayList<>();
         boolean[][] maskedByShipHull = new boolean[cachedGridDim][cachedGridDim];
 
         maskWaveGridByHoldEnvelopes(
@@ -469,14 +468,6 @@ public class ClientWaveRenderer {
                 camPos,
                 partialTick
         );
-
-        for (int gx = 0; gx < cachedGridDim; gx++) {
-            for (int gz = 0; gz < cachedGridDim; gz++) {
-                if (maskedByShipHull[gx][gz]) {
-                    maskedCells.add(new MaskedCellInfo(gx, gz, PINNED_WATER_Y + 0.05f));
-                }
-            }
-        }
 
         int vertDim = cachedGridDim + 1;
 
@@ -494,58 +485,54 @@ public class ClientWaveRenderer {
             }
         }
 
-        // Compute distance field to nearest contacting masked hull cell
+        // O(V) Chamfer Euclidean distance field to nearest masked hull cell (replaces O(V * M) brute-force scan).
         float[][] vertDistToMaskedHull = new float[vertDim][vertDim];
-        float[][] vertEdgeWaterlineY = new float[vertDim][vertDim];
         float[][] rawVertHullFeather = new float[vertDim][vertDim];
-
+        boolean anyMaskedHull = false;
         for (int vi = 0; vi < vertDim; vi++) {
             Arrays.fill(vertDistToMaskedHull[vi], 99.0f);
-            Arrays.fill(vertEdgeWaterlineY[vi], PINNED_WATER_Y + 0.05f);
             Arrays.fill(rawVertHullFeather[vi], 1.0f);
         }
-
-        if (!maskedCells.isEmpty()) {
-            int minMaskedGX = Integer.MAX_VALUE, maxMaskedGX = Integer.MIN_VALUE;
-            int minMaskedGZ = Integer.MAX_VALUE, maxMaskedGZ = Integer.MIN_VALUE;
-            for (int m = 0; m < maskedCells.size(); m++) {
-                MaskedCellInfo info = maskedCells.get(m);
-                if (info.gx < minMaskedGX) minMaskedGX = info.gx;
-                if (info.gx > maxMaskedGX) maxMaskedGX = info.gx;
-                if (info.gz < minMaskedGZ) minMaskedGZ = info.gz;
-                if (info.gz > maxMaskedGZ) maxMaskedGZ = info.gz;
+        for (int gx = 0; gx < cachedGridDim; gx++) {
+            for (int gz = 0; gz < cachedGridDim; gz++) {
+                if (maskedByShipHull[gx][gz]) {
+                    anyMaskedHull = true;
+                    vertDistToMaskedHull[gx][gz] = 0.0f;
+                    vertDistToMaskedHull[gx + 1][gz] = 0.0f;
+                    vertDistToMaskedHull[gx][gz + 1] = 0.0f;
+                    vertDistToMaskedHull[gx + 1][gz + 1] = 0.0f;
+                }
             }
-
-            int checkMinVI = Math.max(0, minMaskedGX - 5);
-            int checkMaxVI = Math.min(vertDim - 1, maxMaskedGX + 6);
-            int checkMinVJ = Math.max(0, minMaskedGZ - 5);
-            int checkMaxVJ = Math.min(vertDim - 1, maxMaskedGZ + 6);
-
-            double maxDistSq = 4.5 * 4.5 + 0.001;
-
-            for (int vi = checkMinVI; vi <= checkMaxVI; vi++) {
-                for (int vj = checkMinVJ; vj <= checkMaxVJ; vj++) {
-                    double minDistSq = maxDistSq;
-                    float nearestEdgeY = PINNED_WATER_Y + 0.05f;
-
-                    for (int m = 0; m < maskedCells.size(); m++) {
-                        MaskedCellInfo info = maskedCells.get(m);
-                        int cx = info.gx;
-                        int cz = info.gz;
-                        double dx = (vi < cx) ? (cx - vi) : ((vi > cx + 1) ? (vi - (cx + 1)) : 0.0);
-                        double dz = (vj < cz) ? (cz - vj) : ((vj > cz + 1) ? (vj - (cz + 1)) : 0.0);
-                        double distSq = dx * dx + dz * dz;
-                        if (distSq < minDistSq) {
-                            minDistSq = distSq;
-                            nearestEdgeY = info.edgeWaterlineY;
-                        }
+        }
+        if (anyMaskedHull) {
+            for (int vi = 1; vi < vertDim - 1; vi++) {
+                for (int vj = 1; vj < vertDim - 1; vj++) {
+                    float d = vertDistToMaskedHull[vi][vj];
+                    if (d > 0.0f) {
+                        d = Math.min(d, vertDistToMaskedHull[vi - 1][vj] + 1.0f);
+                        d = Math.min(d, vertDistToMaskedHull[vi][vj - 1] + 1.0f);
+                        d = Math.min(d, vertDistToMaskedHull[vi - 1][vj - 1] + 1.4142f);
+                        d = Math.min(d, vertDistToMaskedHull[vi - 1][vj + 1] + 1.4142f);
+                        vertDistToMaskedHull[vi][vj] = d;
                     }
-
-                    if (minDistSq < maxDistSq) {
-                        float dist = (float) Math.sqrt(minDistSq);
-                        vertDistToMaskedHull[vi][vj] = dist;
-                        vertEdgeWaterlineY[vi][vj] = nearestEdgeY;
-                        rawVertHullFeather[vi][vj] = Mth.clamp(dist / 4.5f, 0.0f, 1.0f);
+                }
+            }
+            for (int vi = vertDim - 2; vi >= 1; vi--) {
+                for (int vj = vertDim - 2; vj >= 1; vj--) {
+                    float d = vertDistToMaskedHull[vi][vj];
+                    if (d > 0.0f) {
+                        d = Math.min(d, vertDistToMaskedHull[vi + 1][vj] + 1.0f);
+                        d = Math.min(d, vertDistToMaskedHull[vi][vj + 1] + 1.0f);
+                        d = Math.min(d, vertDistToMaskedHull[vi + 1][vj + 1] + 1.4142f);
+                        d = Math.min(d, vertDistToMaskedHull[vi + 1][vj - 1] + 1.4142f);
+                        vertDistToMaskedHull[vi][vj] = d;
+                    }
+                }
+            }
+            for (int vi = 0; vi < vertDim; vi++) {
+                for (int vj = 0; vj < vertDim; vj++) {
+                    if (vertDistToMaskedHull[vi][vj] < 4.5f) {
+                        rawVertHullFeather[vi][vj] = Mth.clamp(vertDistToMaskedHull[vi][vj] / 4.5f, 0.0f, 1.0f);
                     }
                 }
             }
@@ -829,6 +816,23 @@ public class ClientWaveRenderer {
                 bufferBuilder
                         .addVertex(matrix, (float) (wx1 - camPos.x), (float) (y10 - camPos.y), (float) (wz0 - camPos.z))
                         .setUv(u1, v0).setColor(r10, g10, b10, a10);
+
+                // Seal vertical gap ("air pocket") between elevated wave sheet and flat vanilla water along masked hull edges.
+                if (anyMaskedHull) {
+                    final float skirtBot = PINNED_WATER_Y - 0.05f;
+                    if (gx > 0 && maskedByShipHull[gx - 1][gz] && Math.max(y00, y01) > PINNED_WATER_Y + 0.01f) {
+                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y00, wz0, c00, wx0, y01, wz1, c01, skirtBot, u0, u1, v0, v1);
+                    }
+                    if (gx + 1 < cachedGridDim && maskedByShipHull[gx + 1][gz] && Math.max(y10, y11) > PINNED_WATER_Y + 0.01f) {
+                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx1, y10, wz0, c10, wx1, y11, wz1, c11, skirtBot, u0, u1, v0, v1);
+                    }
+                    if (gz > 0 && maskedByShipHull[gx][gz - 1] && Math.max(y00, y10) > PINNED_WATER_Y + 0.01f) {
+                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y00, wz0, c00, wx1, y10, wz0, c10, skirtBot, u0, u1, v0, v1);
+                    }
+                    if (gz + 1 < cachedGridDim && maskedByShipHull[gx][gz + 1] && Math.max(y01, y11) > PINNED_WATER_Y + 0.01f) {
+                        emitWaveSkirt(bufferBuilder, matrix, camPos, wx0, y01, wz1, c01, wx1, y11, wz1, c11, skirtBot, u0, u1, v0, v1);
+                    }
+                }
 
                 // 2. Detached High-Contrast Beach Surf Ribbon Overlay
                 float sd00 = vertShoreDist[gx][gz];
@@ -1241,7 +1245,21 @@ public class ClientWaveRenderer {
         }
     }
 
-    private record MaskedCellInfo(int gx, int gz, float edgeWaterlineY) {}
+    private static void emitWaveSkirt(BufferBuilder buffer, Matrix4f matrix, Vec3 cam,
+                                      double x0, float y0, double z0, int c0,
+                                      double x1, float y1, double z1, int c1,
+                                      float botY, float u0, float u1, float v0, float v1) {
+        int a0 = (c0 >> 24) & 0xFF, r0 = (c0 >> 16) & 0xFF, g0 = (c0 >> 8) & 0xFF, b0 = c0 & 0xFF;
+        int a1 = (c1 >> 24) & 0xFF, r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+        float rx0 = (float) (x0 - cam.x), rz0 = (float) (z0 - cam.z);
+        float rx1 = (float) (x1 - cam.x), rz1 = (float) (z1 - cam.z);
+        float ry0 = (float) (y0 - cam.y), ry1 = (float) (y1 - cam.y);
+        float rBot = (float) (botY - cam.y);
+        buffer.addVertex(matrix, rx0, ry0, rz0).setUv(u0, v0).setColor(r0, g0, b0, a0);
+        buffer.addVertex(matrix, rx1, ry1, rz1).setUv(u1, v0).setColor(r1, g1, b1, a1);
+        buffer.addVertex(matrix, rx1, rBot, rz1).setUv(u1, v1).setColor(r1, g1, b1, a1);
+        buffer.addVertex(matrix, rx0, rBot, rz0).setUv(u0, v1).setColor(r0, g0, b0, a0);
+    }
 
     // =========================================================================================
     //  TUNABLES

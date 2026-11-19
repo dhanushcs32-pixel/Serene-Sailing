@@ -95,6 +95,43 @@ public final class HoldDebugCommand {
                 }
             }
         });
+        // Flooded ships (no active dry hold): cyan markers on flooded interior columns resting over a solid floor.
+        registry.forEachFlooded((sub, flood) -> {
+            final Pose3dc pose = sub.logicalPose();
+            final HoldScanner.Frame frame = pose == null ? null
+                    : HoldBlocks.frameOf(pose, flood.minX(), flood.minY(), flood.minZ(), tmp);
+            if (frame == null) {
+                return;
+            }
+            final int maxX = flood.minX() + flood.width() - 1;
+            final int maxZ = flood.minZ() + flood.depth() - 1;
+            for (int lz = flood.minZ(); lz <= maxZ && drawn[0] < MAX_MARKERS; lz++) {
+                for (int lx = flood.minX(); lx <= maxX && drawn[0] < MAX_MARKERS; lx++) {
+                    final double localSurface = frame.localY(SURFACE_Y, lx + 0.5, lz + 0.5);
+                    final int sy = Math.min(flood.minY() + flood.height() - 1, (int) Math.floor(localSurface));
+                    boolean floodedOverFloor = false;
+                    for (int y = sy; y > flood.minY(); y--) {
+                        if (flood.isFlooded(lx, y, lz) && !flood.isFlooded(lx, y - 1, lz)) {
+                            floodedOverFloor = true;
+                            break;
+                        }
+                    }
+                    if (!floodedOverFloor) {
+                        continue;
+                    }
+                    final Vector3d world = pose.transformPosition(tmp.set(lx + 0.5, localSurface, lz + 0.5));
+                    final double dx = world.x - cam.x, dy = world.y - cam.y, dz = world.z - cam.z;
+                    if (dx * dx + dy * dy + dz * dz > DRAW_RANGE * DRAW_RANGE) {
+                        continue;
+                    }
+                    poseStack.pushPose();
+                    poseStack.translate(dx, dy, dz);
+                    LevelRenderer.renderLineBox(poseStack, lines, marker, 0.1f, 0.8f, 1.0f, 1.0f);
+                    poseStack.popPose();
+                    drawn[0]++;
+                }
+            }
+        });
         // Flood fill leak route (from /serenesailing holddebug): magenta boxes along the sea's way into the ship.
         final AABB cell = new AABB(-0.22, -0.22, -0.22, 0.22, 0.22, 0.22);
         registry.forEachLeakPath((sub, path) -> {
