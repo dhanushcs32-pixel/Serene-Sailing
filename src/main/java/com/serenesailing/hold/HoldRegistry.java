@@ -267,6 +267,12 @@ public final class HoldRegistry {
             if (lo <= env.columnHi(lx, lz) && ly >= lo && ly <= env.maxY() + 2) {
                 return true;
             }
+            final int row = lz - env.minZ();
+            if (lx >= env.minX() && lx <= env.maxX() && row >= 0 && row < env.depth()
+                    && (env.flags(row, lx) & HoldScanner.FLAG_SEALED) != 0
+                    && ly >= env.volumeMinY() && ly <= env.maxY() + 2) {
+                return true;
+            }
         }
         return false;
     }

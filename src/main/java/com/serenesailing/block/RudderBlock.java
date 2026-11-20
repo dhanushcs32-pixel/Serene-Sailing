@@ -152,6 +152,32 @@ public class RudderBlock extends Block implements EntityBlock, SimpleWaterlogged
     }
 
     @Override
+    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean isMoving) {
+        super.onPlace(state, level, pos, oldState, isMoving);
+        if (!state.is(oldState.getBlock()) && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            invalidateSubLevelCache(serverLevel, pos);
+        }
+    }
+
+    @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock()) && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            invalidateSubLevelCache(serverLevel, pos);
+        }
+        super.onRemove(state, level, pos, newState, isMoving);
+    }
+
+    private static void invalidateSubLevelCache(net.minecraft.server.level.ServerLevel serverLevel, BlockPos pos) {
+        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(serverLevel);
+        if (container instanceof dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer serverContainer) {
+            var plot = serverContainer.getPlot(new net.minecraft.world.level.ChunkPos(pos));
+            if (plot != null && plot.getSubLevel() instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel ssl) {
+                com.serenesailing.event.ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+            }
+        }
+    }
+
+    @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
         builder.add(FACING, WATERLOGGED);
     }

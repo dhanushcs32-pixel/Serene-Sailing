@@ -99,7 +99,7 @@ public class TaffrailLogBlockEntity extends BlockEntity {
             // Read authoritative forward speed cached by ServerPhysicsHandler along vessel heading (localForward)
             forwardSpeed = ServerPhysicsHandler.getForwardSpeed(subLevel.getUniqueId());
         } else {
-            forwardSpeed = this.speedMs;
+            forwardSpeed = 0.0;
         }
 
         float knots = (float) (forwardSpeed * 1.944);

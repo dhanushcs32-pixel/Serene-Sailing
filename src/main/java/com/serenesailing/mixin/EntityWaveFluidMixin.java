@@ -107,7 +107,6 @@ public abstract class EntityWaveFluidMixin {
         if (HoldRegistry.anyActive(self.level())
                 && (HoldRegistry.isOccluded(self.level(), self.getEyePosition())
                 || HoldRegistry.isOverDryHold(self.level(), self.getEyePosition()))) {
-            cir.setReturnValue(NeoForgeMod.EMPTY_TYPE.value());
             return;
         }
         double surface = WaveSurface.surfaceY(self.level(), self.getX(), self.getZ(), 0.0f);

@@ -117,7 +117,7 @@ public final class HoldFloodEnvelope {
                     continue;
                 }
                 final boolean onEdge = row == 0 || row == depth - 1 || c == 0 || c == width - 1;
-                if (onEdge || hasFloodedCell(result, minX + c, minY, maxY, minZ + row)) {
+                if (onEdge || hasFloodedAtSurface(result, frame, minX + c, minY, maxY, minZ + row)) {
                     exteriorOrWet[idx] = true;
                     bfs[bfsTail++] = idx;
                 }
@@ -158,13 +158,12 @@ public final class HoldFloodEnvelope {
                 portX, starboardX, dilated, colLo, colHi, validRows);
     }
 
-    private static boolean hasFloodedCell(HoldFlood.Result result, int lx, int minY, int maxY, int lz) {
-        for (int ly = minY; ly <= maxY; ly++) {
-            if (result.isFlooded(lx, ly, lz)) {
-                return true;
-            }
-        }
-        return false;
+    /** Tests only the waterline surface cell so ocean underneath a flared bilge does not block interior mast/cargo fill. */
+    private static boolean hasFloodedAtSurface(HoldFlood.Result result, HoldScanner.Frame frame,
+                                               int lx, int minY, int maxY, int lz) {
+        final int sy = Math.max(minY, Math.min(maxY,
+                (int) Math.floor(frame.localY(HoldFloodBlocks.WATER_Y, lx + 0.5, lz + 0.5))));
+        return result.isFlooded(lx, sy, lz);
     }
 
     /**

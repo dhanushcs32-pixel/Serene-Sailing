@@ -818,6 +818,7 @@ public class ClientWaveRenderer {
         RenderSystem.defaultBlendFunc();
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
+        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
         // Above water, cull backfaces just like vanilla water so tall crests never double up into hollow domes.
         if (camPos.y >= PINNED_WATER_Y) {
             RenderSystem.enableCull();
@@ -962,16 +963,16 @@ public class ClientWaveRenderer {
                                     .setColor((sc10 >> 16) & 0xFF, (sc10 >> 8) & 0xFF, sc10 & 0xFF, (sc10 >>> 24) & 0xFF).setUv(su1, sv0).setLight(pl10).setNormal(0.0f, 1.0f, 0.0f);
 
                             if (subCulled[sx][sz + 1] && Math.max(sy00, sy01) > PINNED_WATER_Y + 0.01f) {
-                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, pl00, swx0, sy01, swz1, sc01, pl01, skirtBot, su0, su1, sv0, sv1);
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy01, swz1, sc01, pl01, swx0, sy00, swz0, sc00, pl00, skirtBot, su0, su1, sv0, sv1);
                             }
                             if (subCulled[sx + 2][sz + 1] && Math.max(sy10, sy11) > PINNED_WATER_Y + 0.01f) {
-                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy11, swz1, sc11, pl11, swx1, sy10, swz0, sc10, pl10, skirtBot, su0, su1, sv0, sv1);
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy10, swz0, sc10, pl10, swx1, sy11, swz1, sc11, pl11, skirtBot, su0, su1, sv0, sv1);
                             }
                             if (subCulled[sx + 1][sz] && Math.max(sy00, sy10) > PINNED_WATER_Y + 0.01f) {
-                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy10, swz0, sc10, pl10, swx0, sy00, swz0, sc00, pl00, skirtBot, su0, su1, sv0, sv1);
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy00, swz0, sc00, pl00, swx1, sy10, swz0, sc10, pl10, skirtBot, su0, su1, sv0, sv1);
                             }
                             if (subCulled[sx + 1][sz + 2] && Math.max(sy01, sy11) > PINNED_WATER_Y + 0.01f) {
-                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx0, sy01, swz1, sc01, pl01, swx1, sy11, swz1, sc11, pl11, skirtBot, su0, su1, sv0, sv1);
+                                emitWaveSkirt(bufferBuilder, matrix, camPos, swx1, sy11, swz1, sc11, pl11, swx0, sy01, swz1, sc01, pl01, skirtBot, su0, su1, sv0, sv1);
                             }
                         }
                     }
@@ -1373,7 +1374,7 @@ public class ClientWaveRenderer {
      * test and is replaced 1:1 by the single Gerstner wave surface, while ship holds stay untouched for Sable occlusion.
      */
     private static void renderVanillaWaterCuller(Matrix4f viewPose, Vec3 camPos, float partialTick) {
-        if (camPos.y < VANILLA_WATER_CULL_Y + 0.05 || camPos.y > 115.0) {
+        if (camPos.y < VANILLA_WATER_CULL_Y + 0.005 || camPos.y > 115.0) {
             return;
         }
         final Minecraft mc = Minecraft.getInstance();

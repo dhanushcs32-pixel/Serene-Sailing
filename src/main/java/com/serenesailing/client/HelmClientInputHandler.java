@@ -214,7 +214,7 @@ public class HelmClientInputHandler {
         }
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.level == null) {
+        if (mc.player == null || mc.level == null || mc.screen != null) {
             releaseSteering();
             return;
         }
@@ -261,8 +261,9 @@ public class HelmClientInputHandler {
      */
     private static void releaseSteering() {
         if (isSteeringHelm && activeHelmPos != null) {
+            // Send current accumulatedRudder with held=false so HelmBlockEntity springs back smoothly at 0.09f.
             PacketDistributor.sendToServer(
-                    new ServerboundSteerPayload(activeHelmPos, 0.0f, false));
+                    new ServerboundSteerPayload(activeHelmPos, accumulatedRudder, false));
         }
 
         Minecraft mc = Minecraft.getInstance();

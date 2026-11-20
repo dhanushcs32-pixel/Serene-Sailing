@@ -88,6 +88,33 @@ public class HelmBlock extends Block implements EntityBlock {
     }
 
     @Override
+    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean isMoving) {
+        super.onPlace(state, level, pos, oldState, isMoving);
+        if (!state.is(oldState.getBlock()) && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            invalidateSubLevelHelmCache(serverLevel, pos, false);
+        }
+    }
+
+    @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock()) && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            invalidateSubLevelHelmCache(serverLevel, pos, true);
+        }
+        super.onRemove(state, level, pos, newState, isMoving);
+    }
+
+    private static void invalidateSubLevelHelmCache(net.minecraft.server.level.ServerLevel serverLevel, BlockPos pos, boolean clearAngle) {
+        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(serverLevel);
+        if (container instanceof dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer serverContainer) {
+            var plot = serverContainer.getPlot(new net.minecraft.world.level.ChunkPos(pos));
+            if (plot != null && plot.getSubLevel() instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel ssl) {
+                com.serenesailing.event.ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+                if (clearAngle) com.serenesailing.event.ServerPhysicsHandler.clearHelmAngle(ssl.getUniqueId());
+            }
+        }
+    }
+
+    @Override
     public BlockState getStateForPlacement(BlockPlaceContext context) {
         // getOpposite() ensures the front axle faces toward the player who places it
         return this.defaultBlockState()

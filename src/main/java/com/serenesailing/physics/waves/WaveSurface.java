@@ -90,6 +90,12 @@ public final class WaveSurface {
         return t * t * (3.0 - 2.0 * t);
     }
 
+    /** Obstacle taper in [0,1] from distance to docks, piers, or walls (mirrors ClientWaveRenderer). */
+    private static double taperFromObstacleDistance(double distance) {
+        double t = Mth.clamp((distance - 0.25) / 3.75, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
     /** 1.25 in ocean biomes (bigger swell), 1.0 elsewhere. Identical on both logical sides. */
     public static float oceanMultiplier(Level level, BlockPos pos) {
         var biome = level.getBiome(pos);
@@ -156,7 +162,8 @@ public final class WaveSurface {
     }
 
     private static double computeShoreTaper(Level level, int bx, int bz) {
-        double best = 99.0;
+        double bestShore = 99.0;
+        double bestObstacle = 99.0;
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
@@ -165,22 +172,31 @@ public final class WaveSurface {
                 }
                 double step = (dx != 0 && dz != 0) ? 1.4142 : 1.0;
                 for (int k = 1; k <= SHORE_PROBE_RANGE; k++) {
-                    if (k * step >= best) {
+                    double dist = k * step;
+                    if (dist >= bestShore && dist >= bestObstacle) {
                         break;
                     }
-                    p.set(bx + dx * k, SEA_LEVEL_BLOCK_Y, bz + dz * k);
+                    int nx = bx + dx * k, nz = bz + dz * k;
+                    p.set(nx, SEA_LEVEL_BLOCK_Y, nz);
                     if (!level.hasChunkAt(p)) {
                         break;
                     }
                     BlockState bs = level.getBlockState(p);
                     if (!bs.getFluidState().is(FluidTags.WATER) && isNaturalShoreBlock(bs)) {
-                        best = k * step;
+                        bestShore = Math.min(bestShore, dist);
+                        bestObstacle = Math.min(bestObstacle, dist);
+                        break;
+                    }
+                    if (dist < bestObstacle && !isWaveColumn(level, nx, nz)) {
+                        bestObstacle = dist;
+                    }
+                    if (dist >= bestShore && dist >= bestObstacle) {
                         break;
                     }
                 }
             }
         }
-        return taperFromShoreDistance(best);
+        return Math.min(taperFromShoreDistance(bestShore), taperFromObstacleDistance(bestObstacle));
     }
 
     // ------------------------------------------------------------------------------------------------

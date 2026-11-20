@@ -176,6 +176,12 @@ public class ServerPhysicsHandler {
         HELM_ANGLE_CACHE.put(subLevelId, angle);
     }
 
+    public static void clearHelmAngle(UUID subLevelId) {
+        if (subLevelId != null) {
+            HELM_ANGLE_CACHE.remove(subLevelId);
+        }
+    }
+
     public static float getHelmAngle(UUID subLevelId) {
         if (subLevelId == null) {
             return 0.0f;
@@ -347,10 +353,17 @@ public class ServerPhysicsHandler {
         // Task 3.2: Heading Fallback: If no HelmBlock is present on the contraption,
         // resolve craft's forward vector from SailBlock facing direction (sailFacing.getOpposite()),
         // falling back to local (0, 0, -1).
+        HelmBlockEntity activeHelm = null;
+        for (HelmBlockEntity h : steering.helms()) {
+            if (!h.isRemoved()) {
+                activeHelm = h;
+                break;
+            }
+        }
         Vector3d localForward;
-        if (!steering.helms().isEmpty()) {
-            Direction helmFacing = steering.helms().get(0).getBlockState().hasProperty(HelmBlock.FACING)
-                    ? steering.helms().get(0).getBlockState().getValue(HelmBlock.FACING) : Direction.NORTH;
+        if (activeHelm != null) {
+            Direction helmFacing = activeHelm.getBlockState().hasProperty(HelmBlock.FACING)
+                    ? activeHelm.getBlockState().getValue(HelmBlock.FACING) : Direction.NORTH;
             localForward = new Vector3d(helmFacing.getStepX(), helmFacing.getStepY(), helmFacing.getStepZ());
         } else if (steering.sailFacing() != null) {
             Direction bowDir = steering.sailFacing().getOpposite();
@@ -585,7 +598,7 @@ public class ServerPhysicsHandler {
             signedThrustN = Mth.clamp(thrustWorld.dot(forwardWorld), -maxAeroForce, maxAeroForce);
             thrustMag = Math.abs(signedThrustN);
         }
-        boolean hasActiveThrust = signedThrustN > 1.0
+        boolean hasActiveThrust = thrustMag > 1.0
                 || (steering.sailAreaEfficiency() > 0.0 && !calmWind && !anchored && signedThrustN >= 0.0);
         double thrustForceN = 0.0;
         Vector3d localLinearImpulse = new Vector3d(0.0, 0.0, 0.0);
@@ -1185,13 +1198,18 @@ public class ServerPhysicsHandler {
         if (cached != null) {
             return cached;
         }
-        List<HelmBlockEntity> helms = getSteeringCache(subLevel).helms();
-        if (!helms.isEmpty()) {
-            float angle = helms.get(0).getSteeringAngle();
+        for (HelmBlockEntity h : getSteeringCache(subLevel).helms()) {
+            if (h.isRemoved()) continue;
+            float angle = h.getSteeringAngle();
             HELM_ANGLE_CACHE.put(subLevel.getUniqueId(), angle);
             return angle;
         }
-        return rudders.isEmpty() ? 0.0f : rudders.get(0).blockEntity().getSteeringAngle();
+        for (RudderInfo r : rudders) {
+            if (!r.blockEntity().isRemoved()) {
+                return r.blockEntity().getSteeringAngle();
+            }
+        }
+        return 0.0f;
     }
 
     /**
