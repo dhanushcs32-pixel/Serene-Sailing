@@ -92,6 +92,9 @@ public class HelmClientInputHandler {
         }
 
         if (event.getAction() == GLFW.GLFW_PRESS) {
+            if (mc.screen != null) {
+                return;
+            }
             // Check if we're looking at a helm block
             if (mc.hitResult instanceof BlockHitResult blockHit
                     && blockHit.getType() == HitResult.Type.BLOCK) {
@@ -146,7 +149,7 @@ public class HelmClientInputHandler {
         }
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.level == null) {
+        if (mc.player == null || mc.level == null || mc.screen != null) {
             releaseSteering();
             return;
         }
@@ -193,7 +196,7 @@ public class HelmClientInputHandler {
     @SubscribeEvent
     public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
         // Consume scroll events while steering to prevent hotbar switching
-        if (isSteeringHelm) {
+        if (isSteeringHelm && Minecraft.getInstance().screen == null) {
             event.setCanceled(true);
         }
     }

@@ -109,7 +109,7 @@ public class HelmBlockEntityRenderer implements BlockEntityRenderer<HelmBlockEnt
         poseStack.translate(0.0, 13.0 / 16.0, -0.3625);
 
         // 4. Spin the wheel around its axle (local Z axis)
-        float renderAngle = blockEntity.getCurrentRudderAngle() * 4.0f; // 4:1 visual ratio
+        float renderAngle = blockEntity.getInterpolatedRudderAngle(partialTick) * 4.0f; // 4:1 visual ratio
         poseStack.mulPose(Axis.ZP.rotationDegrees(-renderAngle));
 
         // 5. Render wheel components (hub, boss, inner ring, outer ring, spokes, handles)

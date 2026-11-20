@@ -43,6 +43,9 @@ public class HelmBlockEntity extends BlockEntity {
     /** Smoothly interpolated rudder angle used for rendering. */
     private float currentRudderAngle = 0.0f;
 
+    /** Previous tick rudder angle for smooth partial-tick wheel rendering. */
+    private float prevRudderAngle = 0.0f;
+
     /** True while a player is actively holding the mouse button on the helm. */
     private boolean activelyHeld = false;
 
@@ -66,6 +69,11 @@ public class HelmBlockEntity extends BlockEntity {
     /** Returns the smoothed rudder angle for rendering purposes. */
     public float getCurrentRudderAngle() {
         return this.currentRudderAngle;
+    }
+
+    /** Returns the rudder angle interpolated across partial ticks for 60+ FPS wheel animation. */
+    public float getInterpolatedRudderAngle(float partialTick) {
+        return Mth.lerp(partialTick, this.prevRudderAngle, this.currentRudderAngle);
     }
 
     /** Returns the visual wheel rotation angle (4:1 ratio). */
@@ -172,6 +180,7 @@ public class HelmBlockEntity extends BlockEntity {
 
         // Smooth visual follow-through
         float prevAngle = this.currentRudderAngle;
+        this.prevRudderAngle = prevAngle;
         this.currentRudderAngle = Mth.lerp(0.25f, this.currentRudderAngle, this.targetRudderAngle);
         if (Math.abs(this.currentRudderAngle) < 0.05f && Math.abs(this.targetRudderAngle) < 0.05f) {
             this.currentRudderAngle = 0.0f;
@@ -303,6 +312,7 @@ public class HelmBlockEntity extends BlockEntity {
         // Edited / corrupt NBT must not exceed the physical stop.
         this.targetRudderAngle = Mth.clamp(this.targetRudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
         this.currentRudderAngle = Mth.clamp(this.currentRudderAngle, -MAX_RUDDER_ANGLE, MAX_RUDDER_ANGLE);
+        this.prevRudderAngle = this.currentRudderAngle;
     }
 
     @Override

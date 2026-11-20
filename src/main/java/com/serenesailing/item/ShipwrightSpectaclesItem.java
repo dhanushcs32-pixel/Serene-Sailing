@@ -38,7 +38,7 @@ public class ShipwrightSpectaclesItem extends Item implements Equipable {
 
     @Override
     public Holder<SoundEvent> getEquipSound() {
-        return Holder.direct(SoundEvents.ARMOR_EQUIP_IRON.value());
+        return SoundEvents.ARMOR_EQUIP_IRON;
     }
 
     @Override

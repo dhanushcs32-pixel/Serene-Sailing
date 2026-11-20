@@ -61,6 +61,8 @@ public final class HoldFogHandler {
             event.setFarPlaneDistance(renderDistance);
             event.setFogShape(FogShape.CYLINDER);
         }
+        // NeoForge only applies custom fog planes when RenderFog is canceled.
+        event.setCanceled(true);
     }
 
     /**

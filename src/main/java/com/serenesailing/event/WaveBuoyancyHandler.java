@@ -64,7 +64,8 @@ public final class WaveBuoyancyHandler {
             return false;
         }
         return !(HoldRegistry.anyActive(e.level())
-                && HoldRegistry.isEntityInDryHold(e.level(), e.position(), e.getBoundingBox().getCenter()));
+                && (HoldRegistry.isEntityInDryHold(e.level(), e.position(), e.getBoundingBox().getCenter())
+                || HoldRegistry.isOverDryHold(e.level(), e.position())));
     }
 
     /** Vertical speed of the surface above this entity [blocks/tick], sampled where the entity will be next tick. */

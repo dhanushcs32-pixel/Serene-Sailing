@@ -45,16 +45,11 @@ public class WindVaneRenderer implements BlockEntityRenderer<WindVaneBlockEntity
     public void render(WindVaneBlockEntity be, float partialTick, PoseStack poseStack,
                        MultiBufferSource bufferSource, int light, int overlay) {
         float angleDeg = Mth.rotLerp(partialTick, be.getPrevAngle(), be.getCurrentAngle());
-        net.minecraft.core.Direction facing = be.getBlockState().hasProperty(com.serenesailing.block.WindVaneBlock.FACING)
-                ? be.getBlockState().getValue(com.serenesailing.block.WindVaneBlock.FACING)
-                : net.minecraft.core.Direction.NORTH;
-        float facingYaw = facing.toYRot();
-        float renderAngle = angleDeg - facingYaw;
 
         poseStack.pushPose();
-        // Pivot on the vertical spindle axis at block center (0.5, 0.0, 0.5)
+        // BER pose is already in world/sub-level space (not rotated by block FACING); rotate directly into wind.
         poseStack.translate(0.5, 0.0, 0.5);
-        poseStack.mulPose(Axis.YP.rotationDegrees(-renderAngle));
+        poseStack.mulPose(Axis.YP.rotationDegrees(angleDeg));
 
         VertexConsumer consumer = VANE_MATERIAL.buffer(bufferSource, RenderType::entityCutoutNoCull);
         TextureAtlasSprite sprite = VANE_MATERIAL.sprite();

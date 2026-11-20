@@ -44,6 +44,16 @@ public class CapstanRenderer implements BlockEntityRenderer<CapstanBlockEntity> 
     }
 
     @Override
+    public boolean shouldRenderOffScreen(CapstanBlockEntity blockEntity) {
+        return blockEntity.getCurrentChainLength() > 0.05f;
+    }
+
+    @Override
+    public int getViewDistance() {
+        return 128;
+    }
+
+    @Override
     public void render(CapstanBlockEntity be, float partialTick, PoseStack poseStack,
                        MultiBufferSource bufferSource, int light, int overlay) {
         float length = be.getInterpolatedChainLength(partialTick);

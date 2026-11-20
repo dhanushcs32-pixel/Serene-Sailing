@@ -704,10 +704,22 @@ public class ClientWaveRenderer {
                 float l11 = (vi < cachedGridDim && vj < cachedGridDim) ? cellLightFactor[vi][vj] : 1.0f;
                 vertLight[vi][vj] = (l00 + l01 + l10 + l11) * 0.25f;
 
-                int lcx = Mth.clamp(vi, 0, cachedGridDim - 1);
-                int lcz = Mth.clamp(vj, 0, cachedGridDim - 1);
-                vertPackedLight[vi][vj] = LightTexture.pack(
-                        cachedBlockLight[lcx][lcz] & 0xFF, cachedSkyLight[lcx][lcz] & 0xFF);
+                // Average light strictly over adjacent water cells so dock/bridge cells (sky=15, block=0) never cause seams.
+                int blockSum = 0, skySum = 0, waterCount = 0;
+                for (int di = -1; di <= 0; di++) {
+                    int ci = vi + di;
+                    if (ci < 0 || ci >= cachedGridDim) continue;
+                    for (int dj = -1; dj <= 0; dj++) {
+                        int cj = vj + dj;
+                        if (cj < 0 || cj >= cachedGridDim || !isWaterSurface[ci][cj]) continue;
+                        blockSum += cachedBlockLight[ci][cj] & 0xFF;
+                        skySum += cachedSkyLight[ci][cj] & 0xFF;
+                        waterCount++;
+                    }
+                }
+                vertPackedLight[vi][vj] = waterCount > 0
+                        ? LightTexture.pack(blockSum / waterCount, skySum / waterCount)
+                        : LightTexture.FULL_SKY;
 
                 // Un-clamped continuous Gerstner + Trochoidal wave displacement for EVERY vertex
                 double baseWave = GerstnerWaveEngine.evaluateWaveOffset(
@@ -1371,13 +1383,15 @@ public class ClientWaveRenderer {
         if (GerstnerWaveEngine.getDimensionState(mc.level).smoothedStormIntensity < 0.04) {
             return;
         }
+        // Keep ACTIVE_HOLDS fresh even when holdDepthPlaneMode == OFF.
+        final List<RenderHold> holds = refreshActiveHolds(mc.level, camPos, partialTick);
         updateWaterCache(mc.level, camPos.x, camPos.z, mc.level.getGameTime());
         if (cachedRadius <= 0 || cachedGridDim <= 0) {
             return;
         }
         final int startX = cachedCenterX - (cachedSteps * CELL_STEP);
         final int startZ = cachedCenterZ - (cachedSteps * CELL_STEP);
-        final boolean hasHolds = !ACTIVE_HOLDS.isEmpty();
+        final boolean hasHolds = !holds.isEmpty();
         final Vector3d tmpIn = new Vector3d();
         final Vector3d tmpOut = new Vector3d();
         final float y = (float) (VANILLA_WATER_CULL_Y - camPos.y);
@@ -1394,14 +1408,27 @@ public class ClientWaveRenderer {
                         continue;
                     }
                     final double wz0 = startZ + gz * CELL_STEP;
-                    if (hasHolds && isWorldPointMaskedByHold(wx0 + 0.5, PLANE_UPPER_Y, wz0 + 0.5, tmpIn, tmpOut)) {
-                        continue;
-                    }
                     final double wz1 = wz0 + CELL_STEP;
-                    addDepthVertex(buffer, viewPose, wx0 - camPos.x, y, wz0 - camPos.z);
-                    addDepthVertex(buffer, viewPose, wx0 - camPos.x, y, wz1 - camPos.z);
-                    addDepthVertex(buffer, viewPose, wx1 - camPos.x, y, wz1 - camPos.z);
-                    addDepthVertex(buffer, viewPose, wx1 - camPos.x, y, wz0 - camPos.z);
+                    if (hasHolds && isCellNearAnyHold(holds, wx0, wx1, wz0, wz1)) {
+                        for (int sx = 0; sx < 4; sx++) {
+                            final double swx0 = wx0 + sx * 0.25, swx1 = swx0 + 0.25;
+                            for (int sz = 0; sz < 4; sz++) {
+                                final double swz0 = wz0 + sz * 0.25, swz1 = swz0 + 0.25;
+                                if (isWorldPointMaskedByHold(swx0 + 0.125, PLANE_UPPER_Y, swz0 + 0.125, tmpIn, tmpOut)) {
+                                    continue;
+                                }
+                                addDepthVertex(buffer, viewPose, swx0 - camPos.x, y, swz0 - camPos.z);
+                                addDepthVertex(buffer, viewPose, swx0 - camPos.x, y, swz1 - camPos.z);
+                                addDepthVertex(buffer, viewPose, swx1 - camPos.x, y, swz1 - camPos.z);
+                                addDepthVertex(buffer, viewPose, swx1 - camPos.x, y, swz0 - camPos.z);
+                            }
+                        }
+                    } else {
+                        addDepthVertex(buffer, viewPose, wx0 - camPos.x, y, wz0 - camPos.z);
+                        addDepthVertex(buffer, viewPose, wx0 - camPos.x, y, wz1 - camPos.z);
+                        addDepthVertex(buffer, viewPose, wx1 - camPos.x, y, wz1 - camPos.z);
+                        addDepthVertex(buffer, viewPose, wx1 - camPos.x, y, wz0 - camPos.z);
+                    }
                 }
             }
         } finally {
@@ -1428,6 +1455,16 @@ public class ClientWaveRenderer {
             RenderSystem.depthMask(true);
             RenderSystem.depthFunc(GL11.GL_LEQUAL);
         }
+    }
+
+    private static boolean isCellNearAnyHold(List<RenderHold> holds, double x0, double x1, double z0, double z1) {
+        for (int i = 0; i < holds.size(); i++) {
+            final RenderHold h = holds.get(i);
+            if (x1 >= h.minWX && x0 <= h.maxWX && z1 >= h.minWZ && z0 <= h.maxWZ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // =========================================================================================

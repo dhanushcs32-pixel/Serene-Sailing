@@ -98,9 +98,6 @@ public class TaffrailLogBlockEntity extends BlockEntity {
         if (subLevel != null) {
             // Read authoritative forward speed cached by ServerPhysicsHandler along vessel heading (localForward)
             forwardSpeed = ServerPhysicsHandler.getForwardSpeed(subLevel.getUniqueId());
-            if (Math.abs(forwardSpeed) < 1.0e-5 && Math.abs(this.speedMs) > 1.0e-5) {
-                forwardSpeed = this.speedMs;
-            }
         } else {
             forwardSpeed = this.speedMs;
         }

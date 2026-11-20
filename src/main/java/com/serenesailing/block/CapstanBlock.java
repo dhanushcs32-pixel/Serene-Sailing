@@ -109,6 +109,20 @@ public class CapstanBlock extends Block implements EntityBlock {
     }
 
     @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock()) && level instanceof ServerLevel serverLevel) {
+            SubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+            if (container instanceof ServerSubLevelContainer serverContainer) {
+                LevelPlot plot = serverContainer.getPlot(new ChunkPos(pos));
+                if (plot != null && plot.getSubLevel() instanceof ServerSubLevel ssl) {
+                    ServerPhysicsHandler.invalidateSteeringCache(ssl.getUniqueId());
+                }
+            }
+        }
+        super.onRemove(state, level, pos, newState, isMoving);
+    }
+
+    @Override
     public BlockState getStateForPlacement(BlockPlaceContext context) {
         return this.defaultBlockState()
                 .setValue(FACING, context.getHorizontalDirection().getOpposite());

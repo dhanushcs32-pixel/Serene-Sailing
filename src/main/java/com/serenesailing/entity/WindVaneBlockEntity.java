@@ -203,8 +203,8 @@ public class WindVaneBlockEntity extends BlockEntity {
             this.pointOfSail = "Calm";
             this.targetAngle = 0.0f;
         } else {
-            // Point into the incoming apparent wind (-localWind).
-            this.targetAngle = (float) Math.toDegrees(Math.atan2(localWindX, -localWindZ));
+            // Right-handed +Y rotation angle that rotates the -Z arrowhead to point into incoming wind (-localWind).
+            this.targetAngle = (float) Math.toDegrees(Math.atan2(localWindX, localWindZ));
 
             if (subLevel == null) {
                 double abs = Math.abs(this.currentAngle);

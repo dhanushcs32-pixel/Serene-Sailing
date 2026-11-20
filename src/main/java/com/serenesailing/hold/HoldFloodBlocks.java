@@ -87,7 +87,11 @@ public final class HoldFloodBlocks {
                 }
             }
         }
+        if (plot != null && plotChunks.isEmpty()) {
+            return null; // plot has not loaded/synced any chunks yet
+        }
         final StateInfo[] cells = new StateInfo[w * h * d];
+        int chunksRead = 0;
         for (int cz = p.minZ() >> 4; cz <= p.maxZ() >> 4; cz++) {
             for (int cx = p.minX() >> 4; cx <= p.maxX() >> 4; cx++) {
                 LevelChunk chunk = plotChunks.get(net.minecraft.world.level.ChunkPos.asLong(cx, cz));
@@ -95,10 +99,10 @@ public final class HoldFloodBlocks {
                     chunk = level.getChunkSource().getChunkNow(cx, cz); // never loads a chunk
                 }
                 if (chunk == null) {
-                    // Any missing chunk inside the ship's own bounding box would look like a 16x16 breach;
-                    // defer the scan and keep the previous applied hold until all plot chunks are loaded.
-                    return null;
+                    // Empty corner chunks on L-shaped/diagonal plots may never be allocated; treat as open.
+                    continue;
                 }
+                chunksRead++;
                 final LevelChunkSection[] sections = chunk.getSections();
                 for (int si = 0; si < sections.length; si++) {
                     final LevelChunkSection section = sections[si];
@@ -137,7 +141,7 @@ public final class HoldFloodBlocks {
                 }
             }
         }
-        return cells;
+        return chunksRead == 0 ? null : cells;
     }
 
     /** Face coverage of one block state: which faces it covers completely alone, and the full 16 x 16 coverage of each face. */

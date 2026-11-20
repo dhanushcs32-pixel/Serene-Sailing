@@ -572,6 +572,7 @@ public class ServerPhysicsHandler {
         // An anchored (moored) vessel generates zero thrust.
         Vector3d thrustWorld = new Vector3d();
         double thrustMag = 0.0;
+        double signedThrustN = 0.0;
         double sailAreaEfficiency = steering.sailAreaEfficiency();
         // Scale purely with active sail area (e.g., ~450 N max thrust per fully deployed sail block)
         double maxAeroForce = sailAreaEfficiency * FORCE_PER_FULL_SAIL_N;
@@ -580,22 +581,19 @@ public class ServerPhysicsHandler {
                     trueWindWorld, shipVelWorld, forwardWorld, starboardWorld, 1.0));
             thrustWorld.mul(SailingConfig.SAIL_THRUST_MULTIPLIER.get()
                     * sailAreaEfficiency);
-            thrustMag = thrustWorld.length();
-
-            // Strict linear scaling from zero based on active sail area
-            if (thrustMag > maxAeroForce && thrustMag > 1.0e-6) {
-                thrustWorld.mul(maxAeroForce / thrustMag);
-                thrustMag = maxAeroForce;
-            }
+            // Preserve sign along vessel heading: positive = forward sail drive, negative = in-irons headwind pushback.
+            signedThrustN = Mth.clamp(thrustWorld.dot(forwardWorld), -maxAeroForce, maxAeroForce);
+            thrustMag = Math.abs(signedThrustN);
         }
-        boolean hasActiveThrust = thrustMag > 1.0 || (steering.sailAreaEfficiency() > 0.0 && !calmWind && !anchored);
+        boolean hasActiveThrust = signedThrustN > 1.0
+                || (steering.sailAreaEfficiency() > 0.0 && !calmWind && !anchored && signedThrustN >= 0.0);
         double thrustForceN = 0.0;
         Vector3d localLinearImpulse = new Vector3d(0.0, 0.0, 0.0);
         if (thrustMag > 1.0e-9) {
-            thrustForceN = thrustMag;
+            thrustForceN = signedThrustN;
 
             // Task 1: Strict Body-Fixed Propulsion Vector (Fossen model)
-            // Forward thrust vector strictly in local body coordinates along the craft's surge axis.
+            // Signed surge thrust vector strictly in local body coordinates along the craft's surge axis.
             // Eliminates cross-coupled frame leakage into sway (Fx) and roll (K).
             localLinearImpulse.set(
                     localForward.x * thrustForceN * dt,
@@ -701,11 +699,11 @@ public class ServerPhysicsHandler {
 
             // Never allow opposing wave slopes to act as a brick wall against forward motion
             if (surgeForce < 0.0) {
-                if ((hasActiveThrust && thrustMag > 1.0) || fwdSpeed > 0.15) {
+                if ((hasActiveThrust && signedThrustN > 1.0) || fwdSpeed > 0.15) {
                     // Attenuate opposing longitudinal wave-slope force by 88%
                     surgeForce *= 0.12;
                     // Hard-clamp maximum opposing wave-slope retardation to at most 15% of active forward sail thrust
-                    double maxRetardation = Math.max(0.0, 0.15 * thrustMag);
+                    double maxRetardation = Math.max(0.0, 0.15 * Math.max(0.0, signedThrustN));
                     if (-surgeForce > maxRetardation) {
                         surgeForce = -maxRetardation;
                     }
@@ -733,10 +731,10 @@ public class ServerPhysicsHandler {
             double stokesSway = stokesLocal.dot(localRight);
 
             // Attenuate opposing Stokes drift when the vessel is actively under sail (> 1.0 N thrust)
-            if (hasActiveThrust && thrustMag > 1.0) {
+            if (hasActiveThrust && signedThrustN > 1.0) {
                 if (stokesSurge < 0.0) {
                     stokesSurge *= 0.12; // 88% attenuation of opposing drift
-                    double maxStokesBrake = 0.10 * thrustMag;
+                    double maxStokesBrake = 0.10 * signedThrustN;
                     if (-stokesSurge > maxStokesBrake) {
                         stokesSurge = -maxStokesBrake;
                     }
@@ -802,7 +800,7 @@ public class ServerPhysicsHandler {
 
             // Wind billow while the sails generate near-maximum lift.
             double maxAeroRef = steering.sailAreaEfficiency() * FORCE_PER_FULL_SAIL_N;
-            if (!anchored && maxAeroRef > 0.0 && thrustMag >= maxAeroRef * 0.75 && stepCounter.get() % 100L == 0L) {
+            if (!anchored && maxAeroRef > 0.0 && signedThrustN >= maxAeroRef * 0.75 && stepCounter.get() % 100L == 0L) {
                 level.playSound(null,
                         BlockPos.containing(worldPos.x(), worldPos.y(), worldPos.z()),
                         ModSounds.WIND_BILLOW.get(), SoundSource.AMBIENT, 0.7f, 1.0f);
@@ -985,6 +983,7 @@ public class ServerPhysicsHandler {
             unifiedSteeringAngle = getUnifiedSteeringAngle(subLevel, rudders);
             // Ensure all active contraption rudders are synchronized to the unified helm deflection angle
             for (RudderInfo rudder : rudders) {
+                if (rudder.blockEntity().isRemoved()) continue;
                 if (rudder.blockEntity().getSteeringAngle() != unifiedSteeringAngle) {
                     rudder.blockEntity().setSteeringAngle(unifiedSteeringAngle);
                     rudder.blockEntity().setChanged();
@@ -1007,6 +1006,7 @@ public class ServerPhysicsHandler {
 
                 double facingSignSum = 0.0;
                 for (RudderInfo rudder : rudders) {
+                    if (rudder.blockEntity().isRemoved()) continue;
                     Vector3d rudderWorld = pose.transformPosition(
                             new Vector3d(rudder.localPoint()), new Vector3d());
 
@@ -1118,7 +1118,7 @@ public class ServerPhysicsHandler {
     private static boolean isAnchored(SteeringCache steering) {
         if (!steering.capstans().isEmpty()) {
             for (CapstanBlockEntity capstan : steering.capstans()) {
-                if (capstan.isHolding()) {
+                if (!capstan.isRemoved() && capstan.isHolding()) {
                     return true;
                 }
             }
@@ -1131,7 +1131,7 @@ public class ServerPhysicsHandler {
     private static boolean isAnchorDropping(SteeringCache steering) {
         if (!steering.capstans().isEmpty()) {
             for (CapstanBlockEntity capstan : steering.capstans()) {
-                if (capstan.isAnchored() && !capstan.isHolding()) {
+                if (!capstan.isRemoved() && capstan.isAnchored() && !capstan.isHolding()) {
                     return true;
                 }
             }

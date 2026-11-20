@@ -34,7 +34,8 @@ public abstract class BoatWaveMixin {
     private static boolean inOpenWaveZone(Boat boat) {
         return WaveSurface.isEntityInWaveZone(boat)
                 && !(HoldRegistry.anyActive(boat.level())
-                && HoldRegistry.isEntityInDryHold(boat.level(), boat.position(), boat.getBoundingBox().getCenter()));
+                && (HoldRegistry.isEntityInDryHold(boat.level(), boat.position(), boat.getBoundingBox().getCenter())
+                || HoldRegistry.isOverDryHold(boat.level(), boat.position())));
     }
 
     /**
