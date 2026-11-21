@@ -565,9 +565,25 @@ public class ServerPhysicsHandler {
             applyRideHeightSpring(body, meanWaterSurfaceY, keelWorldY, targetDraft, dt, isCalmWeather);
         }
 
+        // Non-tornado vertical launch cap: prevent mob collisions or physics spikes from catapulting vessels into space.
+        if (!stormResult.isLiftedByTornado()) {
+            Vector3d curVel = new Vector3d(body.getLinearVelocity());
+            if (curVel.y > 4.0) {
+                body.addLinearAndAngularVelocity(new Vector3d(0.0, 4.0 - curVel.y, 0.0), new Vector3d());
+            }
+        }
+
         // ---- Flotation gate: beached ships get ground friction only (unless airborne in tornado) --------
         if (!afloat && submergedSamples == 0 && !stormResult.isLiftedByTornado()) {
-            applyGroundFriction(body, dt);
+            if (hasSolidGroundBelow(level, subLevel, keelWorldY)) {
+                applyGroundFriction(body, dt);
+            } else {
+                // Airborne over open water without a tornado: ensure the hull falls back to the sea.
+                Vector3d curVel = new Vector3d(body.getLinearVelocity());
+                if (curVel.y > -0.5) {
+                    body.addLinearAndAngularVelocity(new Vector3d(0.0, -9.81 * dt, 0.0), new Vector3d());
+                }
+            }
             updateWindVanes(steering.vanes(), forwardWorld, trueWindWorld, shipVelWorld);
             return;
         }
@@ -1977,6 +1993,27 @@ public class ServerPhysicsHandler {
 
     private static boolean isWaterAt(ServerLevel level, double x, double y, double z) {
         return isPointSubmerged(level, x, y, z);
+    }
+
+    private static boolean hasSolidGroundBelow(ServerLevel level, ServerSubLevel subLevel, double keelWorldY) {
+        var bounds = subLevel.boundingBox();
+        double probeY = keelWorldY - 1.0;
+        double cx = (bounds.minX() + bounds.maxX()) * 0.5;
+        double cz = (bounds.minZ() + bounds.maxZ()) * 0.5;
+        double ix = (bounds.maxX() - bounds.minX()) * 0.25;
+        double iz = (bounds.maxZ() - bounds.minZ()) * 0.25;
+        double[][] pts = {
+                {cx, cz},
+                {bounds.minX() + ix, bounds.minZ() + iz},
+                {bounds.maxX() - ix, bounds.minZ() + iz},
+                {bounds.minX() + ix, bounds.maxZ() - iz},
+                {bounds.maxX() - ix, bounds.maxZ() - iz}
+        };
+        for (double[] pt : pts) {
+            BlockPos p = BlockPos.containing(pt[0], probeY, pt[1]);
+            if (level.hasChunkAt(p) && level.getBlockState(p).blocksMotion()) return true;
+        }
+        return false;
     }
 
     /** Heavy ground friction for beached hulls (mass-independent velocity damping). */
